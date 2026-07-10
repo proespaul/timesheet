@@ -1,0 +1,1170 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<link rel="manifest" href="./manifest.webmanifest">
+<title>PCW / PRO Timesheet</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --panel2:#273449; --line:#334155;
+    --text:#e2e8f0; --muted:#94a3b8; --accent:#0f766e; --accent2:#14b8a6;
+    --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --pending:#eab308;
+    --radius:16px; --safe: env(safe-area-inset-bottom, 0px);
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; font-size:16px; line-height:1.4}
+  body{padding-bottom:calc(72px + var(--safe))}
+  h1,h2,h3{margin:0 0 .4em}
+  button{font:inherit; cursor:pointer; border:none; border-radius:12px; padding:14px 16px; color:#fff;
+    background:var(--accent); font-weight:600; touch-action:manipulation}
+  button:active{transform:scale(.98)}
+  button.secondary{background:var(--panel2); color:var(--text)}
+  button.ghost{background:transparent; color:var(--accent2); padding:8px}
+  button.danger{background:var(--bad)}
+  button:disabled{opacity:.5}
+  input,select,textarea{width:100%; font:inherit; color:var(--text); background:var(--panel2);
+    border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin:6px 0}
+  label{display:block; font-size:.82rem; color:var(--muted); margin-top:10px}
+  .wrap{max-width:560px; margin:0 auto; padding:16px}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:16px; margin:12px 0}
+  .row{display:flex; gap:10px; align-items:center}
+  .row.between{justify-content:space-between}
+  .grow{flex:1}
+  .muted{color:var(--muted)}
+  .small{font-size:.82rem}
+  .pill{display:inline-block; padding:3px 10px; border-radius:999px; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.03em}
+  .pill.approved{background:rgba(34,197,94,.18); color:#4ade80}
+  .pill.pending{background:rgba(234,179,8,.18); color:#facc15}
+  .pill.rejected{background:rgba(239,68,68,.18); color:#f87171}
+  .pill.live{background:rgba(20,184,166,.18); color:#2dd4bf}
+  .bigbtn{width:100%; padding:26px; font-size:1.35rem; border-radius:24px; box-shadow:0 8px 24px rgba(0,0,0,.35)}
+  .bigbtn.in{background:linear-gradient(135deg,#0f766e,#14b8a6)}
+  .bigbtn.out{background:linear-gradient(135deg,#b91c1c,#ef4444)}
+  .timer{font-size:2.4rem; font-weight:800; text-align:center; letter-spacing:.02em}
+  .tabbar{position:fixed; left:0; right:0; bottom:0; display:flex; background:var(--panel);
+    border-top:1px solid var(--line); padding-bottom:var(--safe); z-index:20}
+  .tabbar button{flex:1; background:transparent; color:var(--muted); border-radius:0; padding:12px 4px; font-size:.72rem; font-weight:600}
+  .tabbar button.active{color:var(--accent2)}
+  .tabbar .ic{display:block; font-size:1.3rem; line-height:1}
+  .banner{padding:10px 14px; border-radius:12px; margin:8px 0; font-size:.9rem}
+  .banner.offline{background:rgba(245,158,11,.15); color:#fbbf24; border:1px solid rgba(245,158,11,.3)}
+  .banner.ot{background:rgba(239,68,68,.15); color:#f87171; border:1px solid rgba(239,68,68,.3)}
+  .banner.sync{background:rgba(20,184,166,.15); color:#2dd4bf}
+  .hidden{display:none !important}
+  .list-item{border-bottom:1px solid var(--line); padding:12px 0}
+  .list-item:last-child{border-bottom:none}
+  .sheet{position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:40; display:flex; align-items:flex-end; justify-content:center}
+  .sheet .panel{background:var(--panel); width:100%; max-width:560px; border-radius:24px 24px 0 0; padding:18px;
+    max-height:92vh; overflow:auto; padding-bottom:calc(18px + var(--safe))}
+  .chip{display:inline-block; background:var(--panel2); border:1px solid var(--line); border-radius:999px;
+    padding:8px 14px; margin:4px 4px 0 0; font-size:.9rem}
+  .chip.sel{background:var(--accent); border-color:var(--accent)}
+  .suggest{background:var(--panel2); border:1px solid var(--line); border-radius:12px; margin-top:-2px; overflow:hidden}
+  .suggest div{padding:12px 14px; border-bottom:1px solid var(--line)}
+  .suggest div:last-child{border-bottom:none}
+  .toast{position:fixed; bottom:calc(84px + var(--safe)); left:50%; transform:translateX(-50%);
+    background:#0b1220; border:1px solid var(--line); color:#fff; padding:12px 18px; border-radius:14px; z-index:60;
+    max-width:90%; text-align:center; box-shadow:0 8px 24px rgba(0,0,0,.4)}
+  .center{text-align:center}
+  .avatar{width:34px; height:34px; border-radius:50%; background:var(--panel2); object-fit:cover}
+  .perm{display:flex; align-items:center; gap:8px; padding:6px 0}
+  .perm input{width:auto; margin:0}
+  .spin{width:22px;height:22px;border:3px solid var(--line);border-top-color:var(--accent2);border-radius:50%;animation:sp 1s linear infinite;display:inline-block;vertical-align:middle}
+  @keyframes sp{to{transform:rotate(360deg)}}
+</style>
+
+<!-- ============================== APP SHELL ============================== -->
+<div id="app"></div>
+<div id="toast"></div>
+
+<script>
+/* ============================================================================
+ * CONFIG — FILL THESE IN (must match the Apps Script deployment)
+ * ==========================================================================*/
+const CONFIG = {
+  GOOGLE_CLIENT_ID: '378684710856-ptq2bpavssjjii856ufbuu03uef97ivr.apps.googleusercontent.com',
+  APPS_SCRIPT_URL:  'https://script.google.com/macros/s/AKfycbxEZMh2MuzbfGFyuiwmJO1KMLffrj4_rWXYW8JXTew61EKsBKZ5SVoN7tlUH9peKq8f/exec',
+};
+
+/* ============================================================================
+ * ENCOURAGEMENTS — a full year (312) of Mon–Sat clock-out messages.
+ * Injected from messages.js at build time. Fallback kept so the app still runs.
+ * ==========================================================================*/
+/* 312 Mon–Sat encouragements (a full year), injected build-time. */
+const ENCOURAGEMENTS = [
+  "Solid day's work out there. Go put your feet up.",
+  "Another one in the books. Real proud of you, crew.",
+  "Whatever you do, work at it with all your heart. Colossians 3:23. Rest well tonight.",
+  "You showed up and got it done. That's what counts.",
+  "Boots off, supper on. You earned it today.",
+  "Hard day behind you. Head home and take it easy.",
+  "The plans of the diligent lead to profit. Proverbs 21:5. Good work today.",
+  "Long day, good work. Time to rest those tired hands.",
+  "You gave it your all out there. Now go rest.",
+  "Come to me, all who are weary, and I will give you rest. Matthew 11:28.",
+  "Cold morning, honest day. You pushed through it.",
+  "That's a wrap on the day. Go enjoy your evening.",
+  "The one who works his land will have plenty of bread. Proverbs 12:11.",
+  "Dust on your boots, day well spent. Head on home.",
+  "You kept at it when it got tough. Respect.",
+  "Nicely done today. Supper's calling your name.",
+  "May the favor of the Lord rest on you and establish the work of your hands. Psalm 90:17.",
+  "Full day, full effort. Go put your feet up.",
+  "Job done and done right. Time to head in.",
+  "Well done, good and faithful worker. Matthew 25:23. Rest easy tonight.",
+  "You outworked the weather today. Go get warm.",
+  "Another honest day in the rearview. Proud of you.",
+  "The diligent will find their desires fully satisfied. Proverbs 13:4.",
+  "Hands dirty, work done. That's a good day.",
+  "You showed up and put in the miles. Now rest.",
+  "Whatever your hand finds to do, do it with all your might. Ecclesiastes 9:10.",
+  "Tough one out there today, but you finished strong.",
+  "Clock's out, boots are off. Enjoy the evening.",
+  "In all toil there is profit. Proverbs 14:23. Good work today.",
+  "You earned every minute of rest coming your way.",
+  "Good honest work today. Go be with your family.",
+  "That everyone should eat, drink, and find satisfaction in their toil. Ecclesiastes 3:13.",
+  "Big day handled start to finish. Time to slow it down.",
+  "You put your back into it today. Well done.",
+  "Do not grow weary in doing good. Galatians 6:9. You did good today.",
+  "Chores done, day done. Head in and relax.",
+  "Long hours, steady hands. Nice work out there.",
+  "You shall eat the fruit of your labor. Psalm 128:2. Enjoy your supper.",
+  "That's a full day's honest work. Go rest up.",
+  "Proud of the effort you put in today. Now unwind.",
+  "Commit your work to the Lord and your plans will succeed. Proverbs 16:3.",
+  "You knocked it out today. Feet up, worries down.",
+  "Hard work never goes unnoticed. Good day, crew.",
+  "The one who is unwilling to work shall not eat. 2 Thessalonians 3:10. You earned yours.",
+  "Fences mended, day done. Time to head home.",
+  "You gave today everything it asked for. Rest now.",
+  "Steady effort pays off. Proverbs 13:4 had it right.",
+  "Sun's setting on a good day's work. Well done.",
+  "You made today count. Go enjoy the quiet.",
+  "Rest is part of the work too. Take it easy tonight.",
+  "Cattle fed, crew fed next. Go get your supper.",
+  "Whatever you do, do it heartily. Colossians 3:23. And you did.",
+  "That was a grind, and you beat it. Proud of you.",
+  "Good work out in the cold today. Go thaw out.",
+  "Another day, another job done right. Head on home.",
+  "The plans of the diligent lead surely to plenty. Proverbs 21:5.",
+  "You held the line all day. Now let it go and rest.",
+  "Sweat and grit got it done today. Nice one.",
+  "Come and rest a while. Even the hardest workers need it.",
+  "Long summer day, big effort. Go cool off and relax.",
+  "You showed up early and stayed late. That's character.",
+  "Diligent hands will rule. Proverbs 12:24. Rest those hands now.",
+  "Done and dusted. Go enjoy what's left of the light.",
+  "Honest sweat, honest day. Proud to have you on the crew.",
+  "Well done today, crew. Supper first, then feet up.",
+  "The sleep of a laborer is sweet. Ecclesiastes 5:12. Sleep well tonight.",
+  "You pushed through the hard part. That's what matters.",
+  "Boots by the door, day behind you. Rest easy.",
+  "Good work is its own reward, but rest is nice too.",
+  "In the morning sow your seed. Ecclesiastes 11:6. But tonight, rest.",
+  "You earned this evening. Go make the most of it.",
+  "Calving season is no joke, and you handled it. Well done.",
+  "Solid effort all day. Time to head in and unwind.",
+  "By the sweat of your brow you eat your bread. Genesis 3:19. Enjoy the meal.",
+  "That was a full one. Go put your boots up.",
+  "You worked hard and it showed. Proud of you.",
+  "Let us not become weary in doing good. Galatians 6:9. Good day, crew.",
+  "Job wrapped, tools away. Head home and relax.",
+  "You gave a full day's work for a full day's pay. Nice.",
+  "Whoever works his land will have abundant food. Proverbs 28:19.",
+  "Cold start, warm finish. You made it through. Well done.",
+  "Time to clock out and clock into the couch.",
+  "The hand of the diligent makes rich. Proverbs 10:4. Rest up now.",
+  "You did the work today. Now do the resting.",
+  "Grateful for the effort you brought. Go enjoy your night.",
+  "She sets about her work vigorously. Proverbs 31:17. Strong day today.",
+  "Long haul today, and you finished it. Head on home.",
+  "Nice work under that hot sun. Go find some shade.",
+  "Enjoy the good of all your labor. Ecclesiastes 3:13. Supper's ready.",
+  "That's how it's done. Proud of the crew today.",
+  "You earned every bite of supper tonight. Go get it.",
+  "The soul of the diligent is richly supplied. Proverbs 13:4.",
+  "Hard day, done right. Now let yourself rest.",
+  "You stuck with it till the job was finished. Respect.",
+  "Well done, good and faithful. Matthew 25:23. Rest tonight.",
+  "Wiring's done, day's done. Head home safe.",
+  "You brought your best today. Now bring your feet up.",
+  "Work brings profit. Proverbs 14:23. You put in the profit today.",
+  "Long fence line, longer day. You handled it. Well done.",
+  "That's a job to be proud of. Go relax now.",
+  "May the Lord bless the work of your hands. Deuteronomy 2:7. Good day.",
+  "You made short work of a long list today. Nicely done.",
+  "Feet up, phone down, day done. You earned it.",
+  "Commit to the Lord whatever you do. Proverbs 16:3. Rest now, crew.",
+  "Big grind today and you never quit. Proud of you.",
+  "The sun's down and so are you. Go get some rest.",
+  "Whatever you do, work heartily as for the Lord. Colossians 3:23.",
+  "Solid crew, solid day. Head home and take it easy.",
+  "You gave the ranch a good day. It gives you the evening back.",
+  "Those who work their land will have plenty. Proverbs 12:11.",
+  "Hard hours, honest pay. Go put your feet up.",
+  "You battled the cold and won. Warm up and rest now.",
+  "Diligent hands bring wealth. Proverbs 10:4. Rest those hands.",
+  "That was a full day's work. Be proud, then be still.",
+  "Job well done today. Go be with the ones you love.",
+  "Come to me, you who are weary. Matthew 11:28. Rest tonight.",
+  "You showed grit out there. Now show yourself some rest.",
+  "Cattle checked, chores done. Head in for supper.",
+  "The plans of the diligent lead to profit. Proverbs 21:5. Good day.",
+  "Long day in the saddle. Time to climb down and rest.",
+  "You earned a quiet evening tonight. Go take it, crew.",
+  "Whatever your hand finds to do, do with all your might. Ecclesiastes 9:10.",
+  "That was a tough one, and you made it look easy. Well done.",
+  "Boots off, worries off. Rest up for tomorrow.",
+  "You will eat the fruit of your labor. Psalm 128:2. Enjoy tonight.",
+  "Nice work today, crew. Go enjoy the evening light.",
+  "Steady, honest work all day. Proud of you.",
+  "Do not grow weary. Galatians 6:9. You did good today, rest well.",
+  "Panels up, day wrapped. Head home safe and sound.",
+  "You gave it everything today. Now let the day go.",
+  "In toil there is profit. Proverbs 14:23. You profited today.",
+  "Long day at the ranch. Supper's the reward. Go get it.",
+  "You handled the heat like a pro. Cool off and rest.",
+  "God is not unjust to forget your work. Hebrews 6:10. Rest easy.",
+  "Fences up and holding, day done. Time to head in.",
+  "You outlasted the day. Now the evening's yours.",
+  "The diligent find satisfaction. Proverbs 13:4. Go rest satisfied.",
+  "Hard day, good crew, job done. That's a win.",
+  "Time to trade the work gloves for a warm supper.",
+  "Whatever you do, do it with all your heart. Colossians 3:23. And you did.",
+  "You put in a full shift and then some. Well earned rest ahead.",
+  "Chores wrapped, sun's low. Head home and unwind.",
+  "The one who works his land has plenty of bread. Proverbs 12:11.",
+  "Big effort today, crew. Go put those feet up.",
+  "You beat the cold and got it done. Now go get warm.",
+  "There is nothing better than to enjoy your work. Ecclesiastes 3:22.",
+  "Long harvest day. You brought it home. Well done.",
+  "You showed up and gave it your all. Rest now.",
+  "The Lord will bless the work of your hands. Deuteronomy 28:12.",
+  "Solid day out there. Time to head in and slow down.",
+  "You earned every minute of the evening. Enjoy it.",
+  "Lazy hands make poverty, diligent hands bring wealth. Proverbs 10:4.",
+  "That's a day to be proud of. Go rest, crew.",
+  "Welds are cooling and so are you. Head home and unwind.",
+  "The hardworking farmer gets the first share. 2 Timothy 2:6. Enjoy supper.",
+  "You gave the day everything. Now give yourself a break.",
+  "Cold hands, warm heart, honest day. Well done, crew.",
+  "Commit your work to the Lord. Proverbs 16:3. Rest now.",
+  "You handled a full plate today. Go clear your mind.",
+  "Long day done and dusted. Feet up, worries down.",
+  "Whoever is faithful in little is faithful in much. Luke 16:10. Good day.",
+  "That was a grind and you never let up. Proud of you.",
+  "Supper, family, rest. You earned all three tonight.",
+  "The sleep of a laborer is sweet. Ecclesiastes 5:12. Sleep well.",
+  "You put the ranch first all day. Tonight, put yourself first.",
+  "Job done right the first time. Nice work, crew.",
+  "Well done, good and faithful worker. Matthew 25:23. Rest tonight.",
+  "Cattle content, crew tired. Head home and get some rest.",
+  "You made the hard hours count. Now go relax.",
+  "Diligent plans lead to plenty. Proverbs 21:5. Good day today.",
+  "Long day under the Alberta sky. Go rest under a warm roof.",
+  "You showed real grit today. Take the evening off, you earned it.",
+  "Come away and rest a while. Even Jesus said so. Mark 6:31.",
+  "That's a full one behind you. Head in and unwind.",
+  "You gave honest work for an honest day. Proud of you.",
+  "The plans of the diligent surely lead to abundance. Proverbs 21:5.",
+  "Boots off, kettle on, day behind you. Rest up tonight.",
+  "Big grind, bigger heart. Well done today, crew.",
+  "Work heartily, as for the Lord. Colossians 3:23. You sure did today.",
+  "You wrangled a tough day and won. Go take it easy.",
+  "Long fencing day. Straight lines, honest sweat. Well done.",
+  "Enjoy the good of all your toil. Ecclesiastes 3:13. Supper's on.",
+  "You never coasted today. That's a crew to be proud of.",
+  "Home, supper, rest. You earned the whole evening.",
+  "The diligent are richly supplied. Proverbs 13:4. Go rest, crew.",
+  "That was a hard day and you carried it well. Now set it down.",
+  "Tools packed, truck loaded, day done. Head home safe.",
+  "God will not forget your labor of love. Hebrews 6:10. Rest well.",
+  "You put in a real day today. Go put your feet up.",
+  "Cold morning turned into a good day. Well done, crew.",
+  "By the sweat of your brow. Genesis 3:19. Now enjoy the bread.",
+  "You handled the long list without a fuss. Nice work.",
+  "Sun's down, work's done. Time to head in.",
+  "In all labor there is profit. Proverbs 14:23. You earned yours.",
+  "Long day, good crew. Go be with your family now.",
+  "You brought your best today, no doubt about it. Rest up.",
+  "Whatever you do, do heartily. Colossians 3:23. Great effort today.",
+  "That's a wrap on a solid day. Feet up, crew.",
+  "You outworked the clock today. Now let the evening slow down.",
+  "The hand of the diligent will rule. Proverbs 12:24. Rest those hands.",
+  "Hard day at the ranch, done right. Head home proud.",
+  "You earned every bit of this quiet evening. Enjoy it.",
+  "Come to me, all you who are weary. Matthew 11:28. Rest tonight.",
+  "Chores done, day done. Time to slow it all down.",
+  "You gave it a full push today. Well done, crew.",
+  "Those who work will have plenty of bread. Proverbs 12:11. Enjoy supper.",
+  "Long haul today and you finished strong. Proud of you.",
+  "Boots by the door, day behind you. Rest easy tonight.",
+  "The diligent will stand before kings. Proverbs 22:29. Well done today.",
+  "You made short work of a long day. Nice one, crew.",
+  "Time to trade the truck seat for the couch. You earned it.",
+  "Do not grow weary in well-doing. Galatians 6:9. Good day, crew.",
+  "That was a tough haul, and you never quit. Respect.",
+  "Home to supper you go. You more than earned it.",
+  "You will enjoy the fruit of your labor. Psalm 128:2. Good work today.",
+  "Solid day, solid crew. Head in and take it easy.",
+  "You gave the day your muscle and your heart. Rest now.",
+  "Commit whatever you do to the Lord. Proverbs 16:3. Rest well tonight.",
+  "Long calving night ahead maybe, but you earned some rest first.",
+  "Job done and done well. Go enjoy the evening, crew.",
+  "Whatever your hand finds, do it with your might. Ecclesiastes 9:10.",
+  "That was a full plate and you cleaned it. Well done.",
+  "Feet up, day down. You handled it all, crew.",
+  "The soul of the diligent is richly supplied. Proverbs 13:4. Rest up.",
+  "Hard morning frost, honest day's work. Proud of you.",
+  "You kept the crew moving all day. Now go slow down.",
+  "May God establish the work of your hands. Psalm 90:17. Good day.",
+  "Long summer light, long day's work. Go find your rest.",
+  "You showed up ready and left it all out there. Well done.",
+  "There is nothing better than to enjoy your work. Ecclesiastes 3:22. Rest.",
+  "That's a job worth being proud of. Head home, crew.",
+  "You never let the hard day get the better of you. Nice work.",
+  "The hardworking farmer gets the first share. 2 Timothy 2:6.",
+  "Done for the day. Go put your boots up and breathe.",
+  "You earned this evening the honest way. Enjoy every minute.",
+  "Diligent hands bring wealth. Proverbs 10:4. Rest those hands now.",
+  "Long day, and you carried your share and then some. Well done.",
+  "Supper's waiting and so is your rest. Head home, crew.",
+  "Come away by yourselves and rest. Mark 6:31. You earned it.",
+  "That was a real grinder. You beat it. Proud of you.",
+  "Tools down, day done. Go enjoy what's left of the light.",
+  "The Lord loves a diligent worker. Rest well, you were one today.",
+  "You handled the cold and the load like a champ. Go warm up.",
+  "Big day in the books. Feet up, worries away.",
+  "The precious possession of a man is diligence. Proverbs 12:27. Rest easy tonight.",
+  "You gave a full day's honest effort. Now go rest it off.",
+  "Long welding day. Steady hands, good work. Head home safe.",
+  "Enjoy your food and drink and find good in your toil. Ecclesiastes 3:13.",
+  "That's a solid day behind you. Time to slow down, crew.",
+  "You outworked the weather and the clock. Well done.",
+  "The plans of the diligent lead to profit. Proverbs 21:5. Rest now.",
+  "Hard day handled with heart. Proud of you, crew.",
+  "Boots off, feet up, day done. Enjoy your evening.",
+  "Cast your bread upon the waters. Ecclesiastes 11:1. Your work will come back to you.",
+  "You brought grit and stayed steady all day. Nice work.",
+  "Long day at the ranch. Go home and let it go.",
+  "Whatever you do, do it all for the glory of God. 1 Corinthians 10:31.",
+  "That was a big one and you finished it right. Well done.",
+  "Time to head home and let the tired feeling be a good one.",
+  "The diligent find their desires satisfied. Proverbs 13:4. Rest, crew.",
+  "You gave today everything and it showed. Go put your feet up.",
+  "Chores wrapped, cattle fed, day done. Head in for supper.",
+  "Well done today. Rest is the next job on the list.",
+  "Faithful in little, faithful in much. Luke 16:10. Good day, crew.",
+  "You never coasted once today. Proud to have you on the crew.",
+  "Long harvest push. You brought it home. Go rest now.",
+  "The sleep of the laborer is sweet. Ecclesiastes 5:12. Sleep well tonight.",
+  "That was honest, hard work. Now go enjoy the quiet.",
+  "You handled the long day without complaint. Respect, crew.",
+  "Let the beauty of the Lord be upon us and establish our work. Psalm 90:17.",
+  "Job done right, day done well. Head home, crew.",
+  "You earned the couch and the supper both tonight. Enjoy.",
+  "Whatever you do, work at it with all your heart. Colossians 3:23.",
+  "Big grind today, and you never let up. Well done, crew.",
+  "Sun's setting on a good day's work. Time to head in.",
+  "Come to me and I will give you rest. Matthew 11:28. Rest well.",
+  "You put the work in and it shows. Now go put your feet up.",
+  "Long cold morning, warm honest finish. Proud of you today.",
+  "The diligent will rule. Proverbs 12:24. You ruled the day.",
+  "That's a day well spent. Head home and slow down, crew.",
+  "You gave it all you had out there. Rest is yours tonight.",
+  "In all toil there is profit. Proverbs 14:23. Go enjoy yours.",
+  "Fences fixed, day finished. Head home safe and rest.",
+  "You made today count in every hour. Well done, crew.",
+  "May the work of your hands be blessed. Psalm 90:17. Good day.",
+  "Long day under a big prairie sky. Go find your rest.",
+  "You showed up and outworked the tough hours. Proud of you.",
+  "Enjoy the good of all your labor. Ecclesiastes 3:13. Supper time.",
+  "That was a full and honest day. Now go take it easy.",
+  "Boots off, day done, evening yours. You earned it, crew.",
+  "The hardworking farmer should be first to share the crops. 2 Timothy 2:6.",
+  "You carried a heavy day well. Now set it down and rest.",
+  "Job wrapped and wrapped right. Head home, crew, and unwind.",
+  "Be strong and do the work, for the Lord is with you. 1 Chronicles 28:20. Rest now.",
+  "You brought steady effort all day long. Nice work, crew.",
+  "Time to head in from the cold and warm up. You earned it.",
+  "Those who sow in tears will reap with songs of joy. Psalm 126:5. Rest tonight.",
+  "That was a grinder of a day and you won it. Proud of you.",
+  "Supper, family, and rest ahead. You earned the whole evening.",
+  "The one unwilling to work shall not eat. 2 Thessalonians 3:10. You more than earned yours.",
+  "You gave the ranch a full day. Now the evening's all yours.",
+  "Long day done right. Feet up and let it go, crew.",
+  "Commit your work to the Lord and it will succeed. Proverbs 16:3.",
+  "You never quit when it got hard today. That's real grit.",
+  "Home you go, crew. Rest up, you more than earned it.",
+  "You will eat the fruit of your labor, and it will go well. Psalm 128:2.",
+  "That's a wrap on a hard, honest day. Head home proud.",
+  "You outlasted the long day and finished strong. Well done, crew.",
+  "Do not grow weary in doing good, the harvest will come. Galatians 6:9.",
+  "You gave today your muscle, your patience, and your heart. Rest now.",
+  "Well done, good and faithful worker. Matthew 25:23. Rest easy, crew.",
+  "You handled every hour like a pro today. Proud of you, crew."
+];$
+
+/* ============================================================================
+ * STATE
+ * ==========================================================================*/
+const S = {
+  idToken: null,
+  me: null,            // {email,name,role,permissions,hourlyRate,picture}
+  companies: [],
+  config: {},
+  entries: [],
+  openEntry: null,     // live open entry (running clock)
+  employees: [],
+  pending: [],
+  tab: 'clock',
+  online: navigator.onLine,
+  booted: false,
+};
+
+/* ============================================================================
+ * OFFLINE QUEUE (IndexedDB)
+ * ==========================================================================*/
+const DB = (() => {
+  let dbp = null;
+  function open(){
+    if (dbp) return dbp;
+    dbp = new Promise((res, rej) => {
+      const r = indexedDB.open('pcw-timesheet', 1);
+      r.onupgradeneeded = () => {
+        const db = r.result;
+        if (!db.objectStoreNames.contains('queue')) db.createObjectStore('queue', {keyPath:'qid'});
+        if (!db.objectStoreNames.contains('cache')) db.createObjectStore('cache', {keyPath:'k'});
+      };
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    return dbp;
+  }
+  async function tx(store, mode){ const db = await open(); return db.transaction(store, mode).objectStore(store); }
+  return {
+    async enqueue(item){ const s = await tx('queue','readwrite'); return new Promise((res,rej)=>{ const r=s.put(item); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error);}); },
+    async all(){ const s = await tx('queue','readonly'); return new Promise((res,rej)=>{ const r=s.getAll(); r.onsuccess=()=>res(r.result||[]); r.onerror=()=>rej(r.error);}); },
+    async del(qid){ const s = await tx('queue','readwrite'); return new Promise((res,rej)=>{ const r=s.delete(qid); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error);}); },
+    async setCache(k,v){ const s=await tx('cache','readwrite'); return new Promise((res)=>{ s.put({k,v}).onsuccess=()=>res(); }); },
+    async getCache(k){ const s=await tx('cache','readonly'); return new Promise((res)=>{ const r=s.get(k); r.onsuccess=()=>res(r.result?r.result.v:null); r.onerror=()=>res(null); }); },
+  };
+})();
+
+/* ============================================================================
+ * API — POST to Apps Script with text/plain to avoid CORS preflight.
+ * ==========================================================================*/
+async function api(action, payload){
+  if (!S.idToken) throw new Error('Not signed in');
+  const res = await fetch(CONFIG.APPS_SCRIPT_URL, {
+    method:'POST',
+    headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body: JSON.stringify({ idToken:S.idToken, action, payload: payload||{} }),
+  });
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.error || 'Request failed');
+  return json.data;
+}
+
+/* Queue a mutating action when offline; returns {queued:true} or the server result. */
+async function apiMutate(action, payload, optimistic){
+  if (S.online){
+    try { return await api(action, payload); }
+    catch(e){ if (!/Failed to fetch|NetworkError/i.test(e.message)) throw e; /* fall through to queue */ }
+  }
+  const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+  await DB.enqueue({ qid, action, payload, ts: Date.now(), tempId: optimistic && optimistic.tempId });
+  return { queued:true, qid };
+}
+
+let syncing = false;
+async function flushQueue(){
+  if (syncing || !S.online || !S.idToken) return;
+  syncing = true;
+  try {
+    const items = (await DB.all()).sort((a,b)=>a.ts-b.ts);
+    const idMap = {}; // tempId -> real EntryID
+    for (const it of items){
+      const p = { ...it.payload };
+      // remap any temp entryId to the real one produced earlier in this flush
+      if (p.entryId && idMap[p.entryId]) p.entryId = idMap[p.entryId];
+      try {
+        const data = await api(it.action, p);
+        if (it.tempId && data && data.entry && data.entry.EntryID) idMap[it.tempId] = data.entry.EntryID;
+        await DB.del(it.qid);
+      } catch(e){
+        // stop on first hard failure to preserve order; will retry next time
+        if (/Failed to fetch|NetworkError/i.test(e.message)) break;
+        // permanent error (e.g. validation) — drop it so the queue doesn't jam, and log
+        console.warn('Dropping queued action', it.action, e.message);
+        await DB.del(it.qid);
+      }
+    }
+  } finally {
+    syncing = false;
+  }
+  await refresh(true);
+}
+
+/* ============================================================================
+ * AUTH (Google Identity Services)
+ * ==========================================================================*/
+function decodeJwt(t){ try { return JSON.parse(atob(t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); } catch(e){ return {}; } }
+
+function onCredential(resp){
+  S.idToken = resp.credential;
+  const p = decodeJwt(resp.credential);
+  S.me = S.me || { email:p.email, name:p.name, picture:p.picture };
+  DB.setCache('idToken', resp.credential);
+  boot();
+}
+
+function initAuth(){
+  if (!window.google || !google.accounts) { setTimeout(initAuth, 300); return; }
+  google.accounts.id.initialize({
+    client_id: CONFIG.GOOGLE_CLIENT_ID,
+    callback: onCredential,
+    auto_select: true,
+    itp_support: true,
+  });
+  if (!S.idToken){
+    render(); // shows sign-in screen with the button placeholder
+    const holder = document.getElementById('gbtn');
+    if (holder) google.accounts.id.renderButton(holder, {theme:'filled_black', size:'large', width:320, text:'signin_with'});
+    google.accounts.id.prompt(); // one-tap / auto
+  }
+}
+function signOut(){
+  S.idToken=null; S.me=null; S.booted=false;
+  DB.setCache('idToken', null);
+  try{ google.accounts.id.disableAutoSelect(); }catch(e){}
+  render();
+  initAuth();
+}
+
+/* ============================================================================
+ * BOOT / REFRESH
+ * ==========================================================================*/
+async function boot(){
+  try {
+    render(true); // loading
+    const data = await api('bootstrap');
+    applyBootstrap(data);
+    S.booted = true;
+    await DB.setCache('bootstrap', data);
+    flushQueue();
+    render();
+  } catch(e){
+    // offline or error — try cached bootstrap so the app still opens
+    const cached = await DB.getCache('bootstrap');
+    if (cached){ applyBootstrap(cached); S.booted = true; render(); toast('Offline — showing last synced data'); }
+    else { toast(e.message); render(); }
+  }
+}
+function applyBootstrap(d){
+  S.me = d.me; S.companies = d.companies; S.config = d.config;
+  S.entries = d.entries||[]; S.openEntry = d.openEntry||null;
+  S.employees = d.employees||[]; S.pending = d.pending||[];
+}
+async function refresh(silent){
+  if (!S.idToken || !S.online) return;
+  try { const d = await api('bootstrap'); applyBootstrap(d); await DB.setCache('bootstrap', d); render(); }
+  catch(e){ if(!silent) toast(e.message); }
+}
+
+/* ============================================================================
+ * GPS
+ * ==========================================================================*/
+function getGps(timeoutMs){
+  return new Promise((res)=>{
+    if (!navigator.geolocation) return res(null);
+    let done=false; const finish=(v)=>{ if(!done){done=true; res(v);} };
+    navigator.geolocation.getCurrentPosition(
+      (pos)=>finish({lat:pos.coords.latitude, lng:pos.coords.longitude, acc:pos.coords.accuracy}),
+      ()=>finish(null),
+      {enableHighAccuracy:true, timeout: timeoutMs||8000, maximumAge:30000}
+    );
+    setTimeout(()=>finish(null), (timeoutMs||8000)+500);
+  });
+}
+
+/* ============================================================================
+ * ACTIONS
+ * ==========================================================================*/
+async function doClockIn(payload){
+  const gps = await getGps();
+  const tempId = 'tmp_' + Date.now();
+  // optimistic local open entry
+  S.openEntry = { EntryID: tempId, ClockIn: new Date().toISOString(), Company: payload.company||'',
+    'Customer/Job Site': payload.jobSite||'', 'PO#': payload.poNumber||'', Status:'approved', Source:'live', _local:true };
+  render();
+  const r = await apiMutate('clockIn', { ...payload, gps }, { tempId });
+  if (r && r.entry) S.openEntry = r.entry;
+  await refresh(true);
+  toast(r && r.queued ? 'Clocked in (will sync)' : 'Clocked in');
+}
+async function doClockOut(extra){
+  if (!S.openEntry) return;
+  const gps = await getGps();
+  const entryId = S.openEntry.EntryID;
+  const started = new Date(S.openEntry.ClockIn);
+  const hrs = Math.round(((Date.now()-started)/3600000)*100)/100;
+  const closing = S.openEntry; S.openEntry = null; render();
+  const r = await apiMutate('clockOut', { entryId, gps, notes:(extra&&extra.notes)||'' }, { tempId: entryId });
+  await refresh(true);
+  showEncouragement(hrs, r && r.weekOvertime);
+}
+async function doSwitchSite(payload){
+  const gps = await getGps();
+  await apiMutate('switchJobSite', { ...payload, gps });
+  await refresh(true);
+  toast('Switched job site');
+}
+
+/* ============================================================================
+ * RENDER
+ * ==========================================================================*/
+/* Object registry: avoids embedding JSON in HTML attributes (which breaks on
+   apostrophes like "O'Brien Ranch"). Handlers pass a short key instead. */
+let _regN=0;
+function reg(obj){ const k='r'+(_regN++); (S._reg||(S._reg={}))[k]=obj; return k; }
+function dereg(k){ return (S._reg||{})[k]; }
+function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtTime(iso){ if(!iso) return '—'; const d=new Date(iso); return d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}); }
+function fmtDay(iso){ if(!iso) return ''; return new Date(iso).toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'}); }
+
+function render(loading){
+  S._reg = {}; // reset per render; sheets/suggestions register fresh keys
+  const app = document.getElementById('app');
+  if (loading){ app.innerHTML = '<div class="wrap center" style="margin-top:40vh"><span class="spin"></span><p class="muted">Loading…</p></div>'; return; }
+  if (!S.idToken || !S.booted){ app.innerHTML = signInView(); return; }
+  let body='';
+  if (S.tab==='clock') body = clockView();
+  else if (S.tab==='entries') body = entriesView();
+  else if (S.tab==='admin') body = adminView();
+  else if (S.tab==='team') body = teamView();
+  app.innerHTML = `<div class="wrap">${topBar()}${offlineBanner()}${body}</div>${tabBar()}`;
+  wire();
+}
+
+function signInView(){
+  return `<div class="wrap center" style="margin-top:22vh">
+    <h1>PCW / PRO Timesheet</h1>
+    <p class="muted">Peace Country Wagyu &amp; PRO Electrical</p>
+    <div class="card">
+      <p>Sign in with your work Google account to clock in.</p>
+      <div id="gbtn" style="display:flex;justify-content:center"></div>
+      <p class="small muted" style="margin-top:14px">Your account must be added by an admin first.</p>
+    </div>
+  </div>`;
+}
+
+function topBar(){
+  const m=S.me||{};
+  return `<div class="row between" style="margin-bottom:6px">
+    <div class="row"><img class="avatar" src="${esc(m.picture||'')}" onerror="this.style.visibility='hidden'"><div>
+      <div style="font-weight:700">${esc(m.name||m.email||'')}</div>
+      <div class="small muted">${esc(m.role||'')}${m.hourlyRate?(' · $'+m.hourlyRate+'/hr'):''}</div>
+    </div></div>
+    <button class="ghost" onclick="signOut()">Sign out</button>
+  </div>`;
+}
+function offlineBanner(){
+  let h='';
+  if (!S.online) h += `<div class="banner offline">Offline — entries are saved on your phone and will sync automatically.</div>`;
+  return h;
+}
+
+/* ----- CLOCK TAB ----- */
+function clockView(){
+  const totals = periodTotals();
+  let ot = weekHours() > (S.config.otThreshold||44)
+    ? `<div class="banner ot">⚠ Overtime: ${weekHours().toFixed(1)} hrs this week (over ${S.config.otThreshold||44}).</div>` : '';
+  if (S.openEntry){
+    const site = S.openEntry['Customer/Job Site'] || S.openEntry.Company || 'Working';
+    return `${ot}
+      <div class="card center">
+        <div class="pill live">On the clock</div>
+        <h2 style="margin:.4em 0">${esc(site)}</h2>
+        ${S.openEntry['PO#']?`<div class="small muted">PO ${esc(S.openEntry['PO#'])}</div>`:''}
+        <div class="timer" id="runningTimer">0:00:00</div>
+        <div class="small muted">since ${fmtTime(S.openEntry.ClockIn)}</div>
+        <button class="bigbtn out" style="margin-top:16px" onclick="openClockOut()">Clock Out</button>
+        <button class="secondary" style="width:100%;margin-top:10px" onclick="openJobPicker(true)">Switch Job Site</button>
+      </div>
+      ${periodCard(totals)}`;
+  }
+  return `${ot}
+    <div class="card center">
+      <p class="muted">Not clocked in</p>
+      <button class="bigbtn in" onclick="openJobPicker(false)">Clock In</button>
+    </div>
+    ${periodCard(totals)}`;
+}
+function periodCard(t){
+  return `<div class="card">
+    <div class="row between"><h3>This pay period</h3><span class="small muted">${esc(currentPeriodLabel())}</span></div>
+    <div class="row between"><span>Approved</span><b>${t.approved.toFixed(1)} hrs</b></div>
+    <div class="row between"><span class="muted">Pending</span><span class="muted">${t.pending.toFixed(1)} hrs</span></div>
+    <div class="row between"><span class="muted">This week</span><span class="muted">${weekHours().toFixed(1)} hrs</span></div>
+  </div>`;
+}
+
+/* ----- ENTRIES TAB ----- */
+function entriesView(){
+  const items = (S.entries||[]);
+  const rows = items.length ? items.map(e=>entryRow(e)).join('') : '<p class="muted center">No entries yet.</p>';
+  return `<div class="row between"><h2>My entries</h2><button class="secondary" onclick="openManual()">+ Manual</button></div>
+    <div class="card">${rows}</div>`;
+}
+function entryRow(e, employeeEmail){
+  const canEdit = (e.Status!=='approved') || S.me.role==='admin';
+  const site = e['Customer/Job Site'] || e.Company || '—';
+  const k = reg({ e, employeeEmail: employeeEmail || S.me.email });
+  return `<div class="list-item">
+    <div class="row between">
+      <div><b>${esc(site)}</b> ${e['PO#']?`<span class="small muted">PO ${esc(e['PO#'])}</span>`:''}</div>
+      <span class="pill ${esc(e.Status)}">${esc(e.Status)}</span>
+    </div>
+    <div class="row between small muted">
+      <span>${fmtDay(e.ClockIn||e.Date)} · ${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)}</span>
+      <span>${e.Hours!==''&&e.Hours!=null?('<b style=\"color:var(--text)\">'+e.Hours+' hrs</b>'):''}</span>
+    </div>
+    ${e.Notes?`<div class="small" style="margin-top:4px">${esc(e.Notes)}</div>`:''}
+    ${e.Status==='rejected'&&e['Reject Note']?`<div class="small" style="color:#f87171">Rejected: ${esc(e['Reject Note'])}</div>`:''}
+    ${e.Media?`<div class="small"><a href="${esc(String(e.Media).split(' | ')[0])}" target="_blank" style="color:var(--accent2)">📎 media</a></div>`:''}
+    <div class="row" style="margin-top:6px">
+      ${canEdit?`<button class="ghost" onclick="openEditEntry('${k}')">Edit</button>`:''}
+      <button class="ghost" onclick="openUpload('${k}')">Add photo/video</button>
+    </div>
+  </div>`;
+}
+
+/* ----- TEAM (bookkeeper/admin read) ----- */
+function teamView(){
+  const emps = S.employees||[];
+  return `<h2>Team</h2>
+    <div class="card">${emps.map(emp=>`
+      <div class="list-item row between">
+        <div><b>${esc(emp.name)}</b><div class="small muted">${esc(emp.email)} · ${esc(emp.role)}${emp.active?'':' · inactive'}</div></div>
+        <button class="ghost" onclick="viewEmployee('${esc(emp.email)}')">View</button>
+      </div>`).join('')}</div>`;
+}
+
+/* ----- ADMIN TAB ----- */
+function adminView(){
+  const pend = S.pending||[];
+  const emps = S.employees||[];
+  return `<h2>Admin</h2>
+    <div class="card">
+      <div class="row between"><h3>Pending approvals</h3><span class="pill pending">${pend.length}</span></div>
+      ${pend.length? pend.map(pendRow).join('') : '<p class="muted small">Nothing waiting. 🎉</p>'}
+    </div>
+    <div class="card">
+      <div class="row between"><h3>Employees</h3><button class="secondary" onclick="openAddEmployee()">+ Add</button></div>
+      ${emps.map(empAdminRow).join('')}
+    </div>
+    <div class="card">
+      <h3>Payroll</h3>
+      <p class="small muted">Export approved hours for the current pay period.</p>
+      <button onclick="exportPayroll()">Download CSV</button>
+      <button class="ghost" onclick="openActivityLog()">View activity log</button>
+    </div>`;
+}
+function pendRow(e){
+  return `<div class="list-item">
+    <div class="row between"><b>${esc(e._name||e._employee)}</b><span class="small muted">${fmtDay(e.ClockIn||e.Date)}</span></div>
+    <div class="small muted">${esc(e['Customer/Job Site']||e.Company)} · ${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)} · ${e.Hours||'?'} hrs</div>
+    ${e.Notes?`<div class="small">${esc(e.Notes)}</div>`:''}
+    <div class="row" style="margin-top:8px">
+      <button class="grow" onclick="approve('${esc(e._employee)}','${esc(e.EntryID)}')">Approve</button>
+      <button class="grow danger" onclick="reject('${esc(e._employee)}','${esc(e.EntryID)}')">Reject</button>
+    </div>
+  </div>`;
+}
+function empAdminRow(emp){
+  return `<div class="list-item row between">
+    <div><b>${esc(emp.name)}</b><div class="small muted">${esc(emp.email)} · ${esc(emp.role)} · $${emp.hourlyRate||0}/hr${emp.active?'':' · inactive'}</div></div>
+    <button class="ghost" onclick="openEmployee('${esc(emp.email)}')">Manage</button>
+  </div>`;
+}
+
+/* ----- TAB BAR ----- */
+function tabBar(){
+  const isAdmin = S.me && S.me.role==='admin';
+  const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
+  const t=(id,ic,label)=>`<button class="${S.tab===id?'active':''}" onclick="go('${id}')"><span class="ic">${ic}</span>${label}</button>`;
+  return `<div class="tabbar">
+    ${t('clock','⏱','Clock')}
+    ${t('entries','📋','Entries')}
+    ${canTeam?t('team','👥','Team'):''}
+    ${isAdmin?t('admin','⚙️','Admin'):''}
+  </div>`;
+}
+function go(tab){ S.tab=tab; render(); }
+
+/* ============================================================================
+ * TIMER + TOTALS
+ * ==========================================================================*/
+let timerInt=null;
+function tickTimer(){
+  const node=document.getElementById('runningTimer');
+  if (!node || !S.openEntry){ if(timerInt){clearInterval(timerInt); timerInt=null;} return; }
+  const ms = Date.now()-new Date(S.openEntry.ClockIn).getTime();
+  const s=Math.floor(ms/1000); const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), ss=s%60;
+  node.textContent = `${h}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+}
+function currentPeriodLabel(){
+  const d=new Date();
+  if ((S.config.payPeriodType||'SEMI_MONTHLY')==='MONTHLY') return d.toLocaleDateString([], {month:'long', year:'numeric'});
+  const half = d.getDate()<=15 ? '1st–15th' : '16th–end';
+  return d.toLocaleDateString([], {month:'long'}) + ' ' + half;
+}
+function inCurrentPeriod(e){
+  const d = new Date(e.ClockIn||e.Date); const n=new Date();
+  if (d.getFullYear()!==n.getFullYear() || d.getMonth()!==n.getMonth()) return false;
+  if ((S.config.payPeriodType||'SEMI_MONTHLY')==='MONTHLY') return true;
+  return (d.getDate()<=15) === (n.getDate()<=15);
+}
+function periodTotals(){
+  let approved=0, pending=0;
+  (S.entries||[]).forEach(e=>{ if(!inCurrentPeriod(e)||!e.Hours) return;
+    if(e.Status==='approved') approved+=Number(e.Hours)||0; else if(e.Status==='pending') pending+=Number(e.Hours)||0; });
+  if (S.openEntry && S.openEntry._local){} // running time not counted until clock-out
+  return {approved, pending};
+}
+function weekHours(){
+  const start=new Date(); const day=start.getDay(); const diff=(day===0?6:day-1);
+  start.setHours(0,0,0,0); start.setDate(start.getDate()-diff);
+  let total=0;
+  (S.entries||[]).forEach(e=>{ const t=new Date(e.ClockIn||e.Date); if(t>=start && e.Status!=='rejected') total+=Number(e.Hours)||0; });
+  return total;
+}
+
+/* ============================================================================
+ * MODALS / SHEETS
+ * ==========================================================================*/
+function sheet(inner){
+  closeSheet();
+  const s = el(`<div class="sheet" onclick="if(event.target===this)closeSheet()"><div class="panel">${inner}</div></div>`);
+  document.body.appendChild(s); S._sheet=s;
+}
+function closeSheet(){ if(S._sheet){ S._sheet.remove(); S._sheet=null; } }
+
+/* ---- Job / customer picker ---- */
+let pickerState = null;
+function openJobPicker(isSwitch){
+  pickerState = { isSwitch, mode:null, company:'', jobSite:'', poNumber:'', isNew:false, newType:'', notes:'' };
+  renderPicker();
+}
+function renderPicker(){
+  const comp = S.companies.map(c=>`<span class="chip ${pickerState.company===c?'sel':''}" onclick="pickCompany('${esc(c)}')">${esc(c)}</span>`).join('');
+  sheet(`
+    <h2>${pickerState.isSwitch?'Switch to…':'Clock in'}</h2>
+    <label>Internal company time (no PO)</label>
+    <div>${comp}</div>
+    <label style="margin-top:14px">…or a customer / job site</label>
+    <input id="custSearch" placeholder="Search or add customer…" autocomplete="off"
+      oninput="onCustSearch(this.value)" value="${esc(pickerState.jobSite)}">
+    <div id="suggest"></div>
+    ${pickerState.poNumber?`<div class="small" style="color:var(--accent2)">PO ${esc(pickerState.poNumber)}</div>`:''}
+    <label style="margin-top:12px">Notes (optional)</label>
+    <textarea id="pnotes" rows="2" placeholder="What are you working on?">${esc(pickerState.notes)}</textarea>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Cancel</button>
+      <button class="grow" onclick="submitPicker()">${pickerState.isSwitch?'Switch':'Clock in'}</button>
+    </div>
+  `);
+}
+function pickCompany(c){ pickerState.company=c; pickerState.jobSite=''; pickerState.poNumber=''; pickerState.isNew=false; pickerState.newType='';
+  const inp=document.getElementById('custSearch'); if(inp) inp.value=''; document.getElementById('suggest').innerHTML=''; renderPicker(); }
+
+let custDebounce=null;
+let custResults=[];   // index-referenced by suggestion clicks (apostrophe-safe, render-safe)
+function onCustSearch(q){
+  pickerState.jobSite=q; pickerState.company=''; pickerState.poNumber=''; pickerState.isNew=false; pickerState.newType='';
+  clearTimeout(custDebounce);
+  custDebounce=setTimeout(async()=>{
+    const box=document.getElementById('suggest'); if(!box) return;
+    if (!q.trim()){ box.innerHTML=''; return; }
+    if (!S.online){ box.innerHTML=`<div class="suggest"><div onclick="chooseNewCustomer()">➕ Add “${esc(q)}” (offline — PO assigned on sync)</div></div>`; return; }
+    try{
+      const r = await api('searchCustomers',{query:q});
+      custResults=[]; let h='';
+      (r.matches||[]).forEach(c=>{ const i=custResults.push(c)-1; h+=`<div onclick="chooseCustomer(${i})">${esc(c.name)} ${c.po?`<span class="small muted">PO ${esc(c.po)}</span>`:''}</div>`; });
+      (r.suggestions||[]).forEach(c=>{ const i=custResults.push(c)-1; h+=`<div onclick="chooseCustomer(${i})">Did you mean <b>${esc(c.name)}</b>? ${c.po?`<span class="small muted">PO ${esc(c.po)}</span>`:''}</div>`; });
+      const exact=(r.matches||[]).some(c=>c.name.toLowerCase()===q.trim().toLowerCase());
+      if(!exact) h+=`<div onclick="chooseNewCustomer()">➕ Add new customer “${esc(q)}”</div>`;
+      box.innerHTML=`<div class="suggest">${h}</div>`;
+    }catch(e){ box.innerHTML=`<div class="small muted">${esc(e.message)}</div>`; }
+  },250);
+}
+function chooseCustomer(i){ const c=custResults[i]; if(!c) return;
+  pickerState.jobSite=c.name; pickerState.poNumber=c.po||''; pickerState.isNew=false;
+  document.getElementById('suggest').innerHTML=''; document.getElementById('custSearch').value=c.name; renderPicker(); }
+function chooseNewCustomer(){
+  // Ask the job type first — it determines the PO letter (Commercial=C, Residential=R, Industrial=I).
+  const q=pickerState.jobSite.trim(); if(!q) return;
+  const box=document.getElementById('suggest'); if(!box) return;
+  box.innerHTML=`<div class="suggest">
+    <div class="small muted" style="border-bottom:1px solid var(--line)">What type of job is “${esc(q)}”?</div>
+    <div style="padding:10px 14px">
+      <span class="chip" onclick="createNewCustomer('Commercial')">Commercial</span>
+      <span class="chip" onclick="createNewCustomer('Residential')">Residential</span>
+      <span class="chip" onclick="createNewCustomer('Industrial')">Industrial</span>
+    </div></div>`;
+}
+async function createNewCustomer(type, force){
+  const q=pickerState.jobSite.trim(); if(!q) return;
+  pickerState.newType=type;
+  if(!S.online){
+    pickerState.isNew=true;
+    const box=document.getElementById('suggest'); if(box) box.innerHTML=`<div class="small muted">Will create ${esc(type)} job “${esc(q)}” and assign its PO when back online.</div>`;
+    return;
+  }
+  try{
+    const box=document.getElementById('suggest'); if(box) box.innerHTML='<span class="spin"></span>';
+    const r=await api('createCustomer',{name:q, type, force: !!force});
+    if(r.duplicate){
+      custResults=[r.existing];
+      box.innerHTML=`<div class="suggest"><div onclick="chooseCustomer(0)">Use existing <b>${esc(r.existing.name)}</b> (PO ${esc(r.existing.po)})</div><div onclick="createNewCustomer('${esc(type)}', true)">No, create a new ${esc(type)} PO anyway</div></div>`;
+      return;
+    }
+    pickerState.jobSite=r.customer.name; pickerState.poNumber=r.customer.po; pickerState.isNew=false;
+    renderPicker(); toast(`New ${type} job — PO ${r.customer.po}`);
+  }catch(e){ toast(e.message); }
+}
+async function submitPicker(){
+  const notes=(document.getElementById('pnotes')||{}).value||'';
+  const p={ company:pickerState.company, jobSite:pickerState.jobSite, poNumber:pickerState.poNumber, notes, newCustomer:pickerState.isNew, newType:pickerState.newType };
+  if (!p.company && !p.jobSite){ toast('Pick a company or a job site'); return; }
+  closeSheet();
+  if (pickerState.isSwitch) await doSwitchSite(p); else await doClockIn(p);
+}
+
+/* ---- Clock out ---- */
+function openClockOut(){
+  sheet(`<h2>Clock out</h2>
+    <p class="muted small">${esc(S.openEntry['Customer/Job Site']||S.openEntry.Company||'')}</p>
+    <label>Add a note (optional)</label>
+    <textarea id="outNotes" rows="2" placeholder="Anything to record?"></textarea>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Cancel</button>
+      <button class="grow" onclick="confirmClockOut()">Clock out</button>
+    </div>`);
+}
+async function confirmClockOut(){ const notes=(document.getElementById('outNotes')||{}).value||''; closeSheet(); await doClockOut({notes}); }
+
+/* ---- Manual entry ---- */
+function openManual(){
+  const today=new Date().toISOString().slice(0,10);
+  sheet(`<h2>Manual entry</h2>
+    <p class="small muted">Flagged for admin approval. You can edit it until it's approved.</p>
+    <label>Date</label><input id="mDate" type="date" value="${today}">
+    <div class="row"><div class="grow"><label>Clock in</label><input id="mIn" type="time"></div>
+      <div class="grow"><label>Clock out</label><input id="mOut" type="time"></div></div>
+    <label>Company (optional)</label>
+    <select id="mCompany"><option value="">— none —</option>${S.companies.map(c=>`<option>${esc(c)}</option>`).join('')}</select>
+    <label>Customer / job site (optional)</label><input id="mSite" placeholder="Job site">
+    <label>Notes</label><textarea id="mNotes" rows="2"></textarea>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Cancel</button>
+      <button class="grow" onclick="submitManual()">Submit</button>
+    </div>`);
+}
+async function submitManual(){
+  const p={ date:val('mDate'), clockIn:val('mIn'), clockOut:val('mOut'), company:val('mCompany'), jobSite:val('mSite'), notes:val('mNotes') };
+  if(!p.date||!p.clockIn||!p.clockOut){ toast('Date, in and out are required'); return; }
+  closeSheet();
+  await apiMutate('addManualEntry', p);
+  await refresh(true); toast('Submitted for approval');
+}
+
+/* ---- Edit entry ---- */
+function openEditEntry(k){
+  const ref=dereg(k); if(!ref) return; const e=ref.e; const emp=ref.employeeEmail;
+  const inT = e.ClockIn? new Date(e.ClockIn).toTimeString().slice(0,5):'';
+  const outT= e.ClockOut? new Date(e.ClockOut).toTimeString().slice(0,5):'';
+  const date=(e.ClockIn||e.Date||'').slice(0,10);
+  sheet(`<h2>Edit entry</h2>
+    <label>Date</label><input id="eDate" type="date" value="${esc(date)}">
+    <div class="row"><div class="grow"><label>In</label><input id="eIn" type="time" value="${esc(inT)}"></div>
+      <div class="grow"><label>Out</label><input id="eOut" type="time" value="${esc(outT)}"></div></div>
+    <label>Customer / job site</label><input id="eSite" value="${esc(e['Customer/Job Site']||'')}">
+    <label>Notes</label><textarea id="eNotes" rows="2">${esc(e.Notes||'')}</textarea>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Cancel</button>
+      <button class="grow" onclick="submitEdit('${esc(e.EntryID)}','${esc(emp)}')">Save</button>
+    </div>`);
+}
+async function submitEdit(entryId, employeeEmail){
+  const date=val('eDate');
+  const p={ entryId, employeeEmail,
+    date, clockIn: date&&val('eIn')? new Date(date+'T'+val('eIn')).toISOString():undefined,
+    clockOut: date&&val('eOut')? new Date(date+'T'+val('eOut')).toISOString():undefined,
+    jobSite: val('eSite'), notes: val('eNotes') };
+  closeSheet();
+  await apiMutate('editEntry', p);
+  await refresh(true); toast('Saved');
+}
+
+/* ---- Media upload ---- */
+function openUpload(k){
+  const ref=dereg(k); if(!ref) return; const e=ref.e;
+  const jobSite = e['Customer/Job Site']||e.Company||'Unassigned';
+  const uk = reg({ entryId:e.EntryID, employeeEmail:ref.employeeEmail, jobSite });
+  sheet(`<h2>Add photo / video</h2>
+    <p class="small muted">Saved to the “${esc(jobSite)}” folder in Drive.</p>
+    <label>Take or choose a file</label>
+    <input id="mediaFile" type="file" accept="image/*,video/*" capture="environment" onchange="stageUpload(this)">
+    <div id="uploadStatus" class="small muted"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Close</button>
+      <button class="grow" id="upBtn" disabled onclick="doUpload('${uk}')">Upload</button>
+    </div>`);
+}
+let stagedFile=null;
+function stageUpload(input){
+  stagedFile=input.files[0]; const st=document.getElementById('uploadStatus'); const b=document.getElementById('upBtn');
+  if(!stagedFile){ b.disabled=true; return; }
+  const mb=(stagedFile.size/1048576).toFixed(1);
+  st.textContent=`${stagedFile.name} · ${mb} MB`; b.disabled=false;
+  if(stagedFile.size>25*1048576) st.innerHTML+=' <span style="color:#f87171">(large — may be slow)</span>';
+}
+async function doUpload(uk){
+  const ref=dereg(uk); if(!ref) return; const {entryId, employeeEmail, jobSite}=ref;
+  if(!stagedFile) return;
+  const st=document.getElementById('uploadStatus'); st.innerHTML='<span class="spin"></span> uploading…';
+  try{
+    const dataBase64 = await fileToB64(stagedFile);
+    const r = await apiMutate('uploadMedia', { entryId, employeeEmail, jobSite, filename:stagedFile.name, mimeType:stagedFile.type, dataBase64 });
+    st.textContent = r.queued ? 'Queued — will upload when online.' : 'Uploaded ✓';
+    stagedFile=null; await refresh(true);
+  }catch(e){ st.innerHTML='<span style="color:#f87171">'+esc(e.message)+'</span>'; }
+}
+function fileToB64(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=rej; r.readAsDataURL(file); }); }
+
+/* ---- Admin: approvals ---- */
+async function approve(email,entryId){ try{ await api('approveEntry',{employeeEmail:email,entryId}); toast('Approved'); await refresh(true);}catch(e){toast(e.message);} }
+async function reject(email,entryId){
+  sheet(`<h2>Reject entry</h2><label>Reason (shown to employee)</label>
+    <textarea id="rjNote" rows="3" placeholder="Why is this rejected?"></textarea>
+    <div class="row" style="margin-top:12px"><button class="secondary grow" onclick="closeSheet()">Cancel</button>
+    <button class="grow danger" onclick="confirmReject('${esc(email)}','${esc(entryId)}')">Reject</button></div>`);
+}
+async function confirmReject(email,entryId){ const note=val('rjNote'); closeSheet();
+  try{ await api('rejectEntry',{employeeEmail:email,entryId,note}); toast('Rejected'); await refresh(true);}catch(e){toast(e.message);} }
+
+/* ---- Admin: employees ---- */
+function openAddEmployee(){
+  sheet(`<h2>Add employee</h2>
+    <label>Email (their Google account)</label><input id="aeEmail" type="email" placeholder="name@example.com">
+    <label>Name</label><input id="aeName" placeholder="Full name">
+    <label>Role</label><select id="aeRole"><option value="employee">Employee</option><option value="admin">Admin</option><option value="bookkeeper">Bookkeeper</option></select>
+    <label>Hourly rate</label><input id="aeRate" type="number" step="0.01" value="0">
+    <div class="row" style="margin-top:14px"><button class="secondary grow" onclick="closeSheet()">Cancel</button>
+    <button class="grow" onclick="submitAddEmployee()">Add</button></div>`);
+}
+async function submitAddEmployee(){
+  const p={ email:val('aeEmail'), name:val('aeName'), role:val('aeRole'), hourlyRate:val('aeRate') };
+  if(!p.email){ toast('Email required'); return; }
+  closeSheet();
+  try{ await api('addEmployee',p); toast('Added'); await refresh(true);}catch(e){toast(e.message);}
+}
+function openEmployee(email){
+  const emp=(S.employees||[]).find(e=>e.email===email); if(!emp) return;
+  const perms=emp.permissions||{};
+  const pl=[['approveHours','Approve hours'],['editPastEntries','Edit past entries'],['manageEmployees','Add/remove employees'],
+    ['setRates','Set hourly rates'],['viewAllCompanies','View all companies'],['viewAllEmployees','View all employees'],['exportPayroll','Export payroll']];
+  sheet(`<h2>${esc(emp.name)}</h2><div class="small muted">${esc(emp.email)}</div>
+    <label>Role</label><select id="edRole">${['employee','admin','bookkeeper'].map(r=>`<option ${emp.role===r?'selected':''}>${r}</option>`).join('')}</select>
+    <label>Hourly rate</label><input id="edRate" type="number" step="0.01" value="${emp.hourlyRate||0}">
+    <label>Active</label><select id="edActive"><option value="true" ${emp.active?'selected':''}>Active</option><option value="false" ${!emp.active?'selected':''}>Inactive</option></select>
+    <label>Permissions</label>
+    <div>${pl.map(([k,lbl])=>`<div class="perm"><input type="checkbox" id="pm_${k}" ${perms[k]?'checked':''}><label for="pm_${k}" style="margin:0">${lbl}</label></div>`).join('')}</div>
+    <div class="row" style="margin-top:14px"><button class="secondary grow" onclick="closeSheet()">Close</button>
+    <button class="grow" onclick="saveEmployee('${esc(email)}')">Save</button></div>
+    <button class="ghost" style="color:#f87171;width:100%;margin-top:6px" onclick="removeEmp('${esc(email)}')">Deactivate employee</button>`);
+}
+async function saveEmployee(email){
+  const keys=['approveHours','editPastEntries','manageEmployees','setRates','viewAllCompanies','viewAllEmployees','exportPayroll'];
+  const permissions={}; keys.forEach(k=>permissions[k]=document.getElementById('pm_'+k).checked);
+  const p={ email, role:val('edRole'), hourlyRate:Number(val('edRate'))||0, active: val('edActive')==='true', permissions };
+  closeSheet();
+  try{ await api('updateEmployee',p); await api('setPermissions',{email,permissions}); toast('Saved'); await refresh(true);}catch(e){toast(e.message);}
+}
+async function removeEmp(email){ closeSheet(); try{ await api('removeEmployee',{email}); toast('Deactivated'); await refresh(true);}catch(e){toast(e.message);} }
+
+async function viewEmployee(email){
+  try{ const r=await api('listEntries',{email});
+    const rows=(r.entries||[]).slice(0,60).map(e=>entryRow(e,email)).join('')||'<p class="muted">No entries.</p>';
+    sheet(`<h2>${esc(email)}</h2><div>${rows}</div><button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  }catch(e){toast(e.message);}
+}
+
+/* ---- Admin: payroll + log ---- */
+async function exportPayroll(){
+  try{ const r=await api('exportPayroll',{}); const blob=new Blob([r.csv],{type:'text/csv'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`payroll_${r.period}.csv`; a.click();
+    toast('CSV downloaded');
+  }catch(e){toast(e.message);}
+}
+async function openActivityLog(){
+  try{ const r=await api('activityLog',{limit:100});
+    const rows=(r.log||[]).map(l=>`<div class="list-item small"><b>${esc(l.action)}</b> · ${esc(l.actor)} → ${esc(l.target)} <span class="muted">${fmtDay(l.time)} ${fmtTime(l.time)}</span>${l.detail?`<div class="muted">${esc(l.detail)}</div>`:''}</div>`).join('');
+    sheet(`<h2>Activity log</h2><div>${rows||'<p class="muted">Empty.</p>'}</div><button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  }catch(e){toast(e.message);}
+}
+
+/* ---- Encouragement on clock-out ---- */
+function showEncouragement(hrs, ot){
+  const msg = ENCOURAGEMENTS[Math.floor(dayIndex()) % ENCOURAGEMENTS.length];
+  sheet(`<div class="center">
+    <div style="font-size:2.6rem">✅</div>
+    <h2>Clocked out — ${hrs.toFixed(2)} hrs</h2>
+    <p style="font-size:1.1rem;margin:14px 0">${esc(msg)}</p>
+    ${ot?'<div class="banner ot">You\'re into overtime this week — nice hustle.</div>':''}
+    <button style="width:100%;margin-top:8px" onclick="closeSheet()">Done</button>
+  </div>`);
+}
+function dayIndex(){ // deterministic day-of-year so the message rotates predictably across the year
+  const d=new Date(); const start=new Date(d.getFullYear(),0,0);
+  return Math.floor((d-start)/86400000);
+}
+
+/* ============================================================================
+ * WIRING / HELPERS
+ * ==========================================================================*/
+function val(id){ const e=document.getElementById(id); return e? e.value : ''; }
+function wire(){
+  if (S.openEntry && !timerInt){ timerInt=setInterval(tickTimer,1000); tickTimer(); }
+  if (!S.openEntry && timerInt){ clearInterval(timerInt); timerInt=null; }
+}
+let toastT=null;
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.innerHTML=`<div class="toast">${esc(msg)}</div>`;
+  clearTimeout(toastT); toastT=setTimeout(()=>t.innerHTML='',3200);
+}
+
+/* ============================================================================
+ * ONLINE/OFFLINE + STARTUP
+ * ==========================================================================*/
+window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); });
+window.addEventListener('offline', ()=>{ S.online=false; render(); });
+
+async function start(){
+  // restore token so a returning user doesn't have to tap sign-in every time
+  const cached = await DB.getCache('idToken');
+  if (cached){ S.idToken=cached; S.me=decodeJwt(cached); await boot(); }
+  initAuth();
+  if ('serviceWorker' in navigator){ try{ await navigator.serviceWorker.register('./sw.js'); }catch(e){} }
+  // periodic background sync + refresh while app is open
+  setInterval(()=>{ if(S.online && S.booted){ flushQueue(); } }, 60000);
+}
+window.onCredential=onCredential; // GIS callback
+window.addEventListener('DOMContentLoaded', start);
+</script>
