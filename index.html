@@ -458,12 +458,15 @@ const DB = (() => {
  * ==========================================================================*/
 async function api(action, payload){
   if (!S.idToken) throw new Error('Not signed in');
+  const t0 = performance.now();
   const res = await fetch(CONFIG.APPS_SCRIPT_URL, {
     method:'POST',
     headers:{'Content-Type':'text/plain;charset=utf-8'},
     body: JSON.stringify({ idToken:S.idToken, action, payload: payload||{} }),
   });
   const json = await res.json();
+  // Profiling: total = network + server; `ms` is server-side time reported by the backend.
+  console.debug(`[api] ${action}: ${Math.round(performance.now()-t0)}ms total (server ${json.ms??'?'}ms)`);
   if (!json.ok) throw new Error(json.error || 'Request failed');
   return json.data;
 }
@@ -548,25 +551,28 @@ function signOut(){
  * BOOT / REFRESH
  * ==========================================================================*/
 async function boot(){
+  // Stale-while-revalidate: paint instantly from the cached bootstrap, refresh in background.
+  const cached = await DB.getCache('bootstrap');
+  if (cached){ applyBootstrap(cached); S.booted = true; render(); }
+  else render(true); // first-ever load: show spinner
   try {
-    render(true); // loading
     const data = await api('bootstrap');
     applyBootstrap(data);
     S.booted = true;
     await DB.setCache('bootstrap', data);
     flushQueue();
     render();
+    loadCustomers(); // warm the client-side customer list for instant autocomplete
   } catch(e){
-    // offline or error — try cached bootstrap so the app still opens
-    const cached = await DB.getCache('bootstrap');
-    if (cached){ applyBootstrap(cached); S.booted = true; render(); toast('Offline — showing last synced data'); }
+    if (cached) toast('Showing last synced data — will retry');
     else { toast(e.message); render(); }
   }
 }
 function applyBootstrap(d){
   S.me = d.me; S.companies = d.companies; S.config = d.config;
   S.entries = d.entries||[]; S.openEntry = d.openEntry||null;
-  S.employees = d.employees||[]; S.pending = d.pending||[];
+  S.employees = d.employees||[];
+  if (d.pending !== undefined) S.pending = d.pending; // pending now loads on demand (Admin tab)
 }
 async function refresh(silent){
   if (!S.idToken || !S.online) return;
@@ -594,7 +600,7 @@ function getGps(timeoutMs){
  * ACTIONS
  * ==========================================================================*/
 async function doClockIn(payload){
-  const gps = await getGps();
+  const gps = await getGps(4000); // cap the GPS wait — clock-in shouldn't stall on a slow fix
   const tempId = 'tmp_' + Date.now();
   // optimistic local open entry
   S.openEntry = { EntryID: tempId, ClockIn: new Date().toISOString(), Company: payload.company||'',
@@ -602,24 +608,28 @@ async function doClockIn(payload){
   render();
   const r = await apiMutate('clockIn', { ...payload, gps }, { tempId });
   if (r && r.entry) S.openEntry = r.entry;
-  await refresh(true);
+  refresh(true); // background — UI is already correct optimistically
   toast(r && r.queued ? 'Clocked in (will sync)' : 'Clocked in');
 }
 async function doClockOut(extra){
   if (!S.openEntry) return;
-  const gps = await getGps();
+  const gps = await getGps(4000);
   const entryId = S.openEntry.EntryID;
   const started = new Date(S.openEntry.ClockIn);
-  const hrs = Math.round(((Date.now()-started)/3600000)*100)/100;
+  const gross = (Date.now()-started)/3600000;
+  const brk = breakHrsSoFar(); // open break gets closed at clock-out
+  const netLocal = Math.round(Math.max(0, gross-brk)*100)/100;
   const closing = S.openEntry; S.openEntry = null; render();
   const r = await apiMutate('clockOut', { entryId, gps, notes:(extra&&extra.notes)||'' }, { tempId: entryId });
-  await refresh(true);
-  showEncouragement(hrs, r && r.weekOvertime);
+  refresh(true); // background
+  const net = (r && r.hours!=null) ? r.hours : netLocal;         // server value wins when online
+  const breakHrs = (r && r.breakHrs!=null) ? r.breakHrs : Math.round(brk*100)/100;
+  showEncouragement(net, r && r.weekOvertime, breakHrs);
 }
 async function doSwitchSite(payload){
-  const gps = await getGps();
+  const gps = await getGps(4000);
   await apiMutate('switchJobSite', { ...payload, gps });
-  await refresh(true);
+  refresh(true); // background
   toast('Switched job site');
 }
 
@@ -679,22 +689,65 @@ function offlineBanner(){
 }
 
 /* ----- CLOCK TAB ----- */
+/* Break helpers: break intervals live in the open entry's Breaks JSON column. */
+function openBreaks(){ try{ return JSON.parse((S.openEntry&&S.openEntry['Breaks JSON'])||'[]')||[]; }catch(e){ return []; } }
+function onBreak(){ const b=openBreaks(); return b.length>0 && !b[b.length-1].e; }
+function breakHrsSoFar(){
+  let ms=0; for (const b of openBreaks()) ms += Math.max(0,(b.e?new Date(b.e):new Date()) - new Date(b.s));
+  return ms/3600000;
+}
+/* Jobs worked earlier today (paused, i.e. clocked-out live segments) that aren't the active one. */
+function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function jobKey(e){ return (e.Company||'')+'|'+(e['Customer/Job Site']||'')+'|'+(e['PO#']||''); }
+function pausedToday(){
+  const t=todayStr(), seen={}, out=[];
+  const activeKey = S.openEntry ? jobKey(S.openEntry) : null;
+  for (const e of (S.entries||[])){
+    if (String(e.Date).slice(0,10)!==t || e.Source!=='live' || !e.ClockOut) continue;
+    const k=jobKey(e);
+    if (seen[k] || k===activeKey) continue;
+    seen[k]=1; out.push(e);
+  }
+  return out;
+}
+function pausedCard(){
+  const p=pausedToday(); if(!p.length) return '';
+  return `<div class="card"><h3>Paused today</h3><p class="small muted" style="margin-top:-6px">Tap to jump back onto an earlier job — each stretch logs as its own entry.</p>
+    ${p.map(e=>{ const k=reg({e}); return `<div class="list-item row between">
+      <div><b>${esc(e['Customer/Job Site']||e.Company)}</b>${e['PO#']?` <span class="small muted">PO ${esc(e['PO#'])}</span>`:''}</div>
+      <button class="ghost" onclick="resumeJob('${k}')">▶ Resume</button></div>`; }).join('')}</div>`;
+}
+async function resumeJob(k){
+  const ref=dereg(k); if(!ref) return; const e=ref.e;
+  const p={ company:e.Company||'', jobSite:e['Customer/Job Site']||'', poNumber:e['PO#']||'' };
+  if (S.openEntry) await doSwitchSite(p); else await doClockIn(p);
+}
 function clockView(){
   const totals = periodTotals();
   let ot = weekHours() > (S.config.otThreshold||44)
     ? `<div class="banner ot">⚠ Overtime: ${weekHours().toFixed(1)} hrs this week (over ${S.config.otThreshold||44}).</div>` : '';
   if (S.openEntry){
     const site = S.openEntry['Customer/Job Site'] || S.openEntry.Company || 'Working';
+    const brs = openBreaks();
+    const breaking = onBreak();
+    const brNote = brs.length ? `<div class="small muted">${breaking?'☕ On break since '+fmtTime(brs[brs.length-1].s):'Breaks today: '+(breakHrsSoFar()*60).toFixed(0)+' min'}</div>` : '';
     return `${ot}
       <div class="card center">
-        <div class="pill live">On the clock</div>
+        <div class="pill ${breaking?'pending':'live'}">${breaking?'On break':'On the clock'}</div>
         <h2 style="margin:.4em 0">${esc(site)}</h2>
         ${S.openEntry['PO#']?`<div class="small muted">PO ${esc(S.openEntry['PO#'])}</div>`:''}
         <div class="timer" id="runningTimer">0:00:00</div>
         <div class="small muted">since ${fmtTime(S.openEntry.ClockIn)}</div>
+        ${brNote}
         <button class="bigbtn out" style="margin-top:16px" onclick="openClockOut()">Clock Out</button>
-        <button class="secondary" style="width:100%;margin-top:10px" onclick="openJobPicker(true)">Switch Job Site</button>
+        <div class="row" style="margin-top:10px">
+          ${breaking
+            ? `<button class="secondary grow" onclick="doEndBreak()">▶ Resume Work</button>`
+            : `<button class="secondary grow" onclick="doStartBreak()">☕ Start Break</button>`}
+          <button class="secondary grow" onclick="openJobPicker(true)">⏸ Pause &amp; Switch</button>
+        </div>
       </div>
+      ${pausedCard()}
       ${periodCard(totals)}`;
   }
   return `${ot}
@@ -702,7 +755,22 @@ function clockView(){
       <p class="muted">Not clocked in</p>
       <button class="bigbtn in" onclick="openJobPicker(false)">Clock In</button>
     </div>
+    ${pausedCard()}
     ${periodCard(totals)}`;
+}
+async function doStartBreak(){
+  if (!S.openEntry || onBreak()) return;
+  const arr=openBreaks(); arr.push({s:new Date().toISOString()});
+  S.openEntry['Breaks JSON']=JSON.stringify(arr); render(); // optimistic
+  await apiMutate('startBreak',{entryId:S.openEntry.EntryID});
+  refresh(true);
+}
+async function doEndBreak(){
+  if (!S.openEntry || !onBreak()) return;
+  const arr=openBreaks(); arr[arr.length-1].e=new Date().toISOString();
+  S.openEntry['Breaks JSON']=JSON.stringify(arr); render(); // optimistic
+  await apiMutate('endBreak',{entryId:S.openEntry.EntryID});
+  refresh(true);
 }
 function periodCard(t){
   return `<div class="card">
@@ -731,7 +799,7 @@ function entryRow(e, employeeEmail){
     </div>
     <div class="row between small muted">
       <span>${fmtDay(e.ClockIn||e.Date)} · ${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)}</span>
-      <span>${e.Hours!==''&&e.Hours!=null?('<b style=\"color:var(--text)\">'+e.Hours+' hrs</b>'):''}</span>
+      <span>${e.Hours!==''&&e.Hours!=null?('<b style=\"color:var(--text)\">'+e.Hours+' hrs</b>'+(Number(e['Break Hrs'])?` <span class=\"muted\">(${e['Gross Hours']}h − ${(Number(e['Break Hrs'])*60).toFixed(0)}m brk)</span>`:'')):''}</span>
     </div>
     ${e.Notes?`<div class="small" style="margin-top:4px">${esc(e.Notes)}</div>`:''}
     ${e.Status==='rejected'&&e['Reject Note']?`<div class="small" style="color:#f87171">Rejected: ${esc(e['Reject Note'])}</div>`:''}
@@ -804,7 +872,15 @@ function tabBar(){
     ${isAdmin?t('admin','⚙️','Admin'):''}
   </div>`;
 }
-function go(tab){ S.tab=tab; render(); }
+function go(tab){
+  S.tab=tab; render();
+  if (tab==='admin' && S.online) loadPending();          // fetched on demand, not at boot
+  if (tab==='clock' || tab==='entries') loadCustomers(); // keep autocomplete warm
+}
+async function loadPending(){
+  try{ const r=await api('pendingApprovals'); S.pending=r.pending||[]; if(S.tab==='admin') render(); }
+  catch(e){ /* keep stale list */ }
+}
 
 /* ============================================================================
  * TIMER + TOTALS
@@ -884,23 +960,63 @@ function pickCompany(c){ pickerState.company=c; pickerState.jobSite=''; pickerSt
 
 let custDebounce=null;
 let custResults=[];   // index-referenced by suggestion clicks (apostrophe-safe, render-safe)
+
+/* Client-side customer cache: fetched once (10-min TTL), persisted in IndexedDB so
+   autocomplete is instant — and works offline. Falls back to server search if not loaded. */
+const CUST_TTL = 10*60*1000;
+async function loadCustomers(force){
+  if (!force && S.customers && (Date.now()-S.customersAt) < CUST_TTL) return;
+  const cached = await DB.getCache('customers');
+  if (cached && cached.list){ S.customers=cached.list; S.customersAt=cached.ts; }
+  if (!S.online) return;
+  if (!force && cached && (Date.now()-cached.ts) < CUST_TTL) return;
+  try{
+    const r = await api('customerList');
+    S.customers = r.customers||[]; S.customersAt = Date.now();
+    await DB.setCache('customers', {list:S.customers, ts:S.customersAt});
+  }catch(e){ /* keep whatever we had */ }
+}
+function levJs(a,b){ const m=a.length,n=b.length,dp=[]; for(let i=0;i<=m;i++)dp[i]=[i]; for(let j=0;j<=n;j++)dp[0][j]=j;
+  for(let i=1;i<=m;i++)for(let j=1;j<=n;j++)dp[i][j]=Math.min(dp[i-1][j]+1,dp[i][j-1]+1,dp[i-1][j-1]+(a[i-1]===b[j-1]?0:1)); return dp[m][n]; }
+function similarJs(a,b){ // mirror of the backend's "did you mean" heuristic
+  const at=a.split(/\s+/), bt=b.split(/\s+/);
+  for (const x of at) for (const y of bt){
+    if (x.length>=3 && y.length>=3 && (x.includes(y)||y.includes(x))) return true;
+    if (Math.min(x.length,y.length)>=4 && levJs(x,y)<=2) return true;
+  }
+  return false;
+}
+function localCustSearch(q){
+  const ql=q.trim().toLowerCase(); const matches=[], suggestions=[];
+  for (const c of S.customers){
+    const n=c.name.toLowerCase();
+    if (n.includes(ql)) matches.push(c);
+    else if (similarJs(n,ql)) suggestions.push(c);
+    if (matches.length>=8 && suggestions.length>=5) break;
+  }
+  return { matches:matches.slice(0,8), suggestions:suggestions.slice(0,5) };
+}
+function renderCustResults(r, q){
+  const box=document.getElementById('suggest'); if(!box) return;
+  custResults=[]; let h='';
+  (r.matches||[]).forEach(c=>{ const i=custResults.push(c)-1; h+=`<div onclick="chooseCustomer(${i})">${esc(c.name)} ${c.po?`<span class="small muted">PO ${esc(c.po)}</span>`:''}</div>`; });
+  (r.suggestions||[]).forEach(c=>{ const i=custResults.push(c)-1; h+=`<div onclick="chooseCustomer(${i})">Did you mean <b>${esc(c.name)}</b>? ${c.po?`<span class="small muted">PO ${esc(c.po)}</span>`:''}</div>`; });
+  const exact=(r.matches||[]).some(c=>c.name.toLowerCase()===q.trim().toLowerCase());
+  if(!exact) h+=`<div onclick="chooseNewCustomer()">➕ Add new customer “${esc(q)}”</div>`;
+  box.innerHTML=`<div class="suggest">${h}</div>`;
+}
 function onCustSearch(q){
   pickerState.jobSite=q; pickerState.company=''; pickerState.poNumber=''; pickerState.isNew=false; pickerState.newType='';
   clearTimeout(custDebounce);
+  const haveLocal = !!S.customers;
   custDebounce=setTimeout(async()=>{
     const box=document.getElementById('suggest'); if(!box) return;
     if (!q.trim()){ box.innerHTML=''; return; }
+    if (haveLocal){ renderCustResults(localCustSearch(q), q); return; }  // instant, no network
     if (!S.online){ box.innerHTML=`<div class="suggest"><div onclick="chooseNewCustomer()">➕ Add “${esc(q)}” (offline — PO assigned on sync)</div></div>`; return; }
-    try{
-      const r = await api('searchCustomers',{query:q});
-      custResults=[]; let h='';
-      (r.matches||[]).forEach(c=>{ const i=custResults.push(c)-1; h+=`<div onclick="chooseCustomer(${i})">${esc(c.name)} ${c.po?`<span class="small muted">PO ${esc(c.po)}</span>`:''}</div>`; });
-      (r.suggestions||[]).forEach(c=>{ const i=custResults.push(c)-1; h+=`<div onclick="chooseCustomer(${i})">Did you mean <b>${esc(c.name)}</b>? ${c.po?`<span class="small muted">PO ${esc(c.po)}</span>`:''}</div>`; });
-      const exact=(r.matches||[]).some(c=>c.name.toLowerCase()===q.trim().toLowerCase());
-      if(!exact) h+=`<div onclick="chooseNewCustomer()">➕ Add new customer “${esc(q)}”</div>`;
-      box.innerHTML=`<div class="suggest">${h}</div>`;
-    }catch(e){ box.innerHTML=`<div class="small muted">${esc(e.message)}</div>`; }
-  },250);
+    try{ renderCustResults(await api('searchCustomers',{query:q}), q); }
+    catch(e){ box.innerHTML=`<div class="small muted">${esc(e.message)}</div>`; }
+  }, haveLocal?60:250);
 }
 function chooseCustomer(i){ const c=custResults[i]; if(!c) return;
   pickerState.jobSite=c.name; pickerState.poNumber=c.po||''; pickerState.isNew=false;
@@ -934,6 +1050,7 @@ async function createNewCustomer(type, force){
       return;
     }
     pickerState.jobSite=r.customer.name; pickerState.poNumber=r.customer.po; pickerState.isNew=false;
+    if (S.customers){ S.customers.push({name:r.customer.name, po:r.customer.po}); DB.setCache('customers',{list:S.customers,ts:S.customersAt||Date.now()}); }
     renderPicker(); toast(`New ${type} job — PO ${r.customer.po}`);
   }catch(e){ toast(e.message); }
 }
@@ -966,6 +1083,7 @@ function openManual(){
     <label>Date</label><input id="mDate" type="date" value="${today}">
     <div class="row"><div class="grow"><label>Clock in</label><input id="mIn" type="time"></div>
       <div class="grow"><label>Clock out</label><input id="mOut" type="time"></div></div>
+    <label>Break time (minutes, deducted from hours)</label><input id="mBreak" type="number" min="0" step="5" placeholder="0">
     <label>Company (optional)</label>
     <select id="mCompany"><option value="">— none —</option>${S.companies.map(c=>`<option>${esc(c)}</option>`).join('')}</select>
     <label>Customer / job site (optional)</label><input id="mSite" placeholder="Job site">
@@ -976,7 +1094,7 @@ function openManual(){
     </div>`);
 }
 async function submitManual(){
-  const p={ date:val('mDate'), clockIn:val('mIn'), clockOut:val('mOut'), company:val('mCompany'), jobSite:val('mSite'), notes:val('mNotes') };
+  const p={ date:val('mDate'), clockIn:val('mIn'), clockOut:val('mOut'), company:val('mCompany'), jobSite:val('mSite'), notes:val('mNotes'), breakMin:val('mBreak')||0 };
   if(!p.date||!p.clockIn||!p.clockOut){ toast('Date, in and out are required'); return; }
   closeSheet();
   await apiMutate('addManualEntry', p);
@@ -1048,7 +1166,13 @@ async function doUpload(uk){
 function fileToB64(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=rej; r.readAsDataURL(file); }); }
 
 /* ---- Admin: approvals ---- */
-async function approve(email,entryId){ try{ await api('approveEntry',{employeeEmail:email,entryId}); toast('Approved'); await refresh(true);}catch(e){toast(e.message);} }
+async function approve(email,entryId){
+  try{
+    await api('approveEntry',{employeeEmail:email,entryId});
+    S.pending=(S.pending||[]).filter(e=>e.EntryID!==entryId); render(); // instant local update
+    toast('Approved'); refresh(true);
+  }catch(e){toast(e.message);}
+}
 async function reject(email,entryId){
   sheet(`<h2>Reject entry</h2><label>Reason (shown to employee)</label>
     <textarea id="rjNote" rows="3" placeholder="Why is this rejected?"></textarea>
@@ -1056,7 +1180,11 @@ async function reject(email,entryId){
     <button class="grow danger" onclick="confirmReject('${esc(email)}','${esc(entryId)}')">Reject</button></div>`);
 }
 async function confirmReject(email,entryId){ const note=val('rjNote'); closeSheet();
-  try{ await api('rejectEntry',{employeeEmail:email,entryId,note}); toast('Rejected'); await refresh(true);}catch(e){toast(e.message);} }
+  try{
+    await api('rejectEntry',{employeeEmail:email,entryId,note});
+    S.pending=(S.pending||[]).filter(e=>e.EntryID!==entryId); render(); // instant local update
+    toast('Rejected'); refresh(true);
+  }catch(e){toast(e.message);} }
 
 /* ---- Admin: employees ---- */
 function openAddEmployee(){
@@ -1120,11 +1248,12 @@ async function openActivityLog(){
 }
 
 /* ---- Encouragement on clock-out ---- */
-function showEncouragement(hrs, ot){
+function showEncouragement(hrs, ot, breakHrs){
   const msg = ENCOURAGEMENTS[Math.floor(dayIndex()) % ENCOURAGEMENTS.length];
   sheet(`<div class="center">
     <div style="font-size:2.6rem">✅</div>
     <h2>Clocked out — ${hrs.toFixed(2)} hrs</h2>
+    ${breakHrs?`<div class="small muted">(${(breakHrs*60).toFixed(0)} min of breaks deducted)</div>`:''}
     <p style="font-size:1.1rem;margin:14px 0">${esc(msg)}</p>
     ${ot?'<div class="banner ot">You\'re into overtime this week — nice hustle.</div>':''}
     <button style="width:100%;margin-top:8px" onclick="closeSheet()">Done</button>
