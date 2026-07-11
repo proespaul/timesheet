@@ -2,7 +2,7 @@
  * App-shell cache so the PWA opens offline and is installable. We deliberately do NOT cache
  * API (Apps Script /exec) responses — offline writes are queued in IndexedDB by the app itself.
  */
-const CACHE = 'pcw-pro-timesheet-v1';
+const CACHE = 'pcw-pro-timesheet-v2';
 const SHELL = ['./', './index.html', './manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
@@ -24,14 +24,15 @@ self.addEventListener('fetch', (e) => {
       url.hostname.includes('googleapis.com')) {
     return; // let the browser handle it
   }
-  // App shell: cache-first, fall back to network, then to cached index for navigations.
+  // App shell: NETWORK-FIRST so app updates reach phones immediately; fall back to
+  // cache when offline (that's what keeps the PWA opening with no signal).
   e.respondWith(
-    caches.match(e.request).then((cached) =>
-      cached || fetch(e.request).then((resp) => {
-        const copy = resp.clone();
-        caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
-        return resp;
-      }).catch(() => caches.match('./index.html'))
+    fetch(e.request).then((resp) => {
+      const copy = resp.clone();
+      caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
+      return resp;
+    }).catch(() =>
+      caches.match(e.request).then((cached) => cached || caches.match('./index.html'))
     )
   );
 });
