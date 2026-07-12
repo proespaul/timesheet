@@ -6,9 +6,10 @@
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root{
-    --bg:#0f172a; --panel:#1e293b; --panel2:#273449; --line:#334155;
-    --text:#e2e8f0; --muted:#94a3b8; --accent:#0f766e; --accent2:#14b8a6;
-    --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --pending:#eab308;
+    /* Light theme */
+    --bg:#f1f5f9; --panel:#ffffff; --panel2:#eef2f7; --line:#e2e8f0;
+    --text:#0f172a; --muted:#64748b; --accent:#0f766e; --accent2:#0d9488;
+    --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --pending:#ca8a04;
     --radius:16px; --safe: env(safe-area-inset-bottom, 0px);
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
@@ -34,13 +35,16 @@
   .muted{color:var(--muted)}
   .small{font-size:.82rem}
   .pill{display:inline-block; padding:3px 10px; border-radius:999px; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.03em}
-  .pill.approved{background:rgba(34,197,94,.18); color:#4ade80}
-  .pill.pending{background:rgba(234,179,8,.18); color:#facc15}
-  .pill.rejected{background:rgba(239,68,68,.18); color:#f87171}
-  .pill.live{background:rgba(20,184,166,.18); color:#2dd4bf}
-  .bigbtn{width:100%; padding:26px; font-size:1.35rem; border-radius:24px; box-shadow:0 8px 24px rgba(0,0,0,.35)}
-  .bigbtn.in{background:linear-gradient(135deg,#0f766e,#14b8a6)}
-  .bigbtn.out{background:linear-gradient(135deg,#b91c1c,#ef4444)}
+  .pill.approved{background:rgba(22,163,74,.12); color:#15803d}
+  .pill.pending{background:rgba(202,138,4,.14); color:#a16207}
+  .pill.rejected{background:rgba(220,38,38,.12); color:#b91c1c}
+  .pill.live{background:rgba(13,148,136,.12); color:#0f766e}
+  .bigbtn{width:100%; padding:26px; font-size:1.35rem; border-radius:24px; box-shadow:0 8px 24px rgba(15,23,42,.18)}
+  .bigbtn.in{background:linear-gradient(135deg,#15803d,#22c55e)}       /* green = Clock In */
+  .bigbtn.out{background:linear-gradient(135deg,#dc2626,#f97316)}      /* red-orange = Clock Out */
+  .btn-break{background:linear-gradient(135deg,#d97706,#f59e0b)}       /* amber = Start Break */
+  .btn-resume{background:linear-gradient(135deg,#0369a1,#0ea5e9)}      /* blue = Resume Work */
+  .btn-switch{background:var(--panel2); color:var(--text); border:1px solid var(--line)}
   .timer{font-size:2.4rem; font-weight:800; text-align:center; letter-spacing:.02em}
   .tabbar{position:fixed; left:0; right:0; bottom:0; display:flex; background:var(--panel);
     border-top:1px solid var(--line); padding-bottom:var(--safe); z-index:20}
@@ -48,13 +52,14 @@
   .tabbar button.active{color:var(--accent2)}
   .tabbar .ic{display:block; font-size:1.3rem; line-height:1}
   .banner{padding:10px 14px; border-radius:12px; margin:8px 0; font-size:.9rem}
-  .banner.offline{background:rgba(245,158,11,.15); color:#fbbf24; border:1px solid rgba(245,158,11,.3)}
-  .banner.ot{background:rgba(239,68,68,.15); color:#f87171; border:1px solid rgba(239,68,68,.3)}
-  .banner.sync{background:rgba(20,184,166,.15); color:#2dd4bf}
+  .banner.offline{background:#fef3c7; color:#92400e; border:1px solid #fcd34d}
+  .banner.ot{background:#fee2e2; color:#b91c1c; border:1px solid #fca5a5}
+  .banner.sync{background:#ccfbf1; color:#0f766e}
   .hidden{display:none !important}
   .list-item{border-bottom:1px solid var(--line); padding:12px 0}
   .list-item:last-child{border-bottom:none}
-  .sheet{position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:40; display:flex; align-items:flex-end; justify-content:center}
+  .card{box-shadow:0 1px 3px rgba(15,23,42,.06)}
+  .sheet{position:fixed; inset:0; background:rgba(15,23,42,.45); z-index:40; display:flex; align-items:flex-end; justify-content:center}
   .sheet .panel{background:var(--panel); width:100%; max-width:560px; border-radius:24px 24px 0 0; padding:18px;
     max-height:92vh; overflow:auto; padding-bottom:calc(18px + var(--safe))}
   .chip{display:inline-block; background:var(--panel2); border:1px solid var(--line); border-radius:999px;
@@ -64,8 +69,8 @@
   .suggest div{padding:12px 14px; border-bottom:1px solid var(--line)}
   .suggest div:last-child{border-bottom:none}
   .toast{position:fixed; bottom:calc(84px + var(--safe)); left:50%; transform:translateX(-50%);
-    background:#0b1220; border:1px solid var(--line); color:#fff; padding:12px 18px; border-radius:14px; z-index:60;
-    max-width:90%; text-align:center; box-shadow:0 8px 24px rgba(0,0,0,.4)}
+    background:#0f172a; color:#fff; padding:12px 18px; border-radius:14px; z-index:60;
+    max-width:90%; text-align:center; box-shadow:0 8px 24px rgba(15,23,42,.3)}
   .center{text-align:center}
   .avatar{width:34px; height:34px; border-radius:50%; background:var(--panel2); object-fit:cover}
   .perm{display:flex; align-items:center; gap:8px; padding:6px 0}
@@ -408,6 +413,397 @@ const ENCOURAGEMENTS = [
 ];
 
 /* ============================================================================
+ * CLOCK-IN MESSAGES — 366 start-of-day lines (motivation + trades humor).
+ * Random pick that avoids the last 20 shown (localStorage), so nobody sees a
+ * repeat within a week even clocking in multiple times a day.
+ * ==========================================================================*/
+/* 366 clock-in messages, injected build-time. */
+const CLOCKINS = [
+  "Fresh day, clean slate. Let's get after it.",
+  "Coffee first, conduit second.",
+  "Boots laced, mind right, ready to roll.",
+  "Let's make some sparks fly — safely.",
+  "The cattle have been up for hours — time to catch up.",
+  "New day, new chances. Make it count.",
+  "Another day, another perfectly bent EMT.",
+  "Show up, gear up, level up.",
+  "Feeling grounded and ready to conduct business.",
+  "The herd waits for no one. Neither does the job.",
+  "Start strong, finish stronger.",
+  "Time to amp up and get to work.",
+  "Today's forecast: 100% chance of getting things done.",
+  "Watt a beautiful morning to get to work.",
+  "Sun's up over the pasture — let's ride.",
+  "One good hour sets up the whole day.",
+  "Current mood: fully charged.",
+  "Small steps this morning, big wins by supper.",
+  "Ohm my goodness, it's time to work.",
+  "Coffee's hot, cattle are fed, let's build something.",
+  "Attack the day before it attacks you.",
+  "Breaker's on, brain's on, let's go.",
+  "Bring the energy you want to see on site.",
+  "Wired and ready — mostly the coffee's doing.",
+  "Fresh air, open sky, honest work ahead.",
+  "Every big project starts with clocking in.",
+  "Positive attitude, negative terminal — know the difference.",
+  "Today is a good day to do good work.",
+  "Twist it, tape it, tidy it — let's get wiring.",
+  "Boots in the mud, head in the game.",
+  "Rise, grind, and shine — in that order.",
+  "Let's keep the current flowing and the coffee too.",
+  "First one in sets the tone. Might as well be me.",
+  "Panel schedules and pancake breakfasts — living the dream.",
+  "The tractor's warmed up and so am I.",
+  "Do it right the first time, starting now.",
+  "High voltage enthusiasm, low resistance to hard work.",
+  "Clocked in and locked in.",
+  "Time to torque some lugs and take some names.",
+  "Smells like hay and opportunity out here.",
+  "Great days are built one task at a time.",
+  "Let's ground ourselves and elevate the work.",
+  "Today I choose effort over excuses.",
+  "Fish tape in hand, victory in sight.",
+  "Even the rooster clocked in before me today.",
+  "Effort is free. Spend it generously today.",
+  "Warming up the multimeter and the mindset.",
+  "Good mornings make good paycheques.",
+  "May your splices be tight and your coffee tighter.",
+  "Gates open, sun's out, let's move some cattle.",
+  "Consistency beats intensity — show up again today.",
+  "Let's put the pro in PRO Electrical today.",
+  "The best view comes after the hardest morning.",
+  "Voltage checked, attitude checked, let's roll.",
+  "Fence lines and finish lines — chasing both today.",
+  "Discipline is choosing the hard hat over the snooze button.",
+  "Time to run wire like it's a race.",
+  "Momentum starts with the first clock-in.",
+  "Neutral is a wire, not an attitude.",
+  "The Wagyu are wagging — must be a good day coming.",
+  "Winners warm up. Consider this my stretch.",
+  "Let's bend some pipe and impress some inspectors.",
+  "Every sunrise is an invitation to build.",
+  "Today's circuit: coffee, work, repeat.",
+  "Dust on the boots, plans in the pocket.",
+  "Be the reason the job goes smooth today.",
+  "Amped up and ready to conduct myself professionally.",
+  "The day is young and so is my to-do list.",
+  "Zip ties and high fives — let's get organized.",
+  "Frost on the windshield, fire in the belly.",
+  "Earn your coffee break — clock in first.",
+  "Let's terminate today's tasks, not our patience.",
+  "Show the day who's boss before lunch.",
+  "Junction boxes and jump starts — the morning special.",
+  "Feed the cattle, then feed the ambition.",
+  "Your future self says thanks for starting now.",
+  "Ready to rock and re-lamp.",
+  "Strong start, steady middle, proud finish.",
+  "Today's goal: zero callbacks, all clean work.",
+  "Barn chores done, big chores next.",
+  "Progress loves an early start.",
+  "Time to make the electrons earn their keep.",
+  "Good habits clock in on time.",
+  "Label the panel, love the process.",
+  "The prairie sun is up — no excuses left.",
+  "Bring your A-game and your PPE.",
+  "Ohm sweet ohm, back on the job.",
+  "One day of focus beats a week of drifting.",
+  "Wire nuts and work boots — fully equipped.",
+  "The calves are calling and I must go — to work.",
+  "Set the pace, don't chase it.",
+  "Circuits don't finish themselves. Let's go.",
+  "Today deserves my best effort. It's getting it.",
+  "Measuring twice, cutting once, starting now.",
+  "Cool morning, warm truck, good outlook.",
+  "Purpose in the morning, pride in the evening.",
+  "Time to light up someone's day — literally.",
+  "Half of success is just showing up sharp.",
+  "Let's keep the loads balanced and the day too.",
+  "Boots, gloves, gate latch, go.",
+  "Dream big, wire bigger, finish cleaner.",
+  "Nothing shocking about a strong work ethic.",
+  "Start with gratitude, finish with results.",
+  "Today's agenda: watts and lots of them.",
+  "Hay's stacked, sky's clear, let's get at it.",
+  "Make this morning your masterpiece.",
+  "Three-phase focus engaged.",
+  "Hustle quietly and let the work speak.",
+  "Grounded, bonded, and ready for anything.",
+  "The herd's fed and I'm fired up.",
+  "The early start is the easy win. Take it.",
+  "Time to trace some circuits and chase some goals.",
+  "Energy up, phone down, let's work.",
+  "Today runs on caffeine and copper.",
+  "Mornings on the ranch never need an alarm clock.",
+  "Show up like it's your name on the truck.",
+  "Live wire attitude, dead calm hands.",
+  "Focus is the best tool in the box.",
+  "Let's give this panel a glow-up.",
+  "Chinook or not, we're clocking in.",
+  "Do the hard thing first. Then coffee number two.",
+  "Sparky by trade, ready by nature.",
+  "One clock-in closer to the goal.",
+  "The conduit to success is literal today.",
+  "Cattle sorted, tools loaded, let's move.",
+  "Champions start before they feel ready.",
+  "Nothing but blue sky and blueprints ahead.",
+  "The grind is on and so is the kettle.",
+  "Time to put some watts behind these words.",
+  "Prairie mornings build strong backs and stronger character.",
+  "Make today so good yesterday gets jealous.",
+  "Keep calm and check for voltage first.",
+  "Every task done well is money in the bank.",
+  "Receptacles and responsibility — my morning combo.",
+  "The dog's excited for work. Matching that energy.",
+  "Show up early, stay curious, work smart.",
+  "Amp it up — the day won't run itself.",
+  "Good tools, good people, good morning.",
+  "Breakers reset, buddy. Let's go again.",
+  "Sunrise over the feedlot beats any screensaver.",
+  "You don't need luck when you have a plan.",
+  "Watts up? Time to find out.",
+  "Bring the effort — the results will follow.",
+  "Cable trays and clear skies today.",
+  "Somewhere a steer is judging my start time.",
+  "Turn the key, turn the page, start the day.",
+  "Insulated gloves on, insulated attitude off.",
+  "Winning mornings win days.",
+  "Let's keep this job site tighter than a wire nut.",
+  "Morning frost melts, work ethic doesn't.",
+  "Commit to the day before the day commits you.",
+  "Full charge, no shorts, all systems go.",
+  "Every board, every wire, every detail matters today.",
+  "The gate's open and so is my schedule — let's fill it.",
+  "Head up, standards higher.",
+  "Meter's calibrated and so am I.",
+  "Purpose beats pressure every morning.",
+  "Rough-in today, celebration later.",
+  "Cows milked zero, cattle checked plenty, spirits high.",
+  "The work won't know what hit it.",
+  "Time to connect the dots — and the conductors.",
+  "Fuel up, gear up, cheer up.",
+  "May your circuits be closed and your options open.",
+  "Boots dusty by nine or it wasn't a real morning.",
+  "Play the long game, starting this morning.",
+  "This crew runs on volts and good vibes.",
+  "Better an honest hour than a perfect plan.",
+  "Cranking amps and cranking tunes — responsibly.",
+  "Big sky, bigger plans this morning.",
+  "Turn the coffee into craftsmanship.",
+  "Time to give this building a heartbeat.",
+  "Excellence is a habit. Practicing it today.",
+  "Grounding rod planted, goals planted too.",
+  "The bulls are bulking and so is my task list.",
+  "Direct your energy like direct current — one way, forward.",
+  "Own the morning and the afternoon behaves.",
+  "Sparks of genius, zero sparks of trouble.",
+  "Another sunrise, another chance to nail it.",
+  "GFCI tested, gratitude tested, both working.",
+  "Ranch dust is just rural glitter. Let's shine.",
+  "Effort compounds. Deposit some now.",
+  "It's a beautiful day to bend conduit.",
+  "Kindness and craftsmanship cost nothing extra.",
+  "Voltmeter says ready. I agree.",
+  "The pasture's peaceful — the schedule is not. Let's go.",
+  "Doing hard things is the whole job. Love it.",
+  "Copper prices are up and so is my motivation.",
+  "Start scrappy, finish classy.",
+  "Let's make the inspector smile today.",
+  "Feed truck's rolling and so are we.",
+  "Strong coffee, stronger commitment.",
+  "Today's load calculation: heavy, but I can carry it.",
+  "One task at a time until there are none.",
+  "Twist-on connectors and can-do attitudes.",
+  "Sunshine and silage — a ranch kind of morning.",
+  "Show up like somebody's counting on you. They are.",
+  "Time to put the power in power trip — the good kind.",
+  "First hour focus, all-day payoff.",
+  "Reading prints and drinking coffee — the sacred ritual.",
+  "Even the barn cats are on shift. Get moving.",
+  "The plan is simple: work hard, be useful.",
+  "Warm hands, cold beer later, wiring now.",
+  "You can't pour concrete on excuses.",
+  "Service call energy from the first minute.",
+  "Round bales and round numbers on the timesheet.",
+  "Consistency is my superpower today.",
+  "Let's light this place up properly.",
+  "The alarm rang once. That's all it took.",
+  "Panel covers off, game face on.",
+  "Country roads, take me to the job site.",
+  "Effort now, easy evenings later.",
+  "Every conductor counted, every minute too.",
+  "Focus like a laser, work like a farmhand.",
+  "Low resistance path straight to the tool belt.",
+  "Chores at dawn, wiring by mid-morning — full life.",
+  "Bring solutions, leave excuses in the truck.",
+  "Time to make these blueprints a reality.",
+  "Deep breath, tall posture, full send.",
+  "Wire strippers sharp, wit sharper.",
+  "Muddy corrals can't slow this crew down.",
+  "The standard is the standard. Meet it early.",
+  "Volts, bolts, and no-fault mornings.",
+  "Do today well and tomorrow gets easier.",
+  "Nothing beats the click of a breaker done right.",
+  "Cattle guards down, guard rails up, let's work.",
+  "Ambition looks good on you. Wear it all day.",
+  "Time to make electrons dance in straight lines.",
+  "Slow is smooth and smooth is fast — starting now.",
+  "The service panel and I have an appointment.",
+  "Morning dew, heavy boots, light heart.",
+  "Prove yesterday's plans right.",
+  "Charged up like a fresh battery bank.",
+  "The best project on site is your attitude.",
+  "Splice it nice or splice it twice — going with nice.",
+  "The heifers say hustle. Who am I to argue.",
+  "A little grit goes a long way before noon.",
+  "Testing one, two, three-phase.",
+  "Optimism is my first tool out of the bag.",
+  "Let's pull cable like we mean it.",
+  "Auction day energy, workday focus.",
+  "Get one percent better before the first break.",
+  "In rod we trust — grounding rod, that is.",
+  "Look sharp, think sharp, cut carefully.",
+  "Lugs torqued to spec, day torqued to eleven.",
+  "The north wind builds character. So does this job.",
+  "Begin like you plan to brag about it.",
+  "It's always sunny inside a well-lit panel room.",
+  "Precision today prevents headaches tomorrow.",
+  "Ladder secured, confidence secured.",
+  "The steers are steering clear — they know it's go time.",
+  "Talk less, torque more, smile plenty.",
+  "May your day be short-free and your list be short.",
+  "Sweat now so the future can coast a little.",
+  "Rocking the rock pit and the receptacles.",
+  "Clear skies over the coulee, clear head over here.",
+  "Motivation gets you here. Discipline keeps you here.",
+  "Time to earn my stripes and strip my wires.",
+  "Every clock-in is a promise. Keeping this one.",
+  "Fittings, fasteners, and fresh starts.",
+  "The barn swallows beat me here — barely.",
+  "Set a goal so good you wake up for it. Done.",
+  "Positive terminal, positive thinking.",
+  "Steady hands build lasting things.",
+  "Ampacity checked, capacity for greatness confirmed.",
+  "Boots by the door no more — they're on the job.",
+  "Great work is quiet. Let's be very quiet today.",
+  "Circuit by circuit, we get there.",
+  "The day rewards the ready.",
+  "There's no app for hard work — just this timesheet.",
+  "Pasture checked, priorities checked.",
+  "One honest day coming right up.",
+  "Meggering the motor and mustering the motivation.",
+  "Start where you are, use what you have, do it well.",
+  "Kilowatts and kind words all day.",
+  "Tractor tracks in the frost — the day has begun.",
+  "The finish line starts right here.",
+  "No loose ends, no loose connections.",
+  "Confidence is quiet preparation, and I prepared.",
+  "Bonding jumpers and bonding with the crew.",
+  "Ranch tough, trade smart.",
+  "The clock started. So did I.",
+  "Fault-finding on circuits only, not on people.",
+  "Bring the horsepower, keep the humility.",
+  "Trenches dug, ducts laid, dreams big.",
+  "Snow in the forecast, fire in the effort.",
+  "Deliver more than you promised today.",
+  "Live by the code — the electrical one.",
+  "Craftsmanship starts with the first cut.",
+  "Transformers step up. So do we.",
+  "Chased a calf, caught my breath, catching up on work now.",
+  "An early start is a gift to your afternoon.",
+  "Whip that panel into shape and label it too.",
+  "Persistence pays better than talent alone.",
+  "Raceways ready, race pace steady.",
+  "Feed bunks full, fuel tank full, let's go.",
+  "Set the tone in the first ten minutes.",
+  "Today's playlist: hum of the transformer.",
+  "Details are the difference. Chasing them today.",
+  "Knockouts punched, doubts punched harder.",
+  "Wind's howling but the herd's happy — good enough.",
+  "Look for the win in every task.",
+  "Load side, line side, bright side.",
+  "Grit is just love for the finished product.",
+  "Bushings, bushings everywhere, and every one installed right.",
+  "Prairie hardy and job ready.",
+  "Progress over perfection, but aiming for both.",
+  "Warm up the drill, the bits, and the banter.",
+  "Trust the process and the torque specs.",
+  "Overhead lines and overachieving minds.",
+  "The salt lick crowd sends their regards. Back to work.",
+  "The comeback starts at clock-in.",
+  "Continuity confirmed — in the wire and the work ethic.",
+  "Be so good the job asks for you by name.",
+  "Staples straight, cables straighter.",
+  "Silage smells like success this morning.",
+  "One clean sweep of the task list, coming up.",
+  "Arc flash studies done, arc of the day rising.",
+  "Better every day is the only quota.",
+  "Bender in hand, no offsets in attitude.",
+  "Mornings this crisp were made for hard work.",
+  "Turn intention into installation.",
+  "Phase A, phase B, phase let's-get-going.",
+  "Effort echoes long after the shift ends.",
+  "Cable pulled, coffee poured, character built.",
+  "Herding cattle taught me patience. Applying it today.",
+  "Win the morning quietly, one task at a time.",
+  "Voltage drop calculated, standards never dropping.",
+  "Give the day a firm handshake.",
+  "Luminaires up, spirits higher.",
+  "Fresh straw, fresh start.",
+  "Today is day one of something good.",
+  "Short circuits belong in textbooks, not on my watch.",
+  "Do common things uncommonly well today.",
+  "Sub-panel love and main panel respect.",
+  "The stock trailer's clean and so is my conscience. Working.",
+  "Make your first move your best move.",
+  "Buzzing with ideas, not with faulty ballasts.",
+  "Today I will out-work my doubts.",
+  "Cord caps on, thinking caps on.",
+  "The windmill's spinning and so are my wheels.",
+  "Anything worth doing starts before you feel like it.",
+  "Full boxes, tidy runs, happy clients.",
+  "Show up as the teammate you'd want.",
+  "Estimates sharp, pencil sharper.",
+  "Rain or shine, the ranch clocks in.",
+  "Turn the morning chill into morning drive.",
+  "Reels loaded, plans studied, hands steady.",
+  "Every hour logged is a brick in something bigger.",
+  "Multi-tool in the pouch, multi-tasking in the brain.",
+  "Sorting pens and sorting priorities.",
+  "The work is the reward. Collecting early.",
+  "Right wire, right gauge, right away.",
+  "Stack good hours like hay bales.",
+  "Terminations tight, timelines tighter.",
+  "Home on the range, hustle on the clock.",
+  "Ready, steady, energized — the shift starts now.",
+  "Long summer light means long honest hours.",
+  "Cold snap outside, warm work ethic inside.",
+  "Neutral bar polished, attitude anything but neutral.",
+  "The bull pen is quiet — the tool bag is not.",
+  "Make the checklist nervous today.",
+  "Two conductors, one purpose — let's connect.",
+  "Corral the chaos and start with task one.",
+  "Great mornings are built, not found.",
+  "Pigtails on the wires, ponytail optional.",
+  "Chinook winds and change orders — bring both on.",
+];
+function pickClockin(){
+  let hist=[]; try{ hist=JSON.parse(localStorage.getItem('ciHist')||'[]'); }catch(e){}
+  let idx, tries=0;
+  do { idx=Math.floor(Math.random()*CLOCKINS.length); tries++; } while (hist.includes(idx) && tries<60);
+  hist.push(idx); if (hist.length>20) hist=hist.slice(-20);
+  try{ localStorage.setItem('ciHist', JSON.stringify(hist)); }catch(e){}
+  return CLOCKINS[idx];
+}
+function showClockinMsg(){
+  sheet(`<div class="center" onclick="closeSheet()">
+    <div style="font-size:2.2rem">👷</div>
+    <p style="font-size:1.15rem;margin:12px 0">${esc(pickClockin())}</p>
+    <p class="small muted">Clocked in ✓</p>
+  </div>`);
+  setTimeout(closeSheet, 3000); // auto-dismiss; tap dismisses sooner
+}
+
+/* ============================================================================
  * STATE
  * ==========================================================================*/
 const S = {
@@ -457,17 +853,25 @@ const DB = (() => {
  * API — POST to Apps Script with text/plain to avoid CORS preflight.
  * ==========================================================================*/
 async function api(action, payload){
-  if (!S.idToken) throw new Error('Not signed in');
+  // 24h session token (issued by the backend at login) — Google's own ID tokens die after
+  // ~1h, which used to strand people mid-shift.
+  if (!S.session || Date.now() > S.session.exp - 60000) throw new Error('Session expired. Please sign in again.');
   const t0 = performance.now();
   const res = await fetch(CONFIG.APPS_SCRIPT_URL, {
     method:'POST',
     headers:{'Content-Type':'text/plain;charset=utf-8'},
-    body: JSON.stringify({ idToken:S.idToken, action, payload: payload||{} }),
+    body: JSON.stringify({ sessionToken:S.session.token, action, payload: payload||{} }),
   });
   const json = await res.json();
   // Profiling: total = network + server; `ms` is server-side time reported by the backend.
   console.debug(`[api] ${action}: ${Math.round(performance.now()-t0)}ms total (server ${json.ms??'?'}ms)`);
-  if (!json.ok) throw new Error(json.error || 'Request failed');
+  if (!json.ok){
+    if (/Session expired/i.test(json.error||'')){
+      S.session=null; DB.setCache('session', null);
+      try{ google.accounts.id.prompt(); }catch(e){} // silent re-auth in most cases
+    }
+    throw new Error(json.error || 'Request failed');
+  }
   return json.data;
 }
 
@@ -484,7 +888,7 @@ async function apiMutate(action, payload, optimistic){
 
 let syncing = false;
 async function flushQueue(){
-  if (syncing || !S.online || !S.idToken) return;
+  if (syncing || !S.online || !S.session) return;
   syncing = true;
   try {
     const items = (await DB.all()).sort((a,b)=>a.ts-b.ts);
@@ -498,10 +902,12 @@ async function flushQueue(){
         if (it.tempId && data && data.entry && data.entry.EntryID) idMap[it.tempId] = data.entry.EntryID;
         await DB.del(it.qid);
       } catch(e){
-        // stop on first hard failure to preserve order; will retry next time
-        if (/Failed to fetch|NetworkError/i.test(e.message)) break;
-        // permanent error (e.g. validation) — drop it so the queue doesn't jam, and log
+        // Network problem OR auth problem (expired token): STOP and retry later —
+        // never drop queued work for a recoverable failure.
+        if (/Failed to fetch|NetworkError|sign-in token|signed in|audience mismatch|Session expired/i.test(e.message)) break;
+        // genuine validation error — drop so the queue doesn't jam, but tell the user
         console.warn('Dropping queued action', it.action, e.message);
+        toast('A queued "'+it.action+'" could not sync: '+e.message);
         await DB.del(it.qid);
       }
     }
@@ -520,8 +926,27 @@ function onCredential(resp){
   S.idToken = resp.credential;
   const p = decodeJwt(resp.credential);
   S.me = S.me || { email:p.email, name:p.name, picture:p.picture };
-  DB.setCache('idToken', resp.credential);
-  boot();
+  doLogin();
+}
+/* Trade the (1h) Google ID token for a 24h backend session. Login returns the full
+   bootstrap too, so first paint after sign-in costs a single round-trip. */
+async function doLogin(){
+  try {
+    if (!S.booted) render(true);
+    const res = await fetch(CONFIG.APPS_SCRIPT_URL, {
+      method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify({ idToken:S.idToken, action:'login' }),
+    });
+    const json = await res.json();
+    if (!json.ok) throw new Error(json.error || 'Sign-in failed');
+    S.session = { token: json.data.sessionToken, exp: json.data.exp };
+    await DB.setCache('session', S.session);
+    applyBootstrap(json.data.boot);
+    S.booted = true;
+    await DB.setCache('bootstrap', json.data.boot);
+    flushQueue(); render();
+    loadCustomers(); loadMaterials();
+  } catch(e){ S.session=null; toast(e.message); render(); }
 }
 
 function initAuth(){
@@ -532,16 +957,17 @@ function initAuth(){
     auto_select: true,
     itp_support: true,
   });
-  if (!S.idToken){
+  if (!S.session){
     render(); // shows sign-in screen with the button placeholder
     const holder = document.getElementById('gbtn');
-    if (holder) google.accounts.id.renderButton(holder, {theme:'filled_black', size:'large', width:320, text:'signin_with'});
+    if (holder) google.accounts.id.renderButton(holder, {theme:'outline', size:'large', width:320, text:'signin_with'});
     google.accounts.id.prompt(); // one-tap / auto
   }
 }
 function signOut(){
-  S.idToken=null; S.me=null; S.booted=false;
-  DB.setCache('idToken', null);
+  if (S.session) { try{ api('logout',{sessionToken:S.session.token}); }catch(e){} } // best-effort server invalidation
+  S.idToken=null; S.session=null; S.me=null; S.booted=false;
+  DB.setCache('session', null);
   try{ google.accounts.id.disableAutoSelect(); }catch(e){}
   render();
   initAuth();
@@ -562,7 +988,7 @@ async function boot(){
     await DB.setCache('bootstrap', data);
     flushQueue();
     render();
-    loadCustomers(); // warm the client-side customer list for instant autocomplete
+    loadCustomers(); loadMaterials(); // warm client-side caches for instant autocomplete
   } catch(e){
     if (cached) toast('Showing last synced data — will retry');
     else { toast(e.message); render(); }
@@ -575,7 +1001,7 @@ function applyBootstrap(d){
   if (d.pending !== undefined) S.pending = d.pending; // pending now loads on demand (Admin tab)
 }
 async function refresh(silent){
-  if (!S.idToken || !S.online) return;
+  if (!S.session || !S.online) return;
   try { const d = await api('bootstrap'); applyBootstrap(d); await DB.setCache('bootstrap', d); render(); }
   catch(e){ if(!silent) toast(e.message); }
 }
@@ -599,6 +1025,11 @@ function getGps(timeoutMs){
 /* ============================================================================
  * ACTIONS
  * ==========================================================================*/
+/* Missed GPS fix at punch time → keep trying quietly for up to 30s and patch the entry.
+   Backend only fills EMPTY cells, so a late fix can never overwrite a real one. */
+function retryGpsPatch(entryId, which){
+  getGps(30000).then(g=>{ if (g) apiMutate('patchGps', { entryId, which, gps:g }); });
+}
 async function doClockIn(payload){
   const gps = await getGps(4000); // cap the GPS wait — clock-in shouldn't stall on a slow fix
   const tempId = 'tmp_' + Date.now();
@@ -609,7 +1040,9 @@ async function doClockIn(payload){
   const r = await apiMutate('clockIn', { ...payload, gps }, { tempId });
   if (r && r.entry) S.openEntry = r.entry;
   refresh(true); // background — UI is already correct optimistically
-  toast(r && r.queued ? 'Clocked in (will sync)' : 'Clocked in');
+  if (!gps) retryGpsPatch((r && r.entry ? r.entry.EntryID : tempId), 'in');
+  if (r && r.queued) toast('Clocked in (will sync)');
+  showClockinMsg();
 }
 async function doClockOut(extra){
   if (!S.openEntry) return;
@@ -619,16 +1052,41 @@ async function doClockOut(extra){
   const gross = (Date.now()-started)/3600000;
   const brk = breakHrsSoFar(); // open break gets closed at clock-out
   const netLocal = Math.round(Math.max(0, gross-brk)*100)/100;
-  const closing = S.openEntry; S.openEntry = null; render();
+  const closing = { ...S.openEntry, ClockOut:new Date().toISOString(), Hours:netLocal,
+    'Gross Hours':Math.round(gross*100)/100, 'Break Hrs':Math.round(brk*100)/100,
+    Source:'live', Date:S.openEntry.Date||todayStr() };
+  upsertLocalEntry(closing); // real clock-out: Source stays 'live' → drops off Paused-today
+  S.openEntry = null; render();
   const r = await apiMutate('clockOut', { entryId, gps, notes:(extra&&extra.notes)||'' }, { tempId: entryId });
   refresh(true); // background
+  if (!gps) retryGpsPatch(entryId, 'out');
   const net = (r && r.hours!=null) ? r.hours : netLocal;         // server value wins when online
   const breakHrs = (r && r.breakHrs!=null) ? r.breakHrs : Math.round(brk*100)/100;
-  showEncouragement(net, r && r.weekOvertime, breakHrs);
+  // Materials prompt first, encouragement after Done/Skip.
+  openMaterialsPrompt(
+    { entryId, jobSite: closing['Customer/Job Site']||closing.Company||'', poNumber: closing['PO#']||'' },
+    { hrs: net, ot: r && r.weekOvertime, breakHrs });
+}
+function upsertLocalEntry(e){
+  const i=(S.entries||[]).findIndex(x=>x.EntryID===e.EntryID);
+  if (i>=0) S.entries[i]=e; else S.entries.unshift(e);
 }
 async function doSwitchSite(payload){
   const gps = await getGps(4000);
-  await apiMutate('switchJobSite', { ...payload, gps });
+  // Optimistically close the current segment as 'paused' so the Paused-today list and
+  // cumulative timer are right immediately (and offline).
+  if (S.openEntry){
+    const gross=(Date.now()-new Date(S.openEntry.ClockIn))/3600000;
+    const brk=breakHrsSoFar();
+    upsertLocalEntry({ ...S.openEntry, ClockOut:new Date().toISOString(),
+      Hours: Math.round(Math.max(0,gross-brk)*100)/100, Source:'paused', Date:S.openEntry.Date||todayStr() });
+  }
+  const tempId='tmp_'+Date.now();
+  S.openEntry={ EntryID:tempId, ClockIn:new Date().toISOString(), Company:payload.company||'',
+    'Customer/Job Site':payload.jobSite||'', 'PO#':payload.poNumber||'', Status:'approved', Source:'live', _local:true };
+  render();
+  const r = await apiMutate('switchJobSite', { ...payload, gps }, { tempId });
+  if (r && r.entry) S.openEntry=r.entry;
   refresh(true); // background
   toast('Switched job site');
 }
@@ -650,7 +1108,7 @@ function render(loading){
   S._reg = {}; // reset per render; sheets/suggestions register fresh keys
   const app = document.getElementById('app');
   if (loading){ app.innerHTML = '<div class="wrap center" style="margin-top:40vh"><span class="spin"></span><p class="muted">Loading…</p></div>'; return; }
-  if (!S.idToken || !S.booted){ app.innerHTML = signInView(); return; }
+  if (!S.session || !S.booted){ app.innerHTML = signInView(); return; }
   let body='';
   if (S.tab==='clock') body = clockView();
   else if (S.tab==='entries') body = entriesView();
@@ -700,21 +1158,35 @@ function breakHrsSoFar(){
 function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function jobKey(e){ return (e.Company||'')+'|'+(e['Customer/Job Site']||'')+'|'+(e['PO#']||''); }
 function pausedToday(){
-  const t=todayStr(), seen={}, out=[];
-  const activeKey = S.openEntry ? jobKey(S.openEntry) : null;
-  for (const e of (S.entries||[])){
-    if (String(e.Date).slice(0,10)!==t || e.Source!=='live' || !e.ClockOut) continue;
+  // A job is resumable ONLY if its most recent segment today ended via "Pause & Switch"
+  // (Source 'paused'). A proper clock-out leaves Source 'live' → job drops off this list.
+  const t=todayStr(), latest={}, order=[];
+  for (const e of (S.entries||[])){ // newest-first, so first hit per job = latest segment
+    if (String(e.Date).slice(0,10)!==t) continue;
+    if (e.Source!=='live' && e.Source!=='paused') continue;
     const k=jobKey(e);
-    if (seen[k] || k===activeKey) continue;
-    seen[k]=1; out.push(e);
+    if (!(k in latest)){ latest[k]=e; order.push(k); }
   }
-  return out;
+  const activeKey = S.openEntry ? jobKey(S.openEntry) : null;
+  return order.filter(k => k!==activeKey && latest[k].Source==='paused' && latest[k].ClockOut)
+    .map(k => latest[k]);
+}
+function hrsTodayFor(key){
+  // Net hours already logged today for this job (all closed segments).
+  const t=todayStr(); let total=0;
+  for (const e of (S.entries||[])){
+    if (String(e.Date).slice(0,10)!==t || !e.ClockOut || jobKey(e)!==key) continue;
+    if (e.Source!=='live' && e.Source!=='paused') continue;
+    total += Number(e.Hours)||0;
+  }
+  return total;
 }
 function pausedCard(){
   const p=pausedToday(); if(!p.length) return '';
-  return `<div class="card"><h3>Paused today</h3><p class="small muted" style="margin-top:-6px">Tap to jump back onto an earlier job — each stretch logs as its own entry.</p>
-    ${p.map(e=>{ const k=reg({e}); return `<div class="list-item row between">
-      <div><b>${esc(e['Customer/Job Site']||e.Company)}</b>${e['PO#']?` <span class="small muted">PO ${esc(e['PO#'])}</span>`:''}</div>
+  return `<div class="card"><h3>Paused today</h3><p class="small muted" style="margin-top:-6px">Jobs waiting to be resumed — each stretch logs as its own entry.</p>
+    ${p.map(e=>{ const k=reg({e}); const hrs=hrsTodayFor(jobKey(e)); return `<div class="list-item row between">
+      <div><b>${esc(e['Customer/Job Site']||e.Company)}</b>${e['PO#']?` <span class="small muted">PO ${esc(e['PO#'])}</span>`:''}
+        <div class="small muted">${hrs.toFixed(2)} hrs so far today</div></div>
       <button class="ghost" onclick="resumeJob('${k}')">▶ Resume</button></div>`; }).join('')}</div>`;
 }
 async function resumeJob(k){
@@ -728,23 +1200,21 @@ function clockView(){
     ? `<div class="banner ot">⚠ Overtime: ${weekHours().toFixed(1)} hrs this week (over ${S.config.otThreshold||44}).</div>` : '';
   if (S.openEntry){
     const site = S.openEntry['Customer/Job Site'] || S.openEntry.Company || 'Working';
-    const brs = openBreaks();
     const breaking = onBreak();
-    const brNote = brs.length ? `<div class="small muted">${breaking?'☕ On break since '+fmtTime(brs[brs.length-1].s):'Breaks today: '+(breakHrsSoFar()*60).toFixed(0)+' min'}</div>` : '';
     return `${ot}
       <div class="card center">
-        <div class="pill ${breaking?'pending':'live'}">${breaking?'On break':'On the clock'}</div>
+        <div class="pill ${breaking?'pending':'live'}">${breaking?'☕ On break':'On the clock'}</div>
         <h2 style="margin:.4em 0">${esc(site)}</h2>
         ${S.openEntry['PO#']?`<div class="small muted">PO ${esc(S.openEntry['PO#'])}</div>`:''}
-        <div class="timer" id="runningTimer">0:00:00</div>
+        <div class="timer" id="runningTimer" style="${breaking?'color:var(--warn)':''}">0:00:00</div>
+        <div class="small muted" id="timerSub"></div>
         <div class="small muted">since ${fmtTime(S.openEntry.ClockIn)}</div>
-        ${brNote}
         <button class="bigbtn out" style="margin-top:16px" onclick="openClockOut()">Clock Out</button>
         <div class="row" style="margin-top:10px">
           ${breaking
-            ? `<button class="secondary grow" onclick="doEndBreak()">▶ Resume Work</button>`
-            : `<button class="secondary grow" onclick="doStartBreak()">☕ Start Break</button>`}
-          <button class="secondary grow" onclick="openJobPicker(true)">⏸ Pause &amp; Switch</button>
+            ? `<button class="btn-resume grow" onclick="doEndBreak()">▶ Resume Work</button>`
+            : `<button class="btn-break grow" onclick="doStartBreak()">☕ Start Break</button>`}
+          <button class="btn-switch grow" onclick="openJobPicker(true)">⏸ Pause &amp; Switch</button>
         </div>
       </div>
       ${pausedCard()}
@@ -788,6 +1258,19 @@ function entriesView(){
   return `<div class="row between"><h2>My entries</h2><button class="secondary" onclick="openManual()">+ Manual</button></div>
     <div class="card">${rows}</div>`;
 }
+/* GPS visibility: absence is explicit ("no GPS"), presence is a tappable map link for
+   admins/bookkeepers so locations actually get looked at, not just stored. */
+function mapsLink(gpsStr){ const m=String(gpsStr||'').match(/^(-?[\d.]+),(-?[\d.]+)/); return m?`https://maps.google.com/?q=${m[1]},${m[2]}`:''; }
+function gpsBadge(e){
+  if (e.Source==='manual') return '';
+  const canSeeMaps = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
+  const bits=[];
+  if (!e['GPS In'] && e.ClockIn) bits.push('<span style="color:var(--warn)">⚠ no GPS in</span>');
+  else if (canSeeMaps && e['GPS In']) bits.push(`<a href="${esc(mapsLink(e['GPS In']))}" target="_blank" style="color:var(--accent2)">📍 in</a>`);
+  if (e.ClockOut && !e['GPS Out']) bits.push('<span style="color:var(--warn)">⚠ no GPS out</span>');
+  else if (canSeeMaps && e['GPS Out']) bits.push(`<a href="${esc(mapsLink(e['GPS Out']))}" target="_blank" style="color:var(--accent2)">📍 out</a>`);
+  return bits.length?`<div class="small">${bits.join(' · ')}</div>`:'';
+}
 function entryRow(e, employeeEmail){
   const canEdit = (e.Status!=='approved') || S.me.role==='admin';
   const site = e['Customer/Job Site'] || e.Company || '—';
@@ -801,6 +1284,7 @@ function entryRow(e, employeeEmail){
       <span>${fmtDay(e.ClockIn||e.Date)} · ${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)}</span>
       <span>${e.Hours!==''&&e.Hours!=null?('<b style=\"color:var(--text)\">'+e.Hours+' hrs</b>'+(Number(e['Break Hrs'])?` <span class=\"muted\">(${e['Gross Hours']}h − ${(Number(e['Break Hrs'])*60).toFixed(0)}m brk)</span>`:'')):''}</span>
     </div>
+    ${gpsBadge(e)}
     ${e.Notes?`<div class="small" style="margin-top:4px">${esc(e.Notes)}</div>`:''}
     ${e.Status==='rejected'&&e['Reject Note']?`<div class="small" style="color:#f87171">Rejected: ${esc(e['Reject Note'])}</div>`:''}
     ${e.Media?`<div class="small"><a href="${esc(String(e.Media).split(' | ')[0])}" target="_blank" style="color:var(--accent2)">📎 media</a></div>`:''}
@@ -836,6 +1320,11 @@ function adminView(){
       ${emps.map(empAdminRow).join('')}
     </div>
     <div class="card">
+      <h3>Materials</h3>
+      <p class="small muted">Free-typed field entries waiting to be matched against supplier receipts.</p>
+      <button class="secondary" onclick="openMatReview()">Review flagged materials</button>
+    </div>
+    <div class="card">
       <h3>Payroll</h3>
       <p class="small muted">Export approved hours for the current pay period.</p>
       <button onclick="exportPayroll()">Download CSV</button>
@@ -846,6 +1335,7 @@ function pendRow(e){
   return `<div class="list-item">
     <div class="row between"><b>${esc(e._name||e._employee)}</b><span class="small muted">${fmtDay(e.ClockIn||e.Date)}</span></div>
     <div class="small muted">${esc(e['Customer/Job Site']||e.Company)} · ${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)} · ${e.Hours||'?'} hrs</div>
+    ${gpsBadge(e)}
     ${e.Notes?`<div class="small">${esc(e.Notes)}</div>`:''}
     <div class="row" style="margin-top:8px">
       <button class="grow" onclick="approve('${esc(e._employee)}','${esc(e.EntryID)}')">Approve</button>
@@ -886,12 +1376,34 @@ async function loadPending(){
  * TIMER + TOTALS
  * ==========================================================================*/
 let timerInt=null;
+function fmtDur(ms){ const s=Math.max(0,Math.floor(ms/1000)),h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;
+  return h+':'+String(m).padStart(2,'0')+':'+String(ss).padStart(2,'0'); }
 function tickTimer(){
-  const node=document.getElementById('runningTimer');
+  // On break: BIG number = current break counting up, small line = work so far (paused).
+  // Working: BIG number = TODAY'S cumulative net time on this job (earlier stretches +
+  // this one), so resuming a paused job continues from where it left off instead of 0:00.
+  const node=document.getElementById('runningTimer'); const sub=document.getElementById('timerSub');
   if (!node || !S.openEntry){ if(timerInt){clearInterval(timerInt); timerInt=null;} return; }
-  const ms = Date.now()-new Date(S.openEntry.ClockIn).getTime();
-  const s=Math.floor(ms/1000); const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), ss=s%60;
-  node.textContent = `${h}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+  const now=Date.now(), startMs=new Date(S.openEntry.ClockIn).getTime();
+  const prevMs = hrsTodayFor(jobKey(S.openEntry)) * 3600000; // earlier stretches today, this job
+  let closedBrkMs=0, curBrkStart=null;
+  for (const b of openBreaks()){
+    if (b.e) closedBrkMs += Math.max(0, new Date(b.e)-new Date(b.s));
+    else curBrkStart = new Date(b.s).getTime();
+  }
+  if (curBrkStart){
+    node.textContent = fmtDur(now-curBrkStart);
+    const workedMs = prevMs + (curBrkStart-startMs) - closedBrkMs;
+    if (sub) sub.textContent = 'Worked today ' + fmtDur(workedMs) +
+      (closedBrkMs ? ' · earlier breaks ' + Math.round(closedBrkMs/60000) + ' min' : '');
+  } else {
+    const stretchMs = now-startMs-closedBrkMs;
+    node.textContent = fmtDur(prevMs + stretchMs);
+    let bits=[];
+    if (prevMs>0) bits.push('this stretch '+fmtDur(stretchMs));
+    if (closedBrkMs) bits.push('breaks '+Math.round(closedBrkMs/60000)+' min');
+    if (sub) sub.textContent = bits.join(' · ');
+  }
 }
 function currentPeriodLabel(){
   const d=new Date();
@@ -932,21 +1444,48 @@ function closeSheet(){ if(S._sheet){ S._sheet.remove(); S._sheet=null; } }
 
 /* ---- Job / customer picker ---- */
 let pickerState = null;
+let poResults=[]; // index-referenced by tap (apostrophe-safe)
 function openJobPicker(isSwitch){
   pickerState = { isSwitch, mode:null, company:'', jobSite:'', poNumber:'', isNew:false, newType:'', notes:'' };
+  renderPicker();
+  // customers may not be loaded yet (first run / stale cache) — refresh the PO list when they land
+  loadCustomers().then(()=>{ if (S._sheet && pickerState) refreshPoList(); });
+}
+/* Open POs = rows in the PO Log whose Status is "In Progress". Done jobs are hidden. */
+function openPOs(q){
+  q=(q||'').trim().toLowerCase();
+  return (S.customers||[]).filter(c=>c.po && /in.?progress/i.test(c.status||''))
+    .filter(c=>!q || c.name.toLowerCase().includes(q) || c.po.toLowerCase().includes(q));
+}
+function poListHtml(q){
+  const pos=openPOs(q);
+  poResults=pos;
+  if (!S.customers) return '<p class="small muted">Loading open jobs…</p>';
+  if (!pos.length) return `<p class="small muted">${q?'No open POs match — try the customer search below.':'No open POs found (only “In Progress” jobs are shown).'}</p>`;
+  return pos.map((c,i)=>`<div class="list-item row between" onclick="pickPO(${i})" style="cursor:pointer">
+      <div><b>${esc(c.po)}</b> · ${esc(c.name)}</div>
+      ${pickerState.poNumber===c.po?'<span style="color:var(--ok);font-weight:700">✓</span>':''}
+    </div>`).join('');
+}
+function refreshPoList(){ const el=document.getElementById('poList'); if(el) el.innerHTML=poListHtml((document.getElementById('custSearch')||{}).value||''); }
+function pickPO(i){
+  const c=poResults[i]; if(!c) return;
+  pickerState.jobSite=c.name; pickerState.poNumber=c.po; pickerState.company=''; pickerState.isNew=false; pickerState.newType='';
   renderPicker();
 }
 function renderPicker(){
   const comp = S.companies.map(c=>`<span class="chip ${pickerState.company===c?'sel':''}" onclick="pickCompany('${esc(c)}')">${esc(c)}</span>`).join('');
   sheet(`
     <h2>${pickerState.isSwitch?'Switch to…':'Clock in'}</h2>
-    <label>Internal company time (no PO)</label>
-    <div>${comp}</div>
-    <label style="margin-top:14px">…or a customer / job site</label>
-    <input id="custSearch" placeholder="Search or add customer…" autocomplete="off"
-      oninput="onCustSearch(this.value)" value="${esc(pickerState.jobSite)}">
+    ${pickerState.poNumber?`<div class="banner sync">Selected: <b>${esc(pickerState.poNumber)}</b> · ${esc(pickerState.jobSite)}</div>`:''}
+    <label>Open jobs — tap the one you're working on</label>
+    <div id="poList" style="max-height:34vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:0 12px">${poListHtml('')}</div>
+    <label style="margin-top:14px">No PO? Search customers, add a new job, or filter the list above</label>
+    <input id="custSearch" placeholder="Search…" autocomplete="off"
+      oninput="onCustSearch(this.value)" value="${esc(pickerState.poNumber?'':pickerState.jobSite)}">
     <div id="suggest"></div>
-    ${pickerState.poNumber?`<div class="small" style="color:var(--accent2)">PO ${esc(pickerState.poNumber)}</div>`:''}
+    <label style="margin-top:12px">Internal company time (no PO)</label>
+    <div>${comp}</div>
     <label style="margin-top:12px">Notes (optional)</label>
     <textarea id="pnotes" rows="2" placeholder="What are you working on?">${esc(pickerState.notes)}</textarea>
     <div class="row" style="margin-top:14px">
@@ -965,15 +1504,16 @@ let custResults=[];   // index-referenced by suggestion clicks (apostrophe-safe,
    autocomplete is instant — and works offline. Falls back to server search if not loaded. */
 const CUST_TTL = 10*60*1000;
 async function loadCustomers(force){
+  // cache key v2: entries now carry PO Status for the open-jobs list
   if (!force && S.customers && (Date.now()-S.customersAt) < CUST_TTL) return;
-  const cached = await DB.getCache('customers');
+  const cached = await DB.getCache('customers2');
   if (cached && cached.list){ S.customers=cached.list; S.customersAt=cached.ts; }
   if (!S.online) return;
   if (!force && cached && (Date.now()-cached.ts) < CUST_TTL) return;
   try{
     const r = await api('customerList');
     S.customers = r.customers||[]; S.customersAt = Date.now();
-    await DB.setCache('customers', {list:S.customers, ts:S.customersAt});
+    await DB.setCache('customers2', {list:S.customers, ts:S.customersAt});
   }catch(e){ /* keep whatever we had */ }
 }
 function levJs(a,b){ const m=a.length,n=b.length,dp=[]; for(let i=0;i<=m;i++)dp[i]=[i]; for(let j=0;j<=n;j++)dp[0][j]=j;
@@ -1007,6 +1547,7 @@ function renderCustResults(r, q){
 }
 function onCustSearch(q){
   pickerState.jobSite=q; pickerState.company=''; pickerState.poNumber=''; pickerState.isNew=false; pickerState.newType='';
+  refreshPoList(); // the search box also live-filters the open-PO list above it
   clearTimeout(custDebounce);
   const haveLocal = !!S.customers;
   custDebounce=setTimeout(async()=>{
@@ -1050,7 +1591,7 @@ async function createNewCustomer(type, force){
       return;
     }
     pickerState.jobSite=r.customer.name; pickerState.poNumber=r.customer.po; pickerState.isNew=false;
-    if (S.customers){ S.customers.push({name:r.customer.name, po:r.customer.po}); DB.setCache('customers',{list:S.customers,ts:S.customersAt||Date.now()}); }
+    if (S.customers){ S.customers.push({name:r.customer.name, po:r.customer.po, status:'In Progress'}); DB.setCache('customers2',{list:S.customers,ts:S.customersAt||Date.now()}); }
     renderPicker(); toast(`New ${type} job — PO ${r.customer.po}`);
   }catch(e){ toast(e.message); }
 }
@@ -1247,6 +1788,110 @@ async function openActivityLog(){
   }catch(e){toast(e.message);}
 }
 
+/* ---- Materials at clock-out ---- */
+/* Client-side materials catalog, cached like customers (IndexedDB, 10-min TTL). Fuzzy search
+   covers the item name AND its Aliases column (trade slang like "half inch EMT", "wago"). */
+async function loadMaterials(force){
+  if (!force && S.materials && (Date.now()-S.materialsAt) < CUST_TTL) return;
+  const cached = await DB.getCache('materials');
+  if (cached && cached.list){ S.materials=cached.list; S.materialsAt=cached.ts; }
+  if (!S.online) return;
+  if (!force && cached && (Date.now()-cached.ts) < CUST_TTL) return;
+  try{
+    const r = await api('materialsList');
+    S.materials = r.materials||[]; S.materialsAt = Date.now();
+    await DB.setCache('materials', {list:S.materials, ts:S.materialsAt});
+  }catch(e){ /* keep what we had */ }
+}
+function localMatSearch(q){
+  const ql=q.trim().toLowerCase(); const scored=[];
+  for (const m of (S.materials||[])){
+    const name=m.name.toLowerCase(), hay=name+' '+(m.aliases||'').toLowerCase()+' '+(m.sku||'').toLowerCase();
+    let score=-1;
+    if (name.startsWith(ql)) score=0;
+    else if (hay.includes(ql)) score=1;
+    else if (similarJs(hay, ql)) score=2;
+    if (score>=0) scored.push({m, score});
+  }
+  scored.sort((a,b)=>a.score-b.score);
+  return scored.slice(0,8).map(x=>x.m);
+}
+let matState=null, matResults=[];
+function openMaterialsPrompt(ctx, after){
+  matState = { ...ctx, items: [], after };
+  loadMaterials();
+  renderMaterials();
+}
+function renderMaterials(){
+  if (!matState) return;
+  const rows = matState.items.map((it,i)=>`<div class="list-item row">
+    <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}</div>
+    <input type="number" step="any" min="0" value="${esc(it.qty)}" style="width:84px;margin:0;text-align:center" onchange="matQty(${i},this.value)">
+    <button class="ghost" onclick="matRemove(${i})" aria-label="Remove">✕</button>
+  </div>`).join('');
+  sheet(`<h2>What materials did you use today?</h2>
+    <p class="small muted">${esc(matState.jobSite||'')}${matState.poNumber?' · PO '+esc(matState.poNumber):''}</p>
+    <input id="matSearch" placeholder="Search… e.g. half inch EMT, wago" autocomplete="off" oninput="onMatSearch(this.value)">
+    <div id="matSuggest"></div>
+    ${matState.items.length?`<label>Added — review before submitting (tap qty to edit)</label>
+      <div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">${rows}</div>`:''}
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="finishMaterials(true)">Skip</button>
+      <button class="grow" onclick="finishMaterials(false)" ${matState.items.length?'':'disabled'}>Done${matState.items.length?' ('+matState.items.length+')':''}</button>
+    </div>`);
+}
+function onMatSearch(q){
+  const box=document.getElementById('matSuggest'); if(!box) return;
+  if(!q.trim()){ box.innerHTML=''; return; }
+  matResults=[]; let h='';
+  localMatSearch(q).forEach(m=>{ const i=matResults.push(m)-1;
+    h+=`<div onclick="matPick(${i})">${esc(m.name)}${m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}</div>`; });
+  h+=`<div onclick="matAddTyped()">➕ Add “${esc(q)}” as typed <span class="small muted">(admin will review)</span></div>`;
+  box.innerHTML=`<div class="suggest">${h}</div>`;
+}
+function matPick(i){ const m=matResults[i]; if(!m||!matState) return;
+  matState.items.push({name:m.name, unit:m.unit||'', qty:1, matched:true});
+  renderMaterials(); }
+function matAddTyped(){
+  const q=((document.getElementById('matSearch')||{}).value||'').trim(); if(!q||!matState) return;
+  matState.items.push({name:q, unit:'', qty:1, matched:false});
+  renderMaterials(); }
+function matQty(i,v){ if(matState&&matState.items[i]) matState.items[i].qty=v; }
+function matRemove(i){ if(!matState) return; matState.items.splice(i,1); renderMaterials(); }
+async function finishMaterials(skip){
+  if(!matState) return;
+  const st=matState; matState=null; closeSheet();
+  if (!skip && st.items.length){
+    apiMutate('logMaterials',{entryId:st.entryId, jobSite:st.jobSite, poNumber:st.poNumber, items:st.items});
+    const pend=st.items.filter(i=>!i.matched).length;
+    if (pend) toast(pend+' item(s) flagged for admin review');
+  }
+  showEncouragement(st.after.hrs, st.after.ot, st.after.breakHrs);
+}
+
+/* ---- Admin: materials review ---- */
+async function openMatReview(){
+  try{
+    const r=await api('pendingMaterials');
+    const rows=(r.pending||[]).map(m=>{ const k=reg(m); return `<div class="list-item">
+      <b>${esc(m.item)}</b>${m.qty?` · ${esc(m.qty)} ${esc(m.unit||'')}`:''}
+      <div class="small muted">${esc(m.employee)} · ${esc(m.jobSite||'')}${m.po?' · PO '+esc(m.po):''} · ${fmtDay(m.time)}</div>
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="resolveMat('${k}','addToList')">Add to materials list</button>
+        <button class="secondary grow" onclick="resolveMat('${k}','dismiss')">Dismiss</button>
+      </div></div>`; }).join('');
+    sheet(`<h2>Materials review</h2>
+      <p class="small muted">Free-typed items from the field — match them against supplier receipts/invoices.</p>
+      ${rows||'<p class="muted">Nothing flagged. 🎉</p>'}
+      <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  }catch(e){toast(e.message);}
+}
+async function resolveMat(k,action){
+  const m=dereg(k); if(!m) return;
+  try{ await api('resolveMaterial',{row:m.row, action}); toast(action==='addToList'?'Added to materials list':'Dismissed'); openMatReview(); }
+  catch(e){toast(e.message);}
+}
+
 /* ---- Encouragement on clock-out ---- */
 function showEncouragement(hrs, ot, breakHrs){
   const msg = ENCOURAGEMENTS[Math.floor(dayIndex()) % ENCOURAGEMENTS.length];
@@ -1286,9 +1931,9 @@ window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back onl
 window.addEventListener('offline', ()=>{ S.online=false; render(); });
 
 async function start(){
-  // restore token so a returning user doesn't have to tap sign-in every time
-  const cached = await DB.getCache('idToken');
-  if (cached){ S.idToken=cached; S.me=decodeJwt(cached); await boot(); }
+  // restore the 24h session so a returning user doesn't have to tap sign-in every time
+  const sess = await DB.getCache('session');
+  if (sess && sess.token && Date.now() < sess.exp - 60000){ S.session=sess; await boot(); }
   initAuth();
   if ('serviceWorker' in navigator){ try{ await navigator.serviceWorker.register('./sw.js'); }catch(e){} }
   // periodic background sync + refresh while app is open
