@@ -883,8 +883,16 @@ async function api(action, payload){
    optimistic "Clock Out" state briefly overwritten by a pre-write snapshot). */
 let mutsInFlight = 0;
 let inflightQids = new Set(); // queued copies currently being delivered — flushQueue must skip them
+let tempIdMap = {};           // tmp_ id -> real EntryID, learned from punch responses/replays
 const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry|addManualEntry)$/;
 async function apiMutate(action, payload, optimistic){
+  // If we've since learned the real id for a tmp_ entry, swap it in before sending.
+  if (payload && typeof payload.entryId==='string' && tempIdMap[payload.entryId])
+    payload = { ...payload, entryId: tempIdMap[payload.entryId] };
+  // An action referencing a STILL-UNSYNCED tmp_ entry can't be sent directly — the server
+  // doesn't know that id yet ("Entry not found" = the dead GNG clock-out). Queue it instead;
+  // flushQueue delivers in order (the pending clock-in first) and remaps the id.
+  const tempRef = payload && typeof payload.entryId==='string' && payload.entryId.indexOf('tmp_')===0;
   const tracked = MUTATING.test(action);
   if (tracked) mutsInFlight++;
   const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
@@ -895,7 +903,7 @@ async function apiMutate(action, payload, optimistic){
     // tap) the request dies, and without this the punch would silently vanish. On next open
     // flushQueue replays it, and the `at` timestamp keeps the recorded time correct.
     if (tracked){ inflightQids.add(qid); await DB.enqueue(item); }
-    if (S.online){
+    if (S.online && !tempRef){
       try {
         const data = await api(action, payload);
         if (tracked) await DB.del(qid); // delivered — clear the write-ahead copy
@@ -909,6 +917,7 @@ async function apiMutate(action, payload, optimistic){
       }
     }
     if (!tracked) await DB.enqueue(item); // non-punch actions queue only on network failure
+    if (tempRef && S.online) setTimeout(flushQueue, 50); // deliver the chain now, in order
     return { queued:true, qid };
   } finally {
     if (tracked) mutsInFlight--;
@@ -927,11 +936,20 @@ async function flushQueue(){
     for (const it of items){
       if (inflightQids.has(it.qid)) continue; // apiMutate is delivering this one right now
       const p = { ...it.payload };
-      // remap any temp entryId to the real one produced earlier in this flush
-      if (p.entryId && idMap[p.entryId]) p.entryId = idMap[p.entryId];
+      // remap any temp entryId to the real one (from this flush OR learned earlier)
+      if (p.entryId && (idMap[p.entryId] || tempIdMap[p.entryId]))
+        p.entryId = idMap[p.entryId] || tempIdMap[p.entryId];
       try {
         const data = await api(it.action, p);
-        if (it.tempId && data && data.entry && data.entry.EntryID) idMap[it.tempId] = data.entry.EntryID;
+        if (it.tempId && data && data.entry && data.entry.EntryID){
+          idMap[it.tempId] = data.entry.EntryID;
+          tempIdMap[it.tempId] = data.entry.EntryID; // remember across flush runs
+          // A clock-in delivered LATE: repair local state still holding the temp id, so
+          // the running clock and any follow-up actions use the real entry.
+          if (S.openEntry && S.openEntry.EntryID===it.tempId) S.openEntry = data.entry;
+          const ix=(S.entries||[]).findIndex(x=>x.EntryID===it.tempId);
+          if (ix>=0) S.entries[ix] = data.entry;
+        }
         await DB.del(it.qid); processed++;
       } catch(e){
         // Network problem OR auth problem (expired token): STOP and retry later —
@@ -953,7 +971,7 @@ async function flushQueue(){
   }
   // The old unconditional refresh here fired a full 4-6s bootstrap every 60s (the periodic
   // sync timer) even with an empty queue — a constant background drag for zero new data.
-  if (processed) await refresh(true);
+  if (processed){ saveBootCache(); await refresh(true); }
 }
 
 /* ============================================================================
@@ -1120,7 +1138,7 @@ async function doClockIn(payload){
   catch(e){ toast(e.message); refresh(true); return; } // e.g. already clocked in on another device
   // The response IS the authoritative entry — no full refresh needed (the old one here was
   // both a wasted 4-6s call and a flicker source).
-  if (r && r.entry){ S.openEntry = r.entry; upsertLocalEntry(r.entry); }
+  if (r && r.entry){ tempIdMap[tempId]=r.entry.EntryID; S.openEntry = r.entry; upsertLocalEntry(r.entry); }
   saveBootCache();
   if (!gps) retryGpsPatch((r && r.entry ? r.entry.EntryID : tempId), 'in');
   if (r && r.queued) toast('Clocked in (will sync)');
@@ -1151,7 +1169,7 @@ async function doSwitchSite(payload){
   let r=null;
   try { r = await apiMutate('switchJobSite', { ...payload, gps, at }, { tempId }); }
   catch(e){ toast(e.message); refresh(true); return; }
-  if (r && r.entry){ S.openEntry=r.entry; upsertLocalEntry(r.entry); }
+  if (r && r.entry){ tempIdMap[tempId]=r.entry.EntryID; S.openEntry=r.entry; upsertLocalEntry(r.entry); }
   saveBootCache();
   toast('Switched job site');
 }
@@ -1246,6 +1264,19 @@ function hrsTodayFor(key){
     total += Number(e.Hours)||0;
   }
   return total;
+}
+/* The big timer continues from earlier time ONLY when RESUMING a paused job. A fresh
+   clock-in after a full clock-out starts at 0:00 — earlier hours worked today on the same
+   job show in the small sub-line instead ("timer started at 37 seconds" bug). */
+function resumedPrevMs(){
+  if (!S.openEntry) return 0;
+  const k=jobKey(S.openEntry), t=todayStr();
+  for (const e of (S.entries||[])){ // newest-first: the first closed segment today decides
+    if (String(e.Date).slice(0,10)!==t || !e.ClockOut || jobKey(e)!==k) continue;
+    if (e.Source==='paused') return hrsTodayFor(k)*3600000; // resuming — continue the count
+    if (e.Source==='live') return 0;                        // was fully clocked out — fresh start
+  }
+  return 0;
 }
 function pausedCard(){
   const p=pausedToday(); if(!p.length) return '';
@@ -1474,7 +1505,7 @@ function tickTimer(){
   // was confirmed — time spent filling in the form doesn't count as work.
   const now = coState ? new Date(coState.stopAt).getTime() : Date.now();
   const startMs=new Date(S.openEntry.ClockIn).getTime();
-  const prevMs = hrsTodayFor(jobKey(S.openEntry)) * 3600000; // earlier stretches today, this job
+  const prevMs = resumedPrevMs(); // continues the count ONLY when resuming a paused job
   let closedBrkMs=0, curBrkStart=null;
   for (const b of openBreaks()){
     if (b.e) closedBrkMs += Math.max(0, new Date(b.e)-new Date(b.s));
@@ -1490,6 +1521,8 @@ function tickTimer(){
     node.textContent = fmtDur(prevMs + stretchMs);
     let bits=[];
     if (prevMs>0) bits.push('this stretch '+fmtDur(stretchMs));
+    else { const tMs=hrsTodayFor(jobKey(S.openEntry))*3600000;
+      if (tMs>0) bits.push('earlier today '+fmtDur(tMs)); } // context without inflating the big number
     if (closedBrkMs) bits.push('breaks '+Math.round(closedBrkMs/60000)+' min');
     if (sub) sub.textContent = bits.join(' · ');
   }
@@ -1798,6 +1831,7 @@ function cancelClockOutReview(){
 
 function coTimes(){
   const c=coState; if(!c) return;
+  const before = c.inAt+'|'+c.outAt+'|'+c.breakMin; // to reset the over-break warning on change
   const dstr=localDateStr(new Date(c.origInAt)); // times are anchored to the shift's start date
   const inV=val('coIn'), outV=val('coOut');
   if (inV && inV!==fmtHM(c.origInAt)){
@@ -1812,6 +1846,11 @@ function coTimes(){
     }
   } else if (outV){ c.outAt=c.stopAt; c.outEdited=false; }
   c.breakMin = Math.max(0, Number(val('coBreak'))||0);
+  // Any change to the numbers voids a pending "clock out anyway" confirmation.
+  if (c.breakWarned && (c.inAt+'|'+c.outAt+'|'+c.breakMin) !== before){
+    c.breakWarned = false;
+    const sub=document.getElementById('coSubmit'); if (sub) sub.textContent='Submit';
+  }
   coUpdateWorked();
 }
 function coUpdateWorked(){
@@ -1822,9 +1861,10 @@ function coUpdateWorked(){
   const overnight=localDateStr(new Date(c.outAt))!==localDateStr(new Date(c.inAt));
   box.innerHTML = `Worked <b>${fmtDur(Math.max(0,gms))}</b>${bmin?` − ${bmin} min break`:''} → <b>${net.toFixed(2)} hrs</b>`+
     (overnight?' <span class="pill pending">overnight</span>':'')+
+    (bmin*60000>Math.max(0,gms)?' <span style="color:var(--bad)">⚠ break exceeds time worked</span>':'')+
     (bmin!==c.autoBreakMin?` <span class="muted">(auto-tracked: ${c.autoBreakMin} min)</span>`:'');
   const sub=document.getElementById('coSubmit');
-  if (sub) sub.disabled = !(gms>0);
+  if (sub) sub.disabled = !(gms>0); // over-break is warn-and-confirm, never disabled
 }
 
 /* job change (inline open-PO picker, same data as the clock-in screen) */
@@ -1906,11 +1946,19 @@ async function submitClockOut(){
   if (!(gms>0)){ toast('Clock-out must be after clock-in — check the times.'); return; }
   if (new Date(c.outAt).getTime() > Date.now()+5*60000){ toast("Clock-out time can't be in the future."); return; }
   const bmin=Number(c.breakMin)||0;
-  if (bmin*60000 > gms){ toast('Break is longer than the whole shift — check the times.'); return; }
+  if (bmin*60000 > gms && !c.breakWarned){
+    // Warn, don't hard-block: mistakes happen, but so do real short days. A second tap
+    // on Submit (now relabelled) confirms and clocks out at 0 net hours.
+    c.breakWarned = true;
+    const sub=document.getElementById('coSubmit'); if (sub) sub.textContent='Clock out anyway (0 hrs)';
+    toast('Break is longer than time worked — tap again to clock out anyway');
+    coUpdateWorked();
+    return;
+  }
   coState=null; closeSheet();
   S.mutSeq++; // flicker guard — invalidate any in-flight bootstrap snapshot
   const gross=Math.round((gms/3600000)*100)/100;
-  const brkHrs=Math.round((bmin/60)*100)/100;
+  const brkHrs=Math.min(Math.round((bmin/60)*100)/100, gross); // confirmed over-break clamps to the shift
   const net=Math.max(0, Math.round((gross-brkHrs)*100)/100);
   const prevNotes=(S.openEntry&&S.openEntry.Notes)||'';
   const closing={ ...(S.openEntry||{}), EntryID:c.entryId, ClockIn:c.inAt, ClockOut:c.outAt,
@@ -1922,6 +1970,9 @@ async function submitClockOut(){
   S.openEntry=null; render();
   saveBootCache(); // persist the clocked-OUT state NOW — reopening the app mid-request must
                    // paint "Clock In", not resurrect the Clock Out button
+  // Confirmation card IMMEDIATELY — it used to wait out the 4-6s server round trip. The
+  // numbers are computed locally (same math as the server); its values reconcile below.
+  showEncouragement(net, weekHours() > (S.config.otThreshold||44), brkHrs);
   const p={ entryId:c.entryId, at:c.outAt, gps:c.gps, notes:c.notes, breakMin:bmin };
   if (c.inEdited) p.clockInAt=c.inAt;
   if (c.jobEdited){ p.jobSite=c.jobSite; p.poNumber=c.poNumber; p.company=c.company; }
@@ -1940,9 +1991,6 @@ async function submitClockOut(){
   }
   saveBootCache();
   if (!c.gps) retryGpsPatch(c.entryId, 'out');
-  const hrs=(r&&r.hours!=null)?r.hours:net;
-  const breakHrs=(r&&r.breakHrs!=null)?r.breakHrs:brkHrs;
-  showEncouragement(hrs, r&&r.weekOvertime, breakHrs);
 }
 
 /* ---- Manual entry ---- */
