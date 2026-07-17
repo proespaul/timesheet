@@ -891,6 +891,7 @@ let syncing = false;
 async function flushQueue(){
   if (syncing || !S.online || !S.session) return;
   syncing = true;
+  let processed = 0; // only pay for a full refresh when something actually synced
   try {
     const items = (await DB.all()).sort((a,b)=>a.ts-b.ts);
     const idMap = {}; // tempId -> real EntryID
@@ -901,7 +902,7 @@ async function flushQueue(){
       try {
         const data = await api(it.action, p);
         if (it.tempId && data && data.entry && data.entry.EntryID) idMap[it.tempId] = data.entry.EntryID;
-        await DB.del(it.qid);
+        await DB.del(it.qid); processed++;
       } catch(e){
         // Network problem OR auth problem (expired token): STOP and retry later —
         // never drop queued work for a recoverable failure.
@@ -909,13 +910,15 @@ async function flushQueue(){
         // genuine validation error — drop so the queue doesn't jam, but tell the user
         console.warn('Dropping queued action', it.action, e.message);
         toast('A queued "'+it.action+'" could not sync: '+e.message);
-        await DB.del(it.qid);
+        await DB.del(it.qid); processed++;
       }
     }
   } finally {
     syncing = false;
   }
-  await refresh(true);
+  // The old unconditional refresh here fired a full 4-6s bootstrap every 60s (the periodic
+  // sync timer) even with an empty queue — a constant background drag for zero new data.
+  if (processed) await refresh(true);
 }
 
 /* ============================================================================
@@ -1032,61 +1035,42 @@ function retryGpsPatch(entryId, which){
   getGps(30000).then(g=>{ if (g) apiMutate('patchGps', { entryId, which, gps:g }); });
 }
 async function doClockIn(payload){
-  const gps = await getGps(4000); // cap the GPS wait — clock-in shouldn't stall on a slow fix
   const tempId = 'tmp_' + Date.now();
-  // optimistic local open entry
-  S.openEntry = { EntryID: tempId, ClockIn: new Date().toISOString(), Company: payload.company||'',
+  const at = new Date().toISOString(); // punch time = tap time, even if the request syncs later
+  // optimistic local open entry — UI responds at the tap, BEFORE the GPS wait
+  S.openEntry = { EntryID: tempId, ClockIn: at, Company: payload.company||'',
     'Customer/Job Site': payload.jobSite||'', 'PO#': payload.poNumber||'', Status:'approved', Source:'live', _local:true };
   render();
   showClockinMsg(); // greet instantly at the tap — don't make it wait on the network
-  const r = await apiMutate('clockIn', { ...payload, gps }, { tempId });
+  const gps = await getGps(4000); // AFTER the UI update — a slow fix must never freeze the tap
+  const r = await apiMutate('clockIn', { ...payload, gps, at }, { tempId });
   if (r && r.entry) S.openEntry = r.entry;
   refresh(true); // background — UI is already correct optimistically
   if (!gps) retryGpsPatch((r && r.entry ? r.entry.EntryID : tempId), 'in');
   if (r && r.queued) toast('Clocked in (will sync)');
 }
-async function doClockOut(extra){
-  if (!S.openEntry) return;
-  const gps = await getGps(4000);
-  const entryId = S.openEntry.EntryID;
-  const started = new Date(S.openEntry.ClockIn);
-  const gross = (Date.now()-started)/3600000;
-  const brk = breakHrsSoFar(); // open break gets closed at clock-out
-  const netLocal = Math.round(Math.max(0, gross-brk)*100)/100;
-  const closing = { ...S.openEntry, ClockOut:new Date().toISOString(), Hours:netLocal,
-    'Gross Hours':Math.round(gross*100)/100, 'Break Hrs':Math.round(brk*100)/100,
-    Source:'live', Date:S.openEntry.Date||todayStr() };
-  upsertLocalEntry(closing); // real clock-out: Source stays 'live' → drops off Paused-today
-  S.openEntry = null; render();
-  const r = await apiMutate('clockOut', { entryId, gps, notes:(extra&&extra.notes)||'' }, { tempId: entryId });
-  refresh(true); // background
-  if (!gps) retryGpsPatch(entryId, 'out');
-  const net = (r && r.hours!=null) ? r.hours : netLocal;         // server value wins when online
-  const breakHrs = (r && r.breakHrs!=null) ? r.breakHrs : Math.round(brk*100)/100;
-  // Materials prompt first, encouragement after Done/Skip.
-  openMaterialsPrompt(
-    { entryId, jobSite: closing['Customer/Job Site']||closing.Company||'', poNumber: closing['PO#']||'' },
-    { hrs: net, ot: r && r.weekOvertime, breakHrs });
-}
+/* Clock-out itself now lives in the review flow (openClockOut → startClockOutReview →
+   submitClockOut) — nothing is finalized until Submit is tapped there. */
 function upsertLocalEntry(e){
   const i=(S.entries||[]).findIndex(x=>x.EntryID===e.EntryID);
   if (i>=0) S.entries[i]=e; else S.entries.unshift(e);
 }
 async function doSwitchSite(payload){
-  const gps = await getGps(4000);
+  const at = new Date().toISOString(); // one boundary instant for both segments
   // Optimistically close the current segment as 'paused' so the Paused-today list and
-  // cumulative timer are right immediately (and offline).
+  // cumulative timer are right immediately (and offline) — BEFORE the GPS wait.
   if (S.openEntry){
-    const gross=(Date.now()-new Date(S.openEntry.ClockIn))/3600000;
-    const brk=breakHrsSoFar();
-    upsertLocalEntry({ ...S.openEntry, ClockOut:new Date().toISOString(),
+    const gross=(new Date(at)-new Date(S.openEntry.ClockIn))/3600000;
+    const brk=breakHrsSoFar(at);
+    upsertLocalEntry({ ...S.openEntry, ClockOut:at,
       Hours: Math.round(Math.max(0,gross-brk)*100)/100, Source:'paused', Date:S.openEntry.Date||todayStr() });
   }
   const tempId='tmp_'+Date.now();
-  S.openEntry={ EntryID:tempId, ClockIn:new Date().toISOString(), Company:payload.company||'',
+  S.openEntry={ EntryID:tempId, ClockIn:at, Company:payload.company||'',
     'Customer/Job Site':payload.jobSite||'', 'PO#':payload.poNumber||'', Status:'approved', Source:'live', _local:true };
   render();
-  const r = await apiMutate('switchJobSite', { ...payload, gps }, { tempId });
+  const gps = await getGps(4000);
+  const r = await apiMutate('switchJobSite', { ...payload, gps, at }, { tempId });
   if (r && r.entry) S.openEntry=r.entry;
   refresh(true); // background
   toast('Switched job site');
@@ -1151,8 +1135,9 @@ function offlineBanner(){
 /* Break helpers: break intervals live in the open entry's Breaks JSON column. */
 function openBreaks(){ try{ return JSON.parse((S.openEntry&&S.openEntry['Breaks JSON'])||'[]')||[]; }catch(e){ return []; } }
 function onBreak(){ const b=openBreaks(); return b.length>0 && !b[b.length-1].e; }
-function breakHrsSoFar(){
-  let ms=0; for (const b of openBreaks()) ms += Math.max(0,(b.e?new Date(b.e):new Date()) - new Date(b.s));
+function breakHrsSoFar(asOf){
+  const end = asOf ? new Date(asOf) : new Date();
+  let ms=0; for (const b of openBreaks()) ms += Math.max(0,(b.e?new Date(b.e):end) - new Date(b.s));
   return ms/3600000;
 }
 /* Jobs worked earlier today (paused, i.e. clocked-out live segments) that aren't the active one. */
@@ -1273,7 +1258,13 @@ function gpsBadge(e){
   return bits.length?`<div class="small">${bits.join(' · ')}</div>`:'';
 }
 function entryRow(e, employeeEmail){
-  const canEdit = (e.Status!=='approved') || S.me.role==='admin';
+  // Own entries are always editable (a mistake caught later can be fixed) — the backend
+  // sends employee edits to approved entries back to 'pending' for admin re-approval.
+  const isSelf = (employeeEmail||S.me.email)===S.me.email;
+  const canEdit = isSelf || S.me.role==='admin' || (S.me.permissions&&S.me.permissions.editPastEntries);
+  // "edited after the fact" marker: Last Edited At well after the entry closed = a later fix.
+  const edited = e['Last Edited At'] && e.ClockOut &&
+    (new Date(e['Last Edited At']) - new Date(e.ClockOut) > 5*60000);
   const site = e['Customer/Job Site'] || e.Company || '—';
   const k = reg({ e, employeeEmail: employeeEmail || S.me.email });
   return `<div class="list-item">
@@ -1288,6 +1279,7 @@ function entryRow(e, employeeEmail){
     ${gpsBadge(e)}
     ${e.Notes?`<div class="small" style="margin-top:4px">${esc(e.Notes)}</div>`:''}
     ${e.Status==='rejected'&&e['Reject Note']?`<div class="small" style="color:#f87171">Rejected: ${esc(e['Reject Note'])}</div>`:''}
+    ${edited?`<div class="small muted">✎ edited ${fmtDay(e['Last Edited At'])} ${fmtTime(e['Last Edited At'])} by ${esc(String(e['Last Edited By']||'').split('@')[0])}</div>`:''}
     ${e.Media?`<div class="small"><a href="#" onclick="openMediaView('${k}');return false" style="color:var(--accent2)">📎 ${String(e.Media).split(' | ').filter(Boolean).length} photo/video</a></div>`:''}
     <div class="row" style="margin-top:6px">
       ${canEdit?`<button class="ghost" onclick="openEditEntry('${k}')">Edit</button>`:''}
@@ -1385,7 +1377,10 @@ function tickTimer(){
   // this one), so resuming a paused job continues from where it left off instead of 0:00.
   const node=document.getElementById('runningTimer'); const sub=document.getElementById('timerSub');
   if (!node || !S.openEntry){ if(timerInt){clearInterval(timerInt); timerInt=null;} return; }
-  const now=Date.now(), startMs=new Date(S.openEntry.ClockIn).getTime();
+  // While the clock-out review screen is open, the clock is frozen at the moment Clock Out
+  // was confirmed — time spent filling in the form doesn't count as work.
+  const now = coState ? new Date(coState.stopAt).getTime() : Date.now();
+  const startMs=new Date(S.openEntry.ClockIn).getTime();
   const prevMs = hrsTodayFor(jobKey(S.openEntry)) * 3600000; // earlier stretches today, this job
   let closedBrkMs=0, curBrkStart=null;
   for (const b of openBreaks()){
@@ -1604,18 +1599,250 @@ async function submitPicker(){
   if (pickerState.isSwitch) await doSwitchSite(p); else await doClockIn(p);
 }
 
-/* ---- Clock out ---- */
+/* ---- Clock out: confirm → review-and-edit → Submit ----
+   The entry is only finalized when Submit is tapped. "Keep working" returns to the running
+   clock — nothing was sent, so no time is lost either way. The clock-out time is the moment
+   you CONFIRMED (coState.stopAt), not when you finish the form: filling in materials and
+   photos doesn't pad the day. */
+let coState=null, coJobResults=[], coMatResults=[];
+
 function openClockOut(){
-  sheet(`<h2>Clock out</h2>
-    <p class="muted small">${esc(S.openEntry['Customer/Job Site']||S.openEntry.Company||'')}</p>
-    <label>Add a note (optional)</label>
-    <textarea id="outNotes" rows="2" placeholder="Anything to record?"></textarea>
+  const site = S.openEntry && (S.openEntry['Customer/Job Site']||S.openEntry.Company) || '';
+  sheet(`<div class="center">
+    <h2>Clock out?</h2>
+    ${site?`<p class="muted">${esc(site)}</p>`:''}
+    <p class="small muted">Next you'll review your day — nothing is saved until you hit Submit.</p>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="closeSheet()">Cancel</button>
-      <button class="grow" onclick="confirmClockOut()">Clock out</button>
-    </div>`);
+      <button class="grow" style="background:linear-gradient(135deg,#dc2626,#f97316)" onclick="startClockOutReview()">Yes, clock out</button>
+    </div></div>`);
 }
-async function confirmClockOut(){ const notes=(document.getElementById('outNotes')||{}).value||''; closeSheet(); await doClockOut({notes}); }
+
+function startClockOutReview(){
+  if (!S.openEntry){ closeSheet(); return; }
+  const stopAt = new Date().toISOString();
+  const brkMin = Math.round(breakHrsSoFar(stopAt)*60);
+  coState = {
+    entryId: S.openEntry.EntryID,
+    origInAt: S.openEntry.ClockIn,   // untouched original, for "did they edit it?"
+    inAt: S.openEntry.ClockIn,
+    stopAt,                          // confirm moment — the default clock-out time
+    outAt: stopAt,
+    inEdited: false, outEdited: false, jobEdited: false,
+    jobSite: S.openEntry['Customer/Job Site']||'',
+    poNumber: S.openEntry['PO#']||'',
+    company: S.openEntry.Company||'',
+    breakMin: brkMin, autoBreakMin: brkMin,
+    notes: '', items: [], media: [], gps: null,
+  };
+  // GPS resolves while they review; if they submit first, it patches in afterwards.
+  const eid = coState.entryId;
+  getGps(15000).then(g=>{
+    if (!g) return;
+    if (coState && coState.entryId===eid) coState.gps=g;
+    else apiMutate('patchGps',{entryId:eid, which:'out', gps:g});
+  });
+  loadMaterials(); loadCustomers();
+  renderClockOutReview();
+}
+
+function fmtHM(iso){ const d=new Date(iso); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+function localDateStr(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+
+function renderClockOutReview(){
+  if (!coState) return;
+  const c = coState;
+  sheet(`
+    <h2 style="margin-bottom:2px">Review your day</h2>
+    <p class="small muted" style="margin-top:0">Fix anything that's wrong, then Submit.</p>
+    <div class="card" style="margin:10px 0">
+      <div class="row between">
+        <div><b id="coJobName">${esc(c.jobSite||c.company||'—')}</b>
+          <span class="small muted" id="coJobPo">${c.poNumber?('PO '+esc(c.poNumber)):''}</span></div>
+        <button class="ghost" onclick="coToggleJob()">Change</button>
+      </div>
+      <div id="coJobPick" class="hidden">
+        <input id="coJobSearch" placeholder="Search open jobs…" autocomplete="off" oninput="coJobFilter(this.value)">
+        <div id="coJobList" style="max-height:30vh;overflow:auto"></div>
+        <label>Internal company time (no PO)</label>
+        <div>${S.companies.map(x=>`<span class="chip" onclick="coPickCompany('${esc(x)}')">${esc(x)}</span>`).join('')}</div>
+      </div>
+    </div>
+    <div class="card" style="margin:10px 0">
+      <div class="row">
+        <div class="grow"><label style="margin-top:0">Clock in</label>
+          <input id="coIn" type="time" value="${fmtHM(c.inAt)}" onchange="coTimes()"></div>
+        <div class="grow"><label style="margin-top:0">Clock out</label>
+          <input id="coOut" type="time" value="${fmtHM(c.outAt)}" onchange="coTimes()"></div>
+        <div style="width:104px"><label style="margin-top:0">Break (min)</label>
+          <input id="coBreak" type="number" min="0" step="5" value="${c.breakMin}" oninput="coTimes()"></div>
+      </div>
+      <div class="small muted" id="coWorked"></div>
+    </div>
+    <label>What did you work on today?</label>
+    <textarea id="coNotes" rows="2" placeholder="Notes for this entry" oninput="coState&&(coState.notes=this.value)">${esc(c.notes)}</textarea>
+    <label>Materials used</label>
+    <input id="coMatSearch" placeholder="Search… e.g. half inch EMT, wago" autocomplete="off" oninput="coMatSuggest(this.value)">
+    <div id="coMatSug"></div>
+    <div id="coMatList"></div>
+    <label>Photos / videos</label>
+    <input type="file" accept="image/*,video/*" capture="environment" multiple onchange="coAddMedia(this)">
+    <div id="coMedia" class="row" style="flex-wrap:wrap;align-items:flex-start"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="cancelClockOutReview()">← Keep working</button>
+      <button class="grow" id="coSubmit" onclick="submitClockOut()">Submit</button>
+    </div>
+  `);
+  // A stray tap on the backdrop must not throw away a half-filled review.
+  if (S._sheet) S._sheet.onclick = null;
+  coUpdateWorked(); coUpdateMats(); coUpdateMedia();
+}
+
+function cancelClockOutReview(){
+  coState=null; closeSheet(); render(); // timer resumes — the clock never actually stopped
+  toast('Still clocked in');
+}
+
+function coTimes(){
+  const c=coState; if(!c) return;
+  const dstr=localDateStr(new Date(c.origInAt)); // times are anchored to the shift's start date
+  const inV=val('coIn'), outV=val('coOut');
+  if (inV && inV!==fmtHM(c.origInAt)){
+    const t=new Date(dstr+'T'+inV);
+    if(!isNaN(t)){ c.inAt=t.toISOString(); c.inEdited=true; }
+  } else if (inV){ c.inAt=c.origInAt; c.inEdited=false; }
+  if (outV && outV!==fmtHM(c.stopAt)){
+    let t=new Date(dstr+'T'+outV);
+    if(!isNaN(t)){
+      if (t <= new Date(c.inAt)) t=new Date(t.getTime()+86400000); // out before in = overnight shift
+      c.outAt=t.toISOString(); c.outEdited=true;
+    }
+  } else if (outV){ c.outAt=c.stopAt; c.outEdited=false; }
+  c.breakMin = Math.max(0, Number(val('coBreak'))||0);
+  coUpdateWorked();
+}
+function coUpdateWorked(){
+  const box=document.getElementById('coWorked'); const c=coState; if(!box||!c) return;
+  const gms=new Date(c.outAt)-new Date(c.inAt);
+  const bmin=Number(c.breakMin)||0;
+  const net=Math.max(0, gms/3600000 - bmin/60);
+  const overnight=localDateStr(new Date(c.outAt))!==localDateStr(new Date(c.inAt));
+  box.innerHTML = `Worked <b>${fmtDur(Math.max(0,gms))}</b>${bmin?` − ${bmin} min break`:''} → <b>${net.toFixed(2)} hrs</b>`+
+    (overnight?' <span class="pill pending">overnight</span>':'')+
+    (bmin!==c.autoBreakMin?` <span class="muted">(auto-tracked: ${c.autoBreakMin} min)</span>`:'');
+  const sub=document.getElementById('coSubmit');
+  if (sub) sub.disabled = !(gms>0);
+}
+
+/* job change (inline open-PO picker, same data as the clock-in screen) */
+function coToggleJob(){ const d=document.getElementById('coJobPick'); if(!d) return;
+  d.classList.toggle('hidden'); if(!d.classList.contains('hidden')) coJobFilter(val('coJobSearch')); }
+function coJobFilter(q){
+  const box=document.getElementById('coJobList'); if(!box) return;
+  coJobResults=openPOs(q);
+  box.innerHTML = coJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="coPickJob(${i})"><b>${esc(c.po)}</b> · ${esc(c.name)}</div>`).join('')
+    || '<p class="small muted">No open POs match.</p>';
+}
+function coPickJob(i){ const c=coJobResults[i]; if(!c||!coState) return;
+  coState.jobSite=c.name; coState.poNumber=c.po; coState.company=''; coState.jobEdited=true;
+  coJobHeader(); coToggleJob(); }
+function coPickCompany(x){ if(!coState) return;
+  coState.company=x; coState.jobSite=''; coState.poNumber=''; coState.jobEdited=true;
+  coJobHeader(); coToggleJob(); }
+function coJobHeader(){ const c=coState; if(!c) return;
+  const n=document.getElementById('coJobName'), p=document.getElementById('coJobPo');
+  if(n) n.textContent=c.jobSite||c.company||'—';
+  if(p) p.textContent=c.poNumber?('PO '+c.poNumber):''; }
+
+/* materials (running, editable list — same search as before, now inline) */
+function coMatSuggest(q){
+  const box=document.getElementById('coMatSug'); if(!box) return;
+  if(!q.trim()){ box.innerHTML=''; return; }
+  coMatResults=localMatSearch(q); let h='';
+  coMatResults.forEach((m,i)=>{ h+=`<div onclick="coMatPick(${i})">${esc(m.name)}${m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}</div>`; });
+  h+=`<div onclick="coMatTyped()">➕ Add “${esc(q)}” as typed <span class="small muted">(admin will review)</span></div>`;
+  box.innerHTML=`<div class="suggest">${h}</div>`;
+}
+function coMatPick(i){ const m=coMatResults[i]; if(!m||!coState) return;
+  coState.items.push({name:m.name, unit:m.unit||'', qty:1, matched:true}); coMatClear(); coUpdateMats(); }
+function coMatTyped(){ const q=val('coMatSearch').trim(); if(!q||!coState) return;
+  coState.items.push({name:q, unit:'', qty:1, matched:false}); coMatClear(); coUpdateMats(); }
+function coMatClear(){ const i=document.getElementById('coMatSearch'); if(i){ i.value=''; i.focus(); }
+  const b=document.getElementById('coMatSug'); if(b) b.innerHTML=''; }
+function coMatQty(i,v){ if(coState&&coState.items[i]) coState.items[i].qty=v; }
+function coMatRemove(i){ if(!coState) return; coState.items.splice(i,1); coUpdateMats(); }
+function coUpdateMats(){
+  const box=document.getElementById('coMatList'); const c=coState; if(!box||!c) return;
+  box.innerHTML = c.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
+    c.items.map((it,i)=>`<div class="list-item row">
+      <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}</div>
+      <input type="number" step="any" min="0" value="${esc(it.qty)}" style="width:84px;margin:0;text-align:center" onchange="coMatQty(${i},this.value)">
+      <button class="ghost" onclick="coMatRemove(${i})" aria-label="Remove">✕</button>
+    </div>`).join('')+`</div>` : '';
+}
+
+/* photos / videos — attach to the entry right away (it already exists), local thumbnails */
+function coAddMedia(input){
+  if(!coState) return;
+  for (const f of Array.from(input.files||[])){
+    if (f.size > MAX_MEDIA_MB*1048576){ toast(`${f.name} is too large (max ${MAX_MEDIA_MB} MB)`); continue; }
+    const item={ name:f.name, isImg:/^image\//.test(f.type), objUrl:URL.createObjectURL(f), status:'uploading' };
+    coState.media.push(item);
+    const eid=coState.entryId, job=coState.jobSite||coState.company||'Unassigned';
+    fileToB64(f)
+      .then(b64=>apiMutate('uploadMedia',{entryId:eid, jobSite:job, filename:f.name, mimeType:f.type, dataBase64:b64}))
+      .then(r=>{ item.status=(r&&r.queued)?'queued':'done'; coUpdateMedia(); })
+      .catch(e=>{ item.status='failed'; coUpdateMedia(); toast('Upload failed: '+e.message); });
+  }
+  input.value='';
+  coUpdateMedia();
+}
+function coUpdateMedia(){
+  const box=document.getElementById('coMedia'); const c=coState; if(!box||!c) return;
+  box.innerHTML = c.media.map(m=>`<div class="center" style="width:96px">
+    ${m.isImg?`<img src="${m.objUrl}" style="width:96px;height:96px;object-fit:cover;border-radius:12px">`
+      :`<div style="width:96px;height:96px;border-radius:12px;background:var(--panel2);display:flex;align-items:center;justify-content:center;font-size:2rem">🎬</div>`}
+    <div class="small muted">${m.status==='uploading'?'uploading…':m.status==='done'?'✓ saved':m.status==='queued'?'queued':'⚠ failed'}</div>
+  </div>`).join('');
+}
+
+async function submitClockOut(){
+  const c=coState; if(!c) return;
+  coTimes(); // capture any input the change-event hasn't fired for yet
+  const gms=new Date(c.outAt)-new Date(c.inAt);
+  if (!(gms>0)){ toast('Clock-out must be after clock-in — check the times.'); return; }
+  if (new Date(c.outAt).getTime() > Date.now()+5*60000){ toast("Clock-out time can't be in the future."); return; }
+  const bmin=Number(c.breakMin)||0;
+  if (bmin*60000 > gms){ toast('Break is longer than the whole shift — check the times.'); return; }
+  coState=null; closeSheet();
+  const gross=Math.round((gms/3600000)*100)/100;
+  const brkHrs=Math.round((bmin/60)*100)/100;
+  const net=Math.max(0, Math.round((gross-brkHrs)*100)/100);
+  const prevNotes=(S.openEntry&&S.openEntry.Notes)||'';
+  const closing={ ...(S.openEntry||{}), EntryID:c.entryId, ClockIn:c.inAt, ClockOut:c.outAt,
+    Hours:net, 'Gross Hours':gross, 'Break Hrs':brkHrs,
+    Notes: prevNotes ? (c.notes? prevNotes+' | '+c.notes : prevNotes) : c.notes,
+    Company:c.company, 'Customer/Job Site':c.jobSite, 'PO#':c.poNumber,
+    Source:'live', Date:(S.openEntry&&S.openEntry.Date)||todayStr() };
+  upsertLocalEntry(closing); // real clock-out: Source stays 'live' → drops off Paused-today
+  S.openEntry=null; render();
+  const p={ entryId:c.entryId, at:c.outAt, gps:c.gps, notes:c.notes, breakMin:bmin };
+  if (c.inEdited) p.clockInAt=c.inAt;
+  if (c.jobEdited){ p.jobSite=c.jobSite; p.poNumber=c.poNumber; p.company=c.company; }
+  let r=null;
+  try { r = await apiMutate('clockOut', p, { tempId:c.entryId }); }
+  catch(e){ toast('Clock-out failed: '+e.message); refresh(true); return; }
+  if (c.items.length){
+    apiMutate('logMaterials',{ entryId:c.entryId, jobSite:c.jobSite||c.company||'', poNumber:c.poNumber||'', items:c.items });
+    const pend=c.items.filter(i=>!i.matched).length;
+    if (pend) toast(pend+' material item(s) flagged for admin review');
+  }
+  refresh(true); // background
+  if (!c.gps) retryGpsPatch(c.entryId, 'out');
+  const hrs=(r&&r.hours!=null)?r.hours:net;
+  const breakHrs=(r&&r.breakHrs!=null)?r.breakHrs:brkHrs;
+  showEncouragement(hrs, r&&r.weekOvertime, breakHrs);
+}
 
 /* ---- Manual entry ---- */
 function openManual(){
@@ -1643,32 +1870,116 @@ async function submitManual(){
   await refresh(true); toast('Submitted for approval');
 }
 
-/* ---- Edit entry ---- */
+/* ---- Edit entry (after submission too — mistakes caught later) ----
+   Same fields as the clock-out review. An employee's edit to an already-approved entry
+   sends it back to 'pending' for admin re-approval; every save stamps Last Edited By/At. */
+let edState=null, edJobResults=[], edMatResults=[];
 function openEditEntry(k){
-  const ref=dereg(k); if(!ref) return; const e=ref.e; const emp=ref.employeeEmail;
-  const inT = e.ClockIn? new Date(e.ClockIn).toTimeString().slice(0,5):'';
-  const outT= e.ClockOut? new Date(e.ClockOut).toTimeString().slice(0,5):'';
-  const date=(e.ClockIn||e.Date||'').slice(0,10);
+  const ref=dereg(k); if(!ref) return; const e=ref.e;
+  edState={ e, employeeEmail:ref.employeeEmail,
+    jobSite:e['Customer/Job Site']||'', poNumber:e['PO#']||'', company:e.Company||'',
+    jobEdited:false, items:[] };
+  loadMaterials(); loadCustomers();
+  const inT = e.ClockIn? fmtHM(e.ClockIn):'';
+  const outT= e.ClockOut? fmtHM(e.ClockOut):'';
+  const date= e.ClockIn? localDateStr(new Date(e.ClockIn)) : String(e.Date||'').slice(0,10);
+  const brkMin=Math.round((Number(e['Break Hrs'])||0)*60);
+  const reflagNote = e.Status==='approved' && S.me.role!=='admin';
   sheet(`<h2>Edit entry</h2>
-    <label>Date</label><input id="eDate" type="date" value="${esc(date)}">
+    ${reflagNote?'<p class="small muted">This entry was already approved — saving changes sends it back to an admin for re-approval.</p>':''}
+    <div class="card" style="margin:10px 0">
+      <div class="row between">
+        <div><b id="edJobName">${esc(edState.jobSite||edState.company||'—')}</b>
+          <span class="small muted" id="edJobPo">${edState.poNumber?('PO '+esc(edState.poNumber)):''}</span></div>
+        <button class="ghost" onclick="edToggleJob()">Change</button>
+      </div>
+      <div id="edJobPick" class="hidden">
+        <input id="edJobSearch" placeholder="Search open jobs…" autocomplete="off" oninput="edJobFilter(this.value)">
+        <div id="edJobList" style="max-height:30vh;overflow:auto"></div>
+        <label>Internal company time (no PO)</label>
+        <div>${S.companies.map(x=>`<span class="chip" onclick="edPickCompany('${esc(x)}')">${esc(x)}</span>`).join('')}</div>
+      </div>
+    </div>
+    <label>Date (the day the shift started)</label><input id="eDate" type="date" value="${esc(date)}">
     <div class="row"><div class="grow"><label>In</label><input id="eIn" type="time" value="${esc(inT)}"></div>
-      <div class="grow"><label>Out</label><input id="eOut" type="time" value="${esc(outT)}"></div></div>
-    <label>Customer / job site</label><input id="eSite" value="${esc(e['Customer/Job Site']||'')}">
+      <div class="grow"><label>Out</label><input id="eOut" type="time" value="${esc(outT)}"></div>
+      <div style="width:104px"><label>Break (min)</label><input id="eBreak" type="number" min="0" step="5" value="${brkMin}"></div></div>
+    <p class="small muted" style="margin:2px 0 0">Out earlier than in = overnight shift (ends the next day).</p>
     <label>Notes</label><textarea id="eNotes" rows="2">${esc(e.Notes||'')}</textarea>
+    <label>Add materials to this entry</label>
+    <input id="edMatSearch" placeholder="Search materials…" autocomplete="off" oninput="edMatSuggest(this.value)">
+    <div id="edMatSug"></div><div id="edMatList"></div>
     <div class="row" style="margin-top:14px">
-      <button class="secondary grow" onclick="closeSheet()">Cancel</button>
-      <button class="grow" onclick="submitEdit('${esc(e.EntryID)}','${esc(emp)}')">Save</button>
+      <button class="secondary grow" onclick="edState=null;closeSheet()">Cancel</button>
+      <button class="grow" onclick="submitEdit()">Save</button>
     </div>`);
 }
-async function submitEdit(entryId, employeeEmail){
-  const date=val('eDate');
-  const p={ entryId, employeeEmail,
-    date, clockIn: date&&val('eIn')? new Date(date+'T'+val('eIn')).toISOString():undefined,
-    clockOut: date&&val('eOut')? new Date(date+'T'+val('eOut')).toISOString():undefined,
-    jobSite: val('eSite'), notes: val('eNotes') };
-  closeSheet();
-  await apiMutate('editEntry', p);
-  await refresh(true); toast('Saved');
+function edToggleJob(){ const d=document.getElementById('edJobPick'); if(!d) return;
+  d.classList.toggle('hidden'); if(!d.classList.contains('hidden')) edJobFilter(val('edJobSearch')); }
+function edJobFilter(q){
+  const box=document.getElementById('edJobList'); if(!box) return;
+  edJobResults=openPOs(q);
+  box.innerHTML = edJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="edPickJob(${i})"><b>${esc(c.po)}</b> · ${esc(c.name)}</div>`).join('')
+    || '<p class="small muted">No open POs match.</p>';
+}
+function edPickJob(i){ const c=edJobResults[i]; if(!c||!edState) return;
+  edState.jobSite=c.name; edState.poNumber=c.po; edState.company=''; edState.jobEdited=true;
+  edJobHeader(); edToggleJob(); }
+function edPickCompany(x){ if(!edState) return;
+  edState.company=x; edState.jobSite=''; edState.poNumber=''; edState.jobEdited=true;
+  edJobHeader(); edToggleJob(); }
+function edJobHeader(){ const s=edState; if(!s) return;
+  const n=document.getElementById('edJobName'), p=document.getElementById('edJobPo');
+  if(n) n.textContent=s.jobSite||s.company||'—';
+  if(p) p.textContent=s.poNumber?('PO '+s.poNumber):''; }
+function edMatSuggest(q){
+  const box=document.getElementById('edMatSug'); if(!box) return;
+  if(!q.trim()){ box.innerHTML=''; return; }
+  edMatResults=localMatSearch(q); let h='';
+  edMatResults.forEach((m,i)=>{ h+=`<div onclick="edMatPick(${i})">${esc(m.name)}${m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}</div>`; });
+  h+=`<div onclick="edMatTyped()">➕ Add “${esc(q)}” as typed <span class="small muted">(admin will review)</span></div>`;
+  box.innerHTML=`<div class="suggest">${h}</div>`;
+}
+function edMatPick(i){ const m=edMatResults[i]; if(!m||!edState) return;
+  edState.items.push({name:m.name, unit:m.unit||'', qty:1, matched:true}); edMatClear(); edUpdateMats(); }
+function edMatTyped(){ const q=val('edMatSearch').trim(); if(!q||!edState) return;
+  edState.items.push({name:q, unit:'', qty:1, matched:false}); edMatClear(); edUpdateMats(); }
+function edMatClear(){ const i=document.getElementById('edMatSearch'); if(i){ i.value=''; i.focus(); }
+  const b=document.getElementById('edMatSug'); if(b) b.innerHTML=''; }
+function edMatQty(i,v){ if(edState&&edState.items[i]) edState.items[i].qty=v; }
+function edMatRemove(i){ if(!edState) return; edState.items.splice(i,1); edUpdateMats(); }
+function edUpdateMats(){
+  const box=document.getElementById('edMatList'); const s=edState; if(!box||!s) return;
+  box.innerHTML = s.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
+    s.items.map((it,i)=>`<div class="list-item row">
+      <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}</div>
+      <input type="number" step="any" min="0" value="${esc(it.qty)}" style="width:84px;margin:0;text-align:center" onchange="edMatQty(${i},this.value)">
+      <button class="ghost" onclick="edMatRemove(${i})" aria-label="Remove">✕</button>
+    </div>`).join('')+`</div>` : '';
+}
+async function submitEdit(){
+  const st=edState; if(!st) return;
+  const e=st.e;
+  const date=val('eDate'), inV=val('eIn'), outV=val('eOut');
+  if(!date){ toast('Date is required'); return; }
+  let inISO, outISO;
+  if (inV){ const t=new Date(date+'T'+inV); if(isNaN(t)){ toast('Bad clock-in time'); return; } inISO=t.toISOString(); }
+  if (outV){ let t=new Date(date+'T'+outV); if(isNaN(t)){ toast('Bad clock-out time'); return; }
+    if (inISO && t<=new Date(inISO)) t=new Date(t.getTime()+86400000); // overnight shift
+    outISO=t.toISOString(); }
+  const p={ entryId:e.EntryID, employeeEmail:st.employeeEmail, date,
+    clockIn:inISO, clockOut:outISO, notes:val('eNotes'), breakMin:Number(val('eBreak'))||0 };
+  if (st.jobEdited){ p.jobSite=st.jobSite; p.poNumber=st.poNumber; p.company=st.company; }
+  const mats=st.items.slice();
+  edState=null; closeSheet();
+  try{
+    const r=await apiMutate('editEntry', p);
+    if (mats.length) apiMutate('logMaterials',{ entryId:e.EntryID,
+      jobSite:(p.jobSite!==undefined?p.jobSite:e['Customer/Job Site'])||st.company||'',
+      poNumber:(p.poNumber!==undefined?p.poNumber:e['PO#'])||'', items:mats });
+    toast(r&&r.reflagged ? 'Saved — sent back for approval' : (r&&r.queued ? 'Saved (will sync)' : 'Saved'));
+  }catch(err){ toast(err.message); }
+  refresh(true);
 }
 
 /* ---- Media upload ---- */
@@ -1839,58 +2150,8 @@ function localMatSearch(q){
   scored.sort((a,b)=>a.score-b.score);
   return scored.slice(0,8).map(x=>x.m);
 }
-let matState=null, matResults=[];
-function openMaterialsPrompt(ctx, after){
-  matState = { ...ctx, items: [], after };
-  loadMaterials();
-  renderMaterials();
-}
-function renderMaterials(){
-  if (!matState) return;
-  const rows = matState.items.map((it,i)=>`<div class="list-item row">
-    <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}</div>
-    <input type="number" step="any" min="0" value="${esc(it.qty)}" style="width:84px;margin:0;text-align:center" onchange="matQty(${i},this.value)">
-    <button class="ghost" onclick="matRemove(${i})" aria-label="Remove">✕</button>
-  </div>`).join('');
-  sheet(`<h2>What materials did you use today?</h2>
-    <p class="small muted">${esc(matState.jobSite||'')}${matState.poNumber?' · PO '+esc(matState.poNumber):''}</p>
-    <input id="matSearch" placeholder="Search… e.g. half inch EMT, wago" autocomplete="off" oninput="onMatSearch(this.value)">
-    <div id="matSuggest"></div>
-    ${matState.items.length?`<label>Added — review before submitting (tap qty to edit)</label>
-      <div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">${rows}</div>`:''}
-    <div class="row" style="margin-top:14px">
-      <button class="secondary grow" onclick="finishMaterials(true)">Skip</button>
-      <button class="grow" onclick="finishMaterials(false)" ${matState.items.length?'':'disabled'}>Done${matState.items.length?' ('+matState.items.length+')':''}</button>
-    </div>`);
-}
-function onMatSearch(q){
-  const box=document.getElementById('matSuggest'); if(!box) return;
-  if(!q.trim()){ box.innerHTML=''; return; }
-  matResults=[]; let h='';
-  localMatSearch(q).forEach(m=>{ const i=matResults.push(m)-1;
-    h+=`<div onclick="matPick(${i})">${esc(m.name)}${m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}</div>`; });
-  h+=`<div onclick="matAddTyped()">➕ Add “${esc(q)}” as typed <span class="small muted">(admin will review)</span></div>`;
-  box.innerHTML=`<div class="suggest">${h}</div>`;
-}
-function matPick(i){ const m=matResults[i]; if(!m||!matState) return;
-  matState.items.push({name:m.name, unit:m.unit||'', qty:1, matched:true});
-  renderMaterials(); }
-function matAddTyped(){
-  const q=((document.getElementById('matSearch')||{}).value||'').trim(); if(!q||!matState) return;
-  matState.items.push({name:q, unit:'', qty:1, matched:false});
-  renderMaterials(); }
-function matQty(i,v){ if(matState&&matState.items[i]) matState.items[i].qty=v; }
-function matRemove(i){ if(!matState) return; matState.items.splice(i,1); renderMaterials(); }
-async function finishMaterials(skip){
-  if(!matState) return;
-  const st=matState; matState=null; closeSheet();
-  if (!skip && st.items.length){
-    apiMutate('logMaterials',{entryId:st.entryId, jobSite:st.jobSite, poNumber:st.poNumber, items:st.items});
-    const pend=st.items.filter(i=>!i.matched).length;
-    if (pend) toast(pend+' item(s) flagged for admin review');
-  }
-  showEncouragement(st.after.hrs, st.after.ot, st.after.breakHrs);
-}
+/* The clock-out materials prompt now lives inline on the review screen (coMat*); the same
+   catalog + fuzzy search also powers the edit-entry sheet (edMat*). */
 
 /* ---- Admin: materials review ---- */
 async function openMatReview(){
@@ -1959,8 +2220,10 @@ async function start(){
   if (sess && sess.token && Date.now() < sess.exp - 60000){ S.session=sess; await boot(); }
   initAuth();
   if ('serviceWorker' in navigator){ try{ await navigator.serviceWorker.register('./sw.js'); }catch(e){} }
-  // periodic background sync + refresh while app is open
+  // periodic background sync while app is open (flushQueue is a no-op when the queue is
+  // empty); a full data refresh only every 5 min — it costs a 4-6s server call.
   setInterval(()=>{ if(S.online && S.booted){ flushQueue(); } }, 60000);
+  setInterval(()=>{ if(S.online && S.booted && !S._sheet){ refresh(true); } }, 300000);
 }
 window.onCredential=onCredential; // GIS callback
 window.addEventListener('DOMContentLoaded', start);
