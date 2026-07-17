@@ -882,20 +882,37 @@ async function api(action, payload){
    snapshot that was read from the sheet BEFORE the mutation's write landed (the flicker bug:
    optimistic "Clock Out" state briefly overwritten by a pre-write snapshot). */
 let mutsInFlight = 0;
+let inflightQids = new Set(); // queued copies currently being delivered — flushQueue must skip them
 const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry|addManualEntry)$/;
 async function apiMutate(action, payload, optimistic){
   const tracked = MUTATING.test(action);
   if (tracked) mutsInFlight++;
+  const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+  const item = { qid, action, payload, ts: Date.now(), tempId: optimistic && optimistic.tempId };
   try {
+    // WRITE-AHEAD for punches: persist to the queue BEFORE the network attempt. Each round
+    // trip takes 4-6s — if the app is closed in that window (phone pocketed right after the
+    // tap) the request dies, and without this the punch would silently vanish. On next open
+    // flushQueue replays it, and the `at` timestamp keeps the recorded time correct.
+    if (tracked){ inflightQids.add(qid); await DB.enqueue(item); }
     if (S.online){
-      try { return await api(action, payload); }
-      catch(e){ if (!/Failed to fetch|NetworkError/i.test(e.message)) throw e; /* fall through to queue */ }
+      try {
+        const data = await api(action, payload);
+        if (tracked) await DB.del(qid); // delivered — clear the write-ahead copy
+        return data;
+      } catch(e){
+        if (!/Failed to fetch|NetworkError/i.test(e.message)){
+          if (tracked) await DB.del(qid); // server REJECTED it — a bad punch must not replay forever
+          throw e;
+        }
+        /* network error — leave the write-ahead copy queued */
+      }
     }
-    const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
-    await DB.enqueue({ qid, action, payload, ts: Date.now(), tempId: optimistic && optimistic.tempId });
+    if (!tracked) await DB.enqueue(item); // non-punch actions queue only on network failure
     return { queued:true, qid };
   } finally {
     if (tracked) mutsInFlight--;
+    inflightQids.delete(qid);
   }
 }
 
@@ -908,6 +925,7 @@ async function flushQueue(){
     const items = (await DB.all()).sort((a,b)=>a.ts-b.ts);
     const idMap = {}; // tempId -> real EntryID
     for (const it of items){
+      if (inflightQids.has(it.qid)) continue; // apiMutate is delivering this one right now
       const p = { ...it.payload };
       // remap any temp entryId to the real one produced earlier in this flush
       if (p.entryId && idMap[p.entryId]) p.entryId = idMap[p.entryId];
@@ -919,6 +937,11 @@ async function flushQueue(){
         // Network problem OR auth problem (expired token): STOP and retry later —
         // never drop queued work for a recoverable failure.
         if (/Failed to fetch|NetworkError|sign-in token|signed in|audience mismatch|Session expired/i.test(e.message)) break;
+        // Write-ahead replay of a punch that already landed before the app was killed —
+        // the duplicate is expected, drop it quietly.
+        if (/Already clocked out|already have an open entry|Already on break|Not on break/i.test(e.message)){
+          await DB.del(it.qid); processed++; continue;
+        }
         // genuine validation error — drop so the queue doesn't jam, but tell the user
         console.warn('Dropping queued action', it.action, e.message);
         toast('A queued "'+it.action+'" could not sync: '+e.message);
@@ -998,18 +1021,25 @@ async function boot(){
   if (cached){ applyBootstrap(cached); S.booted = true; render(); }
   else render(true); // first-ever load: show spinner
   try {
-    const seq = S.mutSeq;
-    const data = await api('bootstrap');
-    // Same staleness guard as refresh(): if the user punched in/out while this initial
-    // bootstrap was in flight, its snapshot predates the punch — applying it would flash
-    // the old button state. Drop it and re-sync shortly.
-    if (seq === S.mutSeq && !mutsInFlight){
-      applyBootstrap(data);
-      S.booted = true;
-      await DB.setCache('bootstrap', data);
-      render();
-    } else scheduleRefresh();
-    flushQueue();
+    // Unsynced punches from the last session (app closed mid-request) MUST land before we
+    // trust a server snapshot — the snapshot still shows the pre-punch state (clocked in
+    // again after you clocked out). flushQueue replays them, then refreshes on its own.
+    if ((await DB.all()).length){
+      await flushQueue();
+      S.booted = true; render();
+    } else {
+      const seq = S.mutSeq;
+      const data = await api('bootstrap');
+      // Same staleness guard as refresh(): if the user punched in/out while this initial
+      // bootstrap was in flight, its snapshot predates the punch — applying it would flash
+      // the old button state. Drop it and re-sync shortly.
+      if (seq === S.mutSeq && !mutsInFlight){
+        applyBootstrap(data);
+        S.booted = true;
+        await DB.setCache('bootstrap', data);
+        render();
+      } else scheduleRefresh();
+    }
     loadCustomers(); loadMaterials(); // warm client-side caches for instant autocomplete
   } catch(e){
     if (cached) toast('Showing last synced data — will retry');
@@ -1037,8 +1067,12 @@ function scheduleRefresh(){ clearTimeout(refreshRetryT); refreshRetryT=setTimeou
 async function refresh(silent){
   if (!S.session || !S.online) return;
   if (mutsInFlight > 0 || syncing){ scheduleRefresh(); return; }
-  const seq = S.mutSeq;
   try {
+    // Unsynced queued punches mean the server is BEHIND local state — deliver them first,
+    // otherwise the snapshot would resurrect the pre-punch button state. flushQueue
+    // refreshes on its own when it lands something.
+    if ((await DB.all()).length){ flushQueue(); return; }
+    const seq = S.mutSeq;
     const d = await api('bootstrap');
     if (seq !== S.mutSeq || mutsInFlight > 0 || syncing){ scheduleRefresh(); return; } // stale
     applyBootstrap(d); await DB.setCache('bootstrap', d); render();
@@ -1078,6 +1112,7 @@ async function doClockIn(payload){
   S.openEntry = { EntryID: tempId, ClockIn: at, Company: payload.company||'',
     'Customer/Job Site': payload.jobSite||'', 'PO#': payload.poNumber||'', Status:'approved', Source:'live', _local:true };
   render();
+  saveBootCache(); // NOW, not after the 4-6s confirm — closing the app right away must not lose the state
   showClockinMsg(); // greet instantly at the tap — don't make it wait on the network
   const gps = await getGps(4000); // AFTER the UI update — a slow fix must never freeze the tap
   let r=null;
@@ -1111,6 +1146,7 @@ async function doSwitchSite(payload){
   S.openEntry={ EntryID:tempId, ClockIn:at, Company:payload.company||'',
     'Customer/Job Site':payload.jobSite||'', 'PO#':payload.poNumber||'', Status:'approved', Source:'live', _local:true };
   render();
+  saveBootCache(); // persist the optimistic state immediately (app may close mid-request)
   const gps = await getGps(4000);
   let r=null;
   try { r = await apiMutate('switchJobSite', { ...payload, gps, at }, { tempId }); }
@@ -1263,7 +1299,7 @@ async function doStartBreak(){
   S.mutSeq++; // flicker guard — a stale bootstrap must not flip the button back
   const eid = S.openEntry.EntryID;
   const arr=openBreaks(); arr.push({s:new Date().toISOString()});
-  S.openEntry['Breaks JSON']=JSON.stringify(arr); render(); // optimistic
+  S.openEntry['Breaks JSON']=JSON.stringify(arr); render(); saveBootCache(); // optimistic + persisted
   try {
     const r = await apiMutate('startBreak',{entryId:eid});
     // server's break array is authoritative; same visual state, so no re-render needed
@@ -1277,7 +1313,7 @@ async function doEndBreak(){
   S.mutSeq++; // flicker guard
   const eid = S.openEntry.EntryID;
   const arr=openBreaks(); arr[arr.length-1].e=new Date().toISOString();
-  S.openEntry['Breaks JSON']=JSON.stringify(arr); render(); // optimistic
+  S.openEntry['Breaks JSON']=JSON.stringify(arr); render(); saveBootCache(); // optimistic + persisted
   try {
     const r = await apiMutate('endBreak',{entryId:eid});
     if (r && r.breaks && S.openEntry && S.openEntry.EntryID===eid)
@@ -1884,6 +1920,8 @@ async function submitClockOut(){
     Source:'live', Date:(S.openEntry&&S.openEntry.Date)||todayStr() };
   upsertLocalEntry(closing); // real clock-out: Source stays 'live' → drops off Paused-today
   S.openEntry=null; render();
+  saveBootCache(); // persist the clocked-OUT state NOW — reopening the app mid-request must
+                   // paint "Clock In", not resurrect the Clock Out button
   const p={ entryId:c.entryId, at:c.outAt, gps:c.gps, notes:c.notes, breakMin:bmin };
   if (c.inEdited) p.clockInAt=c.inAt;
   if (c.jobEdited){ p.jobSite=c.jobSite; p.poNumber=c.poNumber; p.company=c.company; }
