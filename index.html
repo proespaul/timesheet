@@ -91,6 +91,7 @@ const CONFIG = {
   GOOGLE_CLIENT_ID: '378684710856-ptq2bpavssjjii856ufbuu03uef97ivr.apps.googleusercontent.com',
   APPS_SCRIPT_URL:  'https://script.google.com/macros/s/AKfycbxEZMh2MuzbfGFyuiwmJO1KMLffrj4_rWXYW8JXTew61EKsBKZ5SVoN7tlUH9peKq8f/exec',
 };
+const MAX_MEDIA_MB = 35; // base64 +33% must stay under Apps Script's ~50 MB POST limit
 
 /* ============================================================================
  * ENCOURAGEMENTS — a full year (312) of Mon–Sat clock-out messages.
@@ -1037,12 +1038,12 @@ async function doClockIn(payload){
   S.openEntry = { EntryID: tempId, ClockIn: new Date().toISOString(), Company: payload.company||'',
     'Customer/Job Site': payload.jobSite||'', 'PO#': payload.poNumber||'', Status:'approved', Source:'live', _local:true };
   render();
+  showClockinMsg(); // greet instantly at the tap — don't make it wait on the network
   const r = await apiMutate('clockIn', { ...payload, gps }, { tempId });
   if (r && r.entry) S.openEntry = r.entry;
   refresh(true); // background — UI is already correct optimistically
   if (!gps) retryGpsPatch((r && r.entry ? r.entry.EntryID : tempId), 'in');
   if (r && r.queued) toast('Clocked in (will sync)');
-  showClockinMsg();
 }
 async function doClockOut(extra){
   if (!S.openEntry) return;
@@ -1287,7 +1288,7 @@ function entryRow(e, employeeEmail){
     ${gpsBadge(e)}
     ${e.Notes?`<div class="small" style="margin-top:4px">${esc(e.Notes)}</div>`:''}
     ${e.Status==='rejected'&&e['Reject Note']?`<div class="small" style="color:#f87171">Rejected: ${esc(e['Reject Note'])}</div>`:''}
-    ${e.Media?`<div class="small"><a href="${esc(String(e.Media).split(' | ')[0])}" target="_blank" style="color:var(--accent2)">📎 media</a></div>`:''}
+    ${e.Media?`<div class="small"><a href="#" onclick="openMediaView('${k}');return false" style="color:var(--accent2)">📎 ${String(e.Media).split(' | ').filter(Boolean).length} photo/video</a></div>`:''}
     <div class="row" style="margin-top:6px">
       ${canEdit?`<button class="ghost" onclick="openEditEntry('${k}')">Edit</button>`:''}
       <button class="ghost" onclick="openUpload('${k}')">Add photo/video</button>
@@ -1690,12 +1691,18 @@ function stageUpload(input){
   stagedFile=input.files[0]; const st=document.getElementById('uploadStatus'); const b=document.getElementById('upBtn');
   if(!stagedFile){ b.disabled=true; return; }
   const mb=(stagedFile.size/1048576).toFixed(1);
+  // Hard cap: base64 adds ~33% and Google rejects POSTs over ~50 MB, so >35 MB can never
+  // upload — block it here instead of letting it fail (and jam the offline queue) later.
+  if(stagedFile.size>MAX_MEDIA_MB*1048576){
+    st.innerHTML=`<span style="color:var(--bad)">${esc(stagedFile.name)} is ${mb} MB — too large (max ${MAX_MEDIA_MB} MB). Record a shorter clip or lower the camera resolution.</span>`;
+    stagedFile=null; b.disabled=true; return;
+  }
   st.textContent=`${stagedFile.name} · ${mb} MB`; b.disabled=false;
-  if(stagedFile.size>25*1048576) st.innerHTML+=' <span style="color:#f87171">(large — may be slow)</span>';
+  if(stagedFile.size>25*1048576) st.innerHTML+=' <span style="color:var(--bad)">(large — may be slow)</span>';
 }
 async function doUpload(uk){
   const ref=dereg(uk); if(!ref) return; const {entryId, employeeEmail, jobSite}=ref;
-  if(!stagedFile) return;
+  if(!stagedFile || stagedFile.size>MAX_MEDIA_MB*1048576) return;
   const st=document.getElementById('uploadStatus'); st.innerHTML='<span class="spin"></span> uploading…';
   try{
     const dataBase64 = await fileToB64(stagedFile);
@@ -1705,6 +1712,22 @@ async function doUpload(uk){
   }catch(e){ st.innerHTML='<span style="color:#f87171">'+esc(e.message)+'</span>'; }
 }
 function fileToB64(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=rej; r.readAsDataURL(file); }); }
+
+/* Media viewer: lets employees review what they've uploaded to an entry. Thumbnails come
+   from Drive's thumbnail endpoint; uploads are auto-shared with the uploader server-side,
+   so the links open for them (files live in the admin's Drive and are otherwise private). */
+function driveId(url){ const m=String(url).match(/[-\w]{25,}/); return m?m[0]:''; }
+function openMediaView(k){
+  const ref=dereg(k); if(!ref) return;
+  const urls=String(ref.e.Media||'').split(' | ').filter(Boolean);
+  sheet(`<h2>Photos &amp; videos</h2>
+    <p class="small muted" style="margin-top:-6px">${esc(ref.e['Customer/Job Site']||ref.e.Company||'')} · ${fmtDay(ref.e.ClockIn||ref.e.Date)}</p>
+    ${urls.map(u=>{ const id=driveId(u); return `<div class="card center" style="padding:10px">
+      ${id?`<a href="${esc(u)}" target="_blank"><img src="https://drive.google.com/thumbnail?id=${id}&sz=w480" style="max-width:100%;border-radius:12px" loading="lazy" onerror="this.replaceWith(document.createTextNode('(no preview — tap Open)'))"></a>`:''}
+      <div class="small" style="margin-top:6px"><a href="${esc(u)}" target="_blank" style="color:var(--accent2)">Open in Drive ↗</a></div>
+    </div>`; }).join('')}
+    <button class="secondary" onclick="closeSheet()">Close</button>`);
+}
 
 /* ---- Admin: approvals ---- */
 async function approve(email,entryId){
