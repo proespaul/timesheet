@@ -819,6 +819,7 @@ const S = {
   tab: 'clock',
   online: navigator.onLine,
   booted: false,
+  mutSeq: 0,   // bumped on every optimistic local change — see refresh() staleness guard
 };
 
 /* ============================================================================
@@ -876,15 +877,26 @@ async function api(action, payload){
   return json.data;
 }
 
-/* Queue a mutating action when offline; returns {queued:true} or the server result. */
+/* Queue a mutating action when offline; returns {queued:true} or the server result.
+   Entry-state mutations are counted while in flight so refresh() never applies a bootstrap
+   snapshot that was read from the sheet BEFORE the mutation's write landed (the flicker bug:
+   optimistic "Clock Out" state briefly overwritten by a pre-write snapshot). */
+let mutsInFlight = 0;
+const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry|addManualEntry)$/;
 async function apiMutate(action, payload, optimistic){
-  if (S.online){
-    try { return await api(action, payload); }
-    catch(e){ if (!/Failed to fetch|NetworkError/i.test(e.message)) throw e; /* fall through to queue */ }
+  const tracked = MUTATING.test(action);
+  if (tracked) mutsInFlight++;
+  try {
+    if (S.online){
+      try { return await api(action, payload); }
+      catch(e){ if (!/Failed to fetch|NetworkError/i.test(e.message)) throw e; /* fall through to queue */ }
+    }
+    const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+    await DB.enqueue({ qid, action, payload, ts: Date.now(), tempId: optimistic && optimistic.tempId });
+    return { queued:true, qid };
+  } finally {
+    if (tracked) mutsInFlight--;
   }
-  const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
-  await DB.enqueue({ qid, action, payload, ts: Date.now(), tempId: optimistic && optimistic.tempId });
-  return { queued:true, qid };
 }
 
 let syncing = false;
@@ -986,12 +998,18 @@ async function boot(){
   if (cached){ applyBootstrap(cached); S.booted = true; render(); }
   else render(true); // first-ever load: show spinner
   try {
+    const seq = S.mutSeq;
     const data = await api('bootstrap');
-    applyBootstrap(data);
-    S.booted = true;
-    await DB.setCache('bootstrap', data);
+    // Same staleness guard as refresh(): if the user punched in/out while this initial
+    // bootstrap was in flight, its snapshot predates the punch — applying it would flash
+    // the old button state. Drop it and re-sync shortly.
+    if (seq === S.mutSeq && !mutsInFlight){
+      applyBootstrap(data);
+      S.booted = true;
+      await DB.setCache('bootstrap', data);
+      render();
+    } else scheduleRefresh();
     flushQueue();
-    render();
     loadCustomers(); loadMaterials(); // warm client-side caches for instant autocomplete
   } catch(e){
     if (cached) toast('Showing last synced data — will retry');
@@ -1004,9 +1022,27 @@ function applyBootstrap(d){
   S.employees = d.employees||[];
   if (d.pending !== undefined) S.pending = d.pending; // pending now loads on demand (Admin tab)
 }
+/* Write-through: keep the cached bootstrap in step with optimistic local state, so
+   reopening the app right after a punch paints the RUNNING clock, not a stale screen. */
+function saveBootCache(){
+  DB.setCache('bootstrap', { me:S.me, companies:S.companies, config:S.config,
+    entries:S.entries, openEntry:S.openEntry, employees:S.employees });
+}
+let refreshRetryT=null;
+function scheduleRefresh(){ clearTimeout(refreshRetryT); refreshRetryT=setTimeout(()=>refresh(true), 4000); }
+/* THE FLICKER GUARD. A bootstrap response is a snapshot of the sheet at request time. If a
+   punch happened after that snapshot was taken (mutSeq moved, or a mutation/queue-sync is
+   still mid-flight), applying it would overwrite fresh optimistic state with the old truth —
+   the button flashes back. Stale snapshots are discarded and a clean refresh is rescheduled. */
 async function refresh(silent){
   if (!S.session || !S.online) return;
-  try { const d = await api('bootstrap'); applyBootstrap(d); await DB.setCache('bootstrap', d); render(); }
+  if (mutsInFlight > 0 || syncing){ scheduleRefresh(); return; }
+  const seq = S.mutSeq;
+  try {
+    const d = await api('bootstrap');
+    if (seq !== S.mutSeq || mutsInFlight > 0 || syncing){ scheduleRefresh(); return; } // stale
+    applyBootstrap(d); await DB.setCache('bootstrap', d); render();
+  }
   catch(e){ if(!silent) toast(e.message); }
 }
 
@@ -1037,15 +1073,20 @@ function retryGpsPatch(entryId, which){
 async function doClockIn(payload){
   const tempId = 'tmp_' + Date.now();
   const at = new Date().toISOString(); // punch time = tap time, even if the request syncs later
+  S.mutSeq++; // any bootstrap snapshot taken before this tap is now stale (flicker guard)
   // optimistic local open entry — UI responds at the tap, BEFORE the GPS wait
   S.openEntry = { EntryID: tempId, ClockIn: at, Company: payload.company||'',
     'Customer/Job Site': payload.jobSite||'', 'PO#': payload.poNumber||'', Status:'approved', Source:'live', _local:true };
   render();
   showClockinMsg(); // greet instantly at the tap — don't make it wait on the network
   const gps = await getGps(4000); // AFTER the UI update — a slow fix must never freeze the tap
-  const r = await apiMutate('clockIn', { ...payload, gps, at }, { tempId });
-  if (r && r.entry) S.openEntry = r.entry;
-  refresh(true); // background — UI is already correct optimistically
+  let r=null;
+  try { r = await apiMutate('clockIn', { ...payload, gps, at }, { tempId }); }
+  catch(e){ toast(e.message); refresh(true); return; } // e.g. already clocked in on another device
+  // The response IS the authoritative entry — no full refresh needed (the old one here was
+  // both a wasted 4-6s call and a flicker source).
+  if (r && r.entry){ S.openEntry = r.entry; upsertLocalEntry(r.entry); }
+  saveBootCache();
   if (!gps) retryGpsPatch((r && r.entry ? r.entry.EntryID : tempId), 'in');
   if (r && r.queued) toast('Clocked in (will sync)');
 }
@@ -1057,6 +1098,7 @@ function upsertLocalEntry(e){
 }
 async function doSwitchSite(payload){
   const at = new Date().toISOString(); // one boundary instant for both segments
+  S.mutSeq++; // flicker guard — see refresh()
   // Optimistically close the current segment as 'paused' so the Paused-today list and
   // cumulative timer are right immediately (and offline) — BEFORE the GPS wait.
   if (S.openEntry){
@@ -1070,9 +1112,11 @@ async function doSwitchSite(payload){
     'Customer/Job Site':payload.jobSite||'', 'PO#':payload.poNumber||'', Status:'approved', Source:'live', _local:true };
   render();
   const gps = await getGps(4000);
-  const r = await apiMutate('switchJobSite', { ...payload, gps, at }, { tempId });
-  if (r && r.entry) S.openEntry=r.entry;
-  refresh(true); // background
+  let r=null;
+  try { r = await apiMutate('switchJobSite', { ...payload, gps, at }, { tempId }); }
+  catch(e){ toast(e.message); refresh(true); return; }
+  if (r && r.entry){ S.openEntry=r.entry; upsertLocalEntry(r.entry); }
+  saveBootCache();
   toast('Switched job site');
 }
 
@@ -1216,17 +1260,30 @@ function clockView(){
 }
 async function doStartBreak(){
   if (!S.openEntry || onBreak()) return;
+  S.mutSeq++; // flicker guard — a stale bootstrap must not flip the button back
+  const eid = S.openEntry.EntryID;
   const arr=openBreaks(); arr.push({s:new Date().toISOString()});
   S.openEntry['Breaks JSON']=JSON.stringify(arr); render(); // optimistic
-  await apiMutate('startBreak',{entryId:S.openEntry.EntryID});
-  refresh(true);
+  try {
+    const r = await apiMutate('startBreak',{entryId:eid});
+    // server's break array is authoritative; same visual state, so no re-render needed
+    if (r && r.breaks && S.openEntry && S.openEntry.EntryID===eid)
+      S.openEntry['Breaks JSON']=JSON.stringify(r.breaks);
+    saveBootCache();
+  } catch(e){ toast(e.message); refresh(true); }
 }
 async function doEndBreak(){
   if (!S.openEntry || !onBreak()) return;
+  S.mutSeq++; // flicker guard
+  const eid = S.openEntry.EntryID;
   const arr=openBreaks(); arr[arr.length-1].e=new Date().toISOString();
   S.openEntry['Breaks JSON']=JSON.stringify(arr); render(); // optimistic
-  await apiMutate('endBreak',{entryId:S.openEntry.EntryID});
-  refresh(true);
+  try {
+    const r = await apiMutate('endBreak',{entryId:eid});
+    if (r && r.breaks && S.openEntry && S.openEntry.EntryID===eid)
+      S.openEntry['Breaks JSON']=JSON.stringify(r.breaks);
+    saveBootCache();
+  } catch(e){ toast(e.message); refresh(true); }
 }
 function periodCard(t){
   return `<div class="card">
@@ -1815,6 +1872,7 @@ async function submitClockOut(){
   const bmin=Number(c.breakMin)||0;
   if (bmin*60000 > gms){ toast('Break is longer than the whole shift — check the times.'); return; }
   coState=null; closeSheet();
+  S.mutSeq++; // flicker guard — invalidate any in-flight bootstrap snapshot
   const gross=Math.round((gms/3600000)*100)/100;
   const brkHrs=Math.round((bmin/60)*100)/100;
   const net=Math.max(0, Math.round((gross-brkHrs)*100)/100);
@@ -1832,12 +1890,17 @@ async function submitClockOut(){
   let r=null;
   try { r = await apiMutate('clockOut', p, { tempId:c.entryId }); }
   catch(e){ toast('Clock-out failed: '+e.message); refresh(true); return; }
+  // Fold the server-computed values into the local entry — no full refresh needed.
+  if (r && r.hours!=null){
+    const i=(S.entries||[]).findIndex(x=>x.EntryID===c.entryId);
+    if (i>=0) S.entries[i]={ ...S.entries[i], Hours:r.hours, 'Gross Hours':r.gross, 'Break Hrs':r.breakHrs };
+  }
   if (c.items.length){
     apiMutate('logMaterials',{ entryId:c.entryId, jobSite:c.jobSite||c.company||'', poNumber:c.poNumber||'', items:c.items });
     const pend=c.items.filter(i=>!i.matched).length;
     if (pend) toast(pend+' material item(s) flagged for admin review');
   }
-  refresh(true); // background
+  saveBootCache();
   if (!c.gps) retryGpsPatch(c.entryId, 'out');
   const hrs=(r&&r.hours!=null)?r.hours:net;
   const breakHrs=(r&&r.breakHrs!=null)?r.breakHrs:brkHrs;
@@ -2198,8 +2261,11 @@ function dayIndex(){ // deterministic day-of-year so the message rotates predict
  * ==========================================================================*/
 function val(id){ const e=document.getElementById(id); return e? e.value : ''; }
 function wire(){
-  if (S.openEntry && !timerInt){ timerInt=setInterval(tickTimer,1000); tickTimer(); }
+  if (S.openEntry && !timerInt){ timerInt=setInterval(tickTimer,1000); }
   if (!S.openEntry && timerInt){ clearInterval(timerInt); timerInt=null; }
+  // Fill the freshly-rendered timer node NOW — every re-render used to show the "0:00:00"
+  // placeholder for up to a second until the next tick (visible flash of the big number).
+  if (S.openEntry) tickTimer();
 }
 let toastT=null;
 function toast(msg){
