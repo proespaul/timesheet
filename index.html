@@ -1,3 +1,6 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0f766e">
@@ -78,7 +81,8 @@
   .spin{width:22px;height:22px;border:3px solid var(--line);border-top-color:var(--accent2);border-radius:50%;animation:sp 1s linear infinite;display:inline-block;vertical-align:middle}
   @keyframes sp{to{transform:rotate(360deg)}}
 </style>
-
+</head>
+<body>
 <!-- ============================== APP SHELL ============================== -->
 <div id="app"></div>
 <div id="toast"></div>
@@ -801,7 +805,10 @@ function showClockinMsg(){
     <p style="font-size:1.15rem;margin:12px 0">${esc(pickClockin())}</p>
     <p class="small muted">Clocked in ✓</p>
   </div>`);
-  setTimeout(closeSheet, 3000); // auto-dismiss; tap dismisses sooner
+  // Auto-dismiss ONLY if this greeting is still the open sheet — otherwise a fast tap into
+  // "Clock Out?" (or any other sheet) within 3s would get yanked shut by this timer.
+  const mySheet = S._sheet;
+  setTimeout(()=>{ if (S._sheet===mySheet) closeSheet(); }, 3000);
 }
 
 /* ============================================================================
@@ -857,7 +864,12 @@ const DB = (() => {
 async function api(action, payload){
   // 24h session token (issued by the backend at login) — Google's own ID tokens die after
   // ~1h, which used to strand people mid-shift.
-  if (!S.session || Date.now() > S.session.exp - 60000) throw new Error('Session expired. Please sign in again.');
+  if (!S.session || Date.now() > S.session.exp - 60000){
+    // Clear the dead session and nudge Google one-tap so the next tap can re-auth silently.
+    S.session=null; DB.setCache('session', null);
+    try{ google.accounts.id.prompt(); }catch(e){}
+    throw new Error('Session expired. Please sign in again.');
+  }
   const t0 = performance.now();
   const res = await fetch(CONFIG.APPS_SCRIPT_URL, {
     method:'POST',
@@ -909,11 +921,14 @@ async function apiMutate(action, payload, optimistic){
         if (tracked) await DB.del(qid); // delivered — clear the write-ahead copy
         return data;
       } catch(e){
-        if (!/Failed to fetch|NetworkError/i.test(e.message)){
+        // RECOVERABLE failures (network down, or an expired/invalid session that a re-sign-in
+        // will cure) must KEEP the write-ahead copy queued — flushQueue replays it after the
+        // next login. Previously an expired session deleted the punch outright (data loss).
+        if (!/Failed to fetch|NetworkError|Session expired|sign-in token|signed in|audience mismatch/i.test(e.message)){
           if (tracked) await DB.del(qid); // server REJECTED it — a bad punch must not replay forever
           throw e;
         }
-        /* network error — leave the write-ahead copy queued */
+        /* recoverable — leave the write-ahead copy queued */
       }
     }
     if (!tracked) await DB.enqueue(item); // non-punch actions queue only on network failure
@@ -939,6 +954,17 @@ async function flushQueue(){
       // remap any temp entryId to the real one (from this flush OR learned earlier)
       if (p.entryId && (idMap[p.entryId] || tempIdMap[p.entryId]))
         p.entryId = idMap[p.entryId] || tempIdMap[p.entryId];
+      // STILL-UNRESOLVED tmp reference: its parent clock-in is queued ahead of it or being
+      // delivered by apiMutate right now. Sending it would get "Entry not found" and the
+      // catch below would DROP it (a lost clock-out). Wait for the parent instead; only
+      // drop if the parent is truly gone (its clock-in was rejected by the server).
+      if (typeof p.entryId==='string' && p.entryId.indexOf('tmp_')===0){
+        const parentPending = items.some(x => x.tempId === p.entryId);
+        if (parentPending) continue; // parent will land first — retry on the next flush
+        console.warn('Dropping orphaned queued action', it.action, p.entryId);
+        toast('A queued "'+it.action+'" could not sync — its clock-in never saved.');
+        await DB.del(it.qid); processed++; continue;
+      }
       try {
         const data = await api(it.action, p);
         if (it.tempId && data && data.entry && data.entry.EntryID){
@@ -1007,7 +1033,12 @@ async function doLogin(){
 }
 
 function initAuth(){
-  if (!window.google || !google.accounts) { setTimeout(initAuth, 300); return; }
+  if (!window.google || !google.accounts) {
+    // Google's script not loaded yet (slow LTE / offline first open): show the sign-in
+    // screen anyway instead of a blank white page; the button fills in when it arrives.
+    if (!S.session && !S.booted && !S._authWait){ S._authWait = true; render(); }
+    setTimeout(initAuth, 300); return;
+  }
   google.accounts.id.initialize({
     client_id: CONFIG.GOOGLE_CLIENT_ID,
     callback: onCredential,
@@ -1022,7 +1053,7 @@ function initAuth(){
   }
 }
 function signOut(){
-  if (S.session) { try{ api('logout',{sessionToken:S.session.token}); }catch(e){} } // best-effort server invalidation
+  if (S.session) { try{ api('logout',{sessionToken:S.session.token}).catch(()=>{}); }catch(e){} } // best-effort server invalidation (async — .catch stops an unhandled rejection)
   S.idToken=null; S.session=null; S.me=null; S.booted=false;
   DB.setCache('session', null);
   try{ google.accounts.id.disableAutoSelect(); }catch(e){}
@@ -1188,7 +1219,12 @@ function fmtTime(iso){ if(!iso) return '—'; const d=new Date(iso); return d.to
 function fmtDay(iso){ if(!iso) return ''; return new Date(iso).toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'}); }
 
 function render(loading){
-  S._reg = {}; // reset per render; sheets/suggestions register fresh keys
+  // Registry keys are globally unique (_regN never resets), so KEEP old entries: a
+  // background sync re-rendering the page must not orphan the keys an open sheet's
+  // buttons still hold (Edit/Upload inside a sheet silently died on tap before).
+  // Reset only when nothing is open; entries are tiny, so no meaningful memory cost.
+  if (!S._sheet) S._reg = {};
+  else S._reg = S._reg || {};
   const app = document.getElementById('app');
   if (loading){ app.innerHTML = '<div class="wrap center" style="margin-top:40vh"><span class="spin"></span><p class="muted">Loading…</p></div>'; return; }
   if (!S.session || !S.booted){ app.innerHTML = signInView(); return; }
@@ -1329,10 +1365,11 @@ async function doStartBreak(){
   if (!S.openEntry || onBreak()) return;
   S.mutSeq++; // flicker guard — a stale bootstrap must not flip the button back
   const eid = S.openEntry.EntryID;
-  const arr=openBreaks(); arr.push({s:new Date().toISOString()});
+  const at = new Date().toISOString(); // tap time — an offline break must not sync hours late
+  const arr=openBreaks(); arr.push({s:at});
   S.openEntry['Breaks JSON']=JSON.stringify(arr); render(); saveBootCache(); // optimistic + persisted
   try {
-    const r = await apiMutate('startBreak',{entryId:eid});
+    const r = await apiMutate('startBreak',{entryId:eid, at});
     // server's break array is authoritative; same visual state, so no re-render needed
     if (r && r.breaks && S.openEntry && S.openEntry.EntryID===eid)
       S.openEntry['Breaks JSON']=JSON.stringify(r.breaks);
@@ -1343,10 +1380,11 @@ async function doEndBreak(){
   if (!S.openEntry || !onBreak()) return;
   S.mutSeq++; // flicker guard
   const eid = S.openEntry.EntryID;
-  const arr=openBreaks(); arr[arr.length-1].e=new Date().toISOString();
+  const at = new Date().toISOString(); // tap time — an offline break must not sync hours late
+  const arr=openBreaks(); arr[arr.length-1].e=at;
   S.openEntry['Breaks JSON']=JSON.stringify(arr); render(); saveBootCache(); // optimistic + persisted
   try {
-    const r = await apiMutate('endBreak',{entryId:eid});
+    const r = await apiMutate('endBreak',{entryId:eid, at});
     if (r && r.breaks && S.openEntry && S.openEntry.EntryID===eid)
       S.openEntry['Breaks JSON']=JSON.stringify(r.breaks);
     saveBootCache();
@@ -2001,6 +2039,7 @@ function openManual(){
     <label>Date</label><input id="mDate" type="date" value="${today}">
     <div class="row"><div class="grow"><label>Clock in</label><input id="mIn" type="time"></div>
       <div class="grow"><label>Clock out</label><input id="mOut" type="time"></div></div>
+    <p class="small muted" style="margin:2px 0 0">Out earlier than in = overnight shift (ends the next day).</p>
     <label>Break time (minutes, deducted from hours)</label><input id="mBreak" type="number" min="0" step="5" placeholder="0">
     <label>Company (optional)</label>
     <select id="mCompany"><option value="">— none —</option>${S.companies.map(c=>`<option>${esc(c)}</option>`).join('')}</select>
@@ -2380,3 +2419,5 @@ async function start(){
 window.onCredential=onCredential; // GIS callback
 window.addEventListener('DOMContentLoaded', start);
 </script>
+</body>
+</html>

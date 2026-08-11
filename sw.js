@@ -7,7 +7,7 @@
  * already cached. Now the app paints instantly from cache and the fetch that runs in the
  * background updates the cache, so a fresh deploy lands on the SECOND open after it ships.
  */
-const CACHE = 'pcw-pro-timesheet-v4';
+const CACHE = 'pcw-pro-timesheet-v5'; // bumped: v5 ships the DOCTYPE + queue-safety fixes
 const SHELL = ['./', './index.html', './manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
