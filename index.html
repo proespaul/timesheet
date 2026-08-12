@@ -3,15 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0f766e">
+<meta name="theme-color" content="#1F3864">
 <link rel="manifest" href="./manifest.webmanifest">
 <title>PCW / PRO Timesheet</title>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root{
-    /* Light theme */
-    --bg:#f1f5f9; --panel:#ffffff; --panel2:#eef2f7; --line:#e2e8f0;
-    --text:#0f172a; --muted:#64748b; --accent:#0f766e; --accent2:#0d9488;
+    /* PRO Electrical brand palette — navy / blue / grey on white, with the logo's
+     * electric-blue pulse as the accent line. Clock buttons keep their traffic-light
+     * colors on purpose: green = go, red = stop is what makes the app dummy proof. */
+    --bg:#eef2f8; --panel:#ffffff; --panel2:#e9eef6; --line:#d9e1ed;
+    --text:#1a2947; --muted:#5b6b85; --navy:#1F3864; --accent:#2E75B6; --accent2:#2265ab;
+    --pulse:#4DA3FF;
     --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --pending:#ca8a04;
     --radius:16px; --safe: env(safe-area-inset-bottom, 0px);
   }
@@ -19,7 +22,7 @@
   html,body{margin:0; background:var(--bg); color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; font-size:16px; line-height:1.4}
   body{padding-bottom:calc(72px + var(--safe))}
-  h1,h2,h3{margin:0 0 .4em}
+  h1,h2,h3{margin:0 0 .4em; color:var(--navy)}
   button{font:inherit; cursor:pointer; border:none; border-radius:12px; padding:14px 16px; color:#fff;
     background:var(--accent); font-weight:600; touch-action:manipulation}
   button:active{transform:scale(.98)}
@@ -41,8 +44,8 @@
   .pill.approved{background:rgba(22,163,74,.12); color:#15803d}
   .pill.pending{background:rgba(202,138,4,.14); color:#a16207}
   .pill.rejected{background:rgba(220,38,38,.12); color:#b91c1c}
-  .pill.live{background:rgba(13,148,136,.12); color:#0f766e}
-  .bigbtn{width:100%; padding:26px; font-size:1.35rem; border-radius:24px; box-shadow:0 8px 24px rgba(15,23,42,.18)}
+  .pill.live{background:rgba(46,117,182,.12); color:var(--accent2)}
+  .bigbtn{width:100%; padding:26px; font-size:1.35rem; border-radius:24px; box-shadow:0 8px 24px rgba(31,56,100,.18)}
   .bigbtn.in{background:linear-gradient(135deg,#15803d,#22c55e)}       /* green = Clock In */
   .bigbtn.out{background:linear-gradient(135deg,#dc2626,#f97316)}      /* red-orange = Clock Out */
   .btn-break{background:linear-gradient(135deg,#d97706,#f59e0b)}       /* amber = Start Break */
@@ -51,35 +54,65 @@
   .timer{font-size:2.4rem; font-weight:800; text-align:center; letter-spacing:.02em}
   .tabbar{position:fixed; left:0; right:0; bottom:0; display:flex; background:var(--panel);
     border-top:1px solid var(--line); padding-bottom:var(--safe); z-index:20}
-  .tabbar button{flex:1; background:transparent; color:var(--muted); border-radius:0; padding:12px 4px; font-size:.72rem; font-weight:600}
+  .tabbar button{flex:1; min-width:0; background:transparent; color:var(--muted); border-radius:0; padding:12px 2px; font-size:.72rem; font-weight:600;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .tabbar button.active{color:var(--accent2)}
   .tabbar .ic{display:block; font-size:1.3rem; line-height:1}
   .banner{padding:10px 14px; border-radius:12px; margin:8px 0; font-size:.9rem}
   .banner.offline{background:#fef3c7; color:#92400e; border:1px solid #fcd34d}
   .banner.ot{background:#fee2e2; color:#b91c1c; border:1px solid #fca5a5}
-  .banner.sync{background:#ccfbf1; color:#0f766e}
+  .banner.sync{background:#dbeafe; color:var(--accent2)}
   .hidden{display:none !important}
   .list-item{border-bottom:1px solid var(--line); padding:12px 0}
   .list-item:last-child{border-bottom:none}
-  .card{box-shadow:0 1px 3px rgba(15,23,42,.06)}
-  .sheet{position:fixed; inset:0; background:rgba(15,23,42,.45); z-index:40; display:flex; align-items:flex-end; justify-content:center}
+  .card{box-shadow:0 1px 3px rgba(31,56,100,.06)}
+  .sheet{position:fixed; inset:0; background:rgba(20,33,61,.5); z-index:40; display:flex; align-items:flex-end; justify-content:center}
   .sheet .panel{background:var(--panel); width:100%; max-width:560px; border-radius:24px 24px 0 0; padding:18px;
     max-height:92vh; overflow:auto; padding-bottom:calc(18px + var(--safe))}
   .chip{display:inline-block; background:var(--panel2); border:1px solid var(--line); border-radius:999px;
     padding:8px 14px; margin:4px 4px 0 0; font-size:.9rem}
-  .chip.sel{background:var(--accent); border-color:var(--accent)}
+  .chip.sel{background:var(--accent); border-color:var(--accent); color:#fff}
   .suggest{background:var(--panel2); border:1px solid var(--line); border-radius:12px; margin-top:-2px; overflow:hidden}
   .suggest div{padding:12px 14px; border-bottom:1px solid var(--line)}
   .suggest div:last-child{border-bottom:none}
   .toast{position:fixed; bottom:calc(84px + var(--safe)); left:50%; transform:translateX(-50%);
-    background:#0f172a; color:#fff; padding:12px 18px; border-radius:14px; z-index:60;
-    max-width:90%; text-align:center; box-shadow:0 8px 24px rgba(15,23,42,.3)}
+    background:var(--navy); color:#fff; padding:12px 18px; border-radius:14px; z-index:60;
+    max-width:90%; text-align:center; box-shadow:0 8px 24px rgba(31,56,100,.3)}
   .center{text-align:center}
   .avatar{width:34px; height:34px; border-radius:50%; background:var(--panel2); object-fit:cover}
   .perm{display:flex; align-items:center; gap:8px; padding:6px 0}
   .perm input{width:auto; margin:0}
   .spin{width:22px;height:22px;border:3px solid var(--line);border-top-color:var(--accent2);border-radius:50%;animation:sp 1s linear infinite;display:inline-block;vertical-align:middle}
   @keyframes sp{to{transform:rotate(360deg)}}
+  /* ---- Branded header: navy band, greeting top-left, the logo's silver→blue→black
+   *      "PRO" colors as a thin pulse line along the bottom edge. ---- */
+  .apphead{background:linear-gradient(135deg,#1F3864,#2b5c9c); color:#fff; border-radius:var(--radius);
+    padding:14px 16px 16px; margin:4px 0 12px; display:flex; justify-content:space-between; align-items:center;
+    box-shadow:0 4px 14px rgba(31,56,100,.25); position:relative; overflow:hidden}
+  .apphead:after{content:''; position:absolute; left:0; right:0; bottom:0; height:3px;
+    background:linear-gradient(90deg,#aeb6c2 0%,#8f9aa8 30%,var(--pulse) 48%,var(--pulse) 62%,#2a2e35 100%)}
+  .apphead .hello{font-weight:800; font-size:1.18rem; letter-spacing:.01em}
+  .apphead .hello-sub{font-size:.78rem; color:rgba(255,255,255,.75); margin-top:1px}
+  .apphead .hello-sub .cap{text-transform:capitalize}
+  .apphead .ghost{color:#cfe3ff; padding:8px 0 8px 12px; font-weight:600}
+  .apphead .avatar{border:2px solid rgba(255,255,255,.45)}
+  .pulseline{height:3px; max-width:220px; margin:10px auto 14px; border-radius:2px;
+    background:linear-gradient(90deg,#aeb6c2,var(--pulse) 48%,var(--pulse) 62%,#2a2e35)}
+  /* ---- Desktop layout (≥900px): wide and roomy for admin work; phones untouched. ---- */
+  @media (min-width: 900px){
+    .wrap{max-width:1080px}
+    .wrap.tab-clock{max-width:640px}                    /* the running clock reads best compact + centered */
+    .wrap.tab-entries, .wrap.tab-team, .wrap.tab-hours, .wrap.tab-jobs, .wrap.tab-jha, .wrap.tab-sched{max-width:820px}  /* comfortable reading width for lists */
+    /* Admin tab: cards flow into two columns (approvals | employees, materials | payroll) */
+    .wrap.tab-admin{display:grid; grid-template-columns:1fr 1fr; gap:0 18px; align-items:start}
+    .wrap.tab-admin>h2, .wrap.tab-admin>.row, .wrap.tab-admin>.banner{grid-column:1/-1}
+    /* Bottom tab bar: don't stretch buttons across a huge monitor */
+    .tabbar{justify-content:center}
+    .tabbar button{max-width:170px}
+    /* Sheets become centered dialogs instead of bottom drawers */
+    .sheet{align-items:center}
+    .sheet .panel{max-width:640px; border-radius:24px}
+  }
 </style>
 </head>
 <body>
@@ -101,320 +134,322 @@ const MAX_MEDIA_MB = 35; // base64 +33% must stay under Apps Script's ~50 MB POS
  * ENCOURAGEMENTS — a full year (312) of Mon–Sat clock-out messages.
  * Injected from messages.js at build time. Fallback kept so the app still runs.
  * ==========================================================================*/
-/* 312 Mon–Sat encouragements (a full year), injected build-time. */
+/* 312 clock-out messages (a year of Mon-Sat), rewritten: four moods interleaved -
+ * dry humour, warm/homey, motivational, reflective+scripture - so index%4 = mood and
+ * the day-of-year rotation gives a different FEEL every day, never same-mood twice. */
 const ENCOURAGEMENTS = [
-  "Solid day's work out there. Go put your feet up.",
-  "Another one in the books. Real proud of you, crew.",
-  "Whatever you do, work at it with all your heart. Colossians 3:23. Rest well tonight.",
-  "You showed up and got it done. That's what counts.",
-  "Boots off, supper on. You earned it today.",
-  "Hard day behind you. Head home and take it easy.",
-  "The plans of the diligent lead to profit. Proverbs 21:5. Good work today.",
-  "Long day, good work. Time to rest those tired hands.",
-  "You gave it your all out there. Now go rest.",
-  "Come to me, all who are weary, and I will give you rest. Matthew 11:28.",
-  "Cold morning, honest day. You pushed through it.",
-  "That's a wrap on the day. Go enjoy your evening.",
-  "The one who works his land will have plenty of bread. Proverbs 12:11.",
-  "Dust on your boots, day well spent. Head on home.",
-  "You kept at it when it got tough. Respect.",
-  "Nicely done today. Supper's calling your name.",
-  "May the favor of the Lord rest on you and establish the work of your hands. Psalm 90:17.",
-  "Full day, full effort. Go put your feet up.",
-  "Job done and done right. Time to head in.",
-  "Well done, good and faithful worker. Matthew 25:23. Rest easy tonight.",
-  "You outworked the weather today. Go get warm.",
-  "Another honest day in the rearview. Proud of you.",
-  "The diligent will find their desires fully satisfied. Proverbs 13:4.",
-  "Hands dirty, work done. That's a good day.",
-  "You showed up and put in the miles. Now rest.",
-  "Whatever your hand finds to do, do it with all your might. Ecclesiastes 9:10.",
-  "Tough one out there today, but you finished strong.",
-  "Clock's out, boots are off. Enjoy the evening.",
-  "In all toil there is profit. Proverbs 14:23. Good work today.",
-  "You earned every minute of rest coming your way.",
-  "Good honest work today. Go be with your family.",
-  "That everyone should eat, drink, and find satisfaction in their toil. Ecclesiastes 3:13.",
-  "Big day handled start to finish. Time to slow it down.",
-  "You put your back into it today. Well done.",
-  "Do not grow weary in doing good. Galatians 6:9. You did good today.",
-  "Chores done, day done. Head in and relax.",
-  "Long hours, steady hands. Nice work out there.",
-  "You shall eat the fruit of your labor. Psalm 128:2. Enjoy your supper.",
-  "That's a full day's honest work. Go rest up.",
-  "Proud of the effort you put in today. Now unwind.",
-  "Commit your work to the Lord and your plans will succeed. Proverbs 16:3.",
-  "You knocked it out today. Feet up, worries down.",
-  "Hard work never goes unnoticed. Good day, crew.",
-  "The one who is unwilling to work shall not eat. 2 Thessalonians 3:10. You earned yours.",
-  "Fences mended, day done. Time to head home.",
-  "You gave today everything it asked for. Rest now.",
-  "Steady effort pays off. Proverbs 13:4 had it right.",
-  "Sun's setting on a good day's work. Well done.",
-  "You made today count. Go enjoy the quiet.",
-  "Rest is part of the work too. Take it easy tonight.",
-  "Cattle fed, crew fed next. Go get your supper.",
-  "Whatever you do, do it heartily. Colossians 3:23. And you did.",
-  "That was a grind, and you beat it. Proud of you.",
-  "Good work out in the cold today. Go thaw out.",
-  "Another day, another job done right. Head on home.",
-  "The plans of the diligent lead surely to plenty. Proverbs 21:5.",
-  "You held the line all day. Now let it go and rest.",
-  "Sweat and grit got it done today. Nice one.",
-  "Come and rest a while. Even the hardest workers need it.",
-  "Long summer day, big effort. Go cool off and relax.",
-  "You showed up early and stayed late. That's character.",
-  "Diligent hands will rule. Proverbs 12:24. Rest those hands now.",
-  "Done and dusted. Go enjoy what's left of the light.",
-  "Honest sweat, honest day. Proud to have you on the crew.",
-  "Well done today, crew. Supper first, then feet up.",
-  "The sleep of a laborer is sweet. Ecclesiastes 5:12. Sleep well tonight.",
-  "You pushed through the hard part. That's what matters.",
-  "Boots by the door, day behind you. Rest easy.",
-  "Good work is its own reward, but rest is nice too.",
-  "In the morning sow your seed. Ecclesiastes 11:6. But tonight, rest.",
-  "You earned this evening. Go make the most of it.",
-  "Calving season is no joke, and you handled it. Well done.",
-  "Solid effort all day. Time to head in and unwind.",
-  "By the sweat of your brow you eat your bread. Genesis 3:19. Enjoy the meal.",
-  "That was a full one. Go put your boots up.",
-  "You worked hard and it showed. Proud of you.",
-  "Let us not become weary in doing good. Galatians 6:9. Good day, crew.",
-  "Job wrapped, tools away. Head home and relax.",
-  "You gave a full day's work for a full day's pay. Nice.",
-  "Whoever works his land will have abundant food. Proverbs 28:19.",
-  "Cold start, warm finish. You made it through. Well done.",
-  "Time to clock out and clock into the couch.",
-  "The hand of the diligent makes rich. Proverbs 10:4. Rest up now.",
-  "You did the work today. Now do the resting.",
-  "Grateful for the effort you brought. Go enjoy your night.",
-  "She sets about her work vigorously. Proverbs 31:17. Strong day today.",
-  "Long haul today, and you finished it. Head on home.",
-  "Nice work under that hot sun. Go find some shade.",
-  "Enjoy the good of all your labor. Ecclesiastes 3:13. Supper's ready.",
-  "That's how it's done. Proud of the crew today.",
-  "You earned every bite of supper tonight. Go get it.",
-  "The soul of the diligent is richly supplied. Proverbs 13:4.",
-  "Hard day, done right. Now let yourself rest.",
-  "You stuck with it till the job was finished. Respect.",
-  "Well done, good and faithful. Matthew 25:23. Rest tonight.",
-  "Wiring's done, day's done. Head home safe.",
-  "You brought your best today. Now bring your feet up.",
-  "Work brings profit. Proverbs 14:23. You put in the profit today.",
-  "Long fence line, longer day. You handled it. Well done.",
-  "That's a job to be proud of. Go relax now.",
-  "May the Lord bless the work of your hands. Deuteronomy 2:7. Good day.",
-  "You made short work of a long list today. Nicely done.",
-  "Feet up, phone down, day done. You earned it.",
-  "Commit to the Lord whatever you do. Proverbs 16:3. Rest now, crew.",
-  "Big grind today and you never quit. Proud of you.",
-  "The sun's down and so are you. Go get some rest.",
-  "Whatever you do, work heartily as for the Lord. Colossians 3:23.",
-  "Solid crew, solid day. Head home and take it easy.",
-  "You gave the ranch a good day. It gives you the evening back.",
-  "Those who work their land will have plenty. Proverbs 12:11.",
-  "Hard hours, honest pay. Go put your feet up.",
-  "You battled the cold and won. Warm up and rest now.",
-  "Diligent hands bring wealth. Proverbs 10:4. Rest those hands.",
-  "That was a full day's work. Be proud, then be still.",
-  "Job well done today. Go be with the ones you love.",
-  "Come to me, you who are weary. Matthew 11:28. Rest tonight.",
-  "You showed grit out there. Now show yourself some rest.",
-  "Cattle checked, chores done. Head in for supper.",
-  "The plans of the diligent lead to profit. Proverbs 21:5. Good day.",
-  "Long day in the saddle. Time to climb down and rest.",
-  "You earned a quiet evening tonight. Go take it, crew.",
-  "Whatever your hand finds to do, do with all your might. Ecclesiastes 9:10.",
-  "That was a tough one, and you made it look easy. Well done.",
-  "Boots off, worries off. Rest up for tomorrow.",
-  "You will eat the fruit of your labor. Psalm 128:2. Enjoy tonight.",
-  "Nice work today, crew. Go enjoy the evening light.",
-  "Steady, honest work all day. Proud of you.",
-  "Do not grow weary. Galatians 6:9. You did good today, rest well.",
-  "Panels up, day wrapped. Head home safe and sound.",
-  "You gave it everything today. Now let the day go.",
-  "In toil there is profit. Proverbs 14:23. You profited today.",
-  "Long day at the ranch. Supper's the reward. Go get it.",
-  "You handled the heat like a pro. Cool off and rest.",
-  "God is not unjust to forget your work. Hebrews 6:10. Rest easy.",
-  "Fences up and holding, day done. Time to head in.",
-  "You outlasted the day. Now the evening's yours.",
-  "The diligent find satisfaction. Proverbs 13:4. Go rest satisfied.",
-  "Hard day, good crew, job done. That's a win.",
-  "Time to trade the work gloves for a warm supper.",
-  "Whatever you do, do it with all your heart. Colossians 3:23. And you did.",
-  "You put in a full shift and then some. Well earned rest ahead.",
-  "Chores wrapped, sun's low. Head home and unwind.",
-  "The one who works his land has plenty of bread. Proverbs 12:11.",
-  "Big effort today, crew. Go put those feet up.",
-  "You beat the cold and got it done. Now go get warm.",
-  "There is nothing better than to enjoy your work. Ecclesiastes 3:22.",
-  "Long harvest day. You brought it home. Well done.",
-  "You showed up and gave it your all. Rest now.",
-  "The Lord will bless the work of your hands. Deuteronomy 28:12.",
-  "Solid day out there. Time to head in and slow down.",
-  "You earned every minute of the evening. Enjoy it.",
-  "Lazy hands make poverty, diligent hands bring wealth. Proverbs 10:4.",
-  "That's a day to be proud of. Go rest, crew.",
-  "Welds are cooling and so are you. Head home and unwind.",
-  "The hardworking farmer gets the first share. 2 Timothy 2:6. Enjoy supper.",
-  "You gave the day everything. Now give yourself a break.",
-  "Cold hands, warm heart, honest day. Well done, crew.",
-  "Commit your work to the Lord. Proverbs 16:3. Rest now.",
-  "You handled a full plate today. Go clear your mind.",
-  "Long day done and dusted. Feet up, worries down.",
-  "Whoever is faithful in little is faithful in much. Luke 16:10. Good day.",
-  "That was a grind and you never let up. Proud of you.",
-  "Supper, family, rest. You earned all three tonight.",
-  "The sleep of a laborer is sweet. Ecclesiastes 5:12. Sleep well.",
-  "You put the ranch first all day. Tonight, put yourself first.",
-  "Job done right the first time. Nice work, crew.",
-  "Well done, good and faithful worker. Matthew 25:23. Rest tonight.",
-  "Cattle content, crew tired. Head home and get some rest.",
-  "You made the hard hours count. Now go relax.",
-  "Diligent plans lead to plenty. Proverbs 21:5. Good day today.",
-  "Long day under the Alberta sky. Go rest under a warm roof.",
-  "You showed real grit today. Take the evening off, you earned it.",
-  "Come away and rest a while. Even Jesus said so. Mark 6:31.",
-  "That's a full one behind you. Head in and unwind.",
-  "You gave honest work for an honest day. Proud of you.",
-  "The plans of the diligent surely lead to abundance. Proverbs 21:5.",
-  "Boots off, kettle on, day behind you. Rest up tonight.",
-  "Big grind, bigger heart. Well done today, crew.",
-  "Work heartily, as for the Lord. Colossians 3:23. You sure did today.",
-  "You wrangled a tough day and won. Go take it easy.",
-  "Long fencing day. Straight lines, honest sweat. Well done.",
-  "Enjoy the good of all your toil. Ecclesiastes 3:13. Supper's on.",
-  "You never coasted today. That's a crew to be proud of.",
-  "Home, supper, rest. You earned the whole evening.",
-  "The diligent are richly supplied. Proverbs 13:4. Go rest, crew.",
-  "That was a hard day and you carried it well. Now set it down.",
-  "Tools packed, truck loaded, day done. Head home safe.",
-  "God will not forget your labor of love. Hebrews 6:10. Rest well.",
-  "You put in a real day today. Go put your feet up.",
-  "Cold morning turned into a good day. Well done, crew.",
-  "By the sweat of your brow. Genesis 3:19. Now enjoy the bread.",
-  "You handled the long list without a fuss. Nice work.",
-  "Sun's down, work's done. Time to head in.",
-  "In all labor there is profit. Proverbs 14:23. You earned yours.",
-  "Long day, good crew. Go be with your family now.",
-  "You brought your best today, no doubt about it. Rest up.",
-  "Whatever you do, do heartily. Colossians 3:23. Great effort today.",
-  "That's a wrap on a solid day. Feet up, crew.",
-  "You outworked the clock today. Now let the evening slow down.",
-  "The hand of the diligent will rule. Proverbs 12:24. Rest those hands.",
-  "Hard day at the ranch, done right. Head home proud.",
-  "You earned every bit of this quiet evening. Enjoy it.",
-  "Come to me, all you who are weary. Matthew 11:28. Rest tonight.",
-  "Chores done, day done. Time to slow it all down.",
-  "You gave it a full push today. Well done, crew.",
-  "Those who work will have plenty of bread. Proverbs 12:11. Enjoy supper.",
-  "Long haul today and you finished strong. Proud of you.",
-  "Boots by the door, day behind you. Rest easy tonight.",
-  "The diligent will stand before kings. Proverbs 22:29. Well done today.",
-  "You made short work of a long day. Nice one, crew.",
-  "Time to trade the truck seat for the couch. You earned it.",
-  "Do not grow weary in well-doing. Galatians 6:9. Good day, crew.",
-  "That was a tough haul, and you never quit. Respect.",
-  "Home to supper you go. You more than earned it.",
-  "You will enjoy the fruit of your labor. Psalm 128:2. Good work today.",
-  "Solid day, solid crew. Head in and take it easy.",
-  "You gave the day your muscle and your heart. Rest now.",
-  "Commit whatever you do to the Lord. Proverbs 16:3. Rest well tonight.",
-  "Long calving night ahead maybe, but you earned some rest first.",
-  "Job done and done well. Go enjoy the evening, crew.",
-  "Whatever your hand finds, do it with your might. Ecclesiastes 9:10.",
-  "That was a full plate and you cleaned it. Well done.",
-  "Feet up, day down. You handled it all, crew.",
-  "The soul of the diligent is richly supplied. Proverbs 13:4. Rest up.",
-  "Hard morning frost, honest day's work. Proud of you.",
-  "You kept the crew moving all day. Now go slow down.",
-  "May God establish the work of your hands. Psalm 90:17. Good day.",
-  "Long summer light, long day's work. Go find your rest.",
-  "You showed up ready and left it all out there. Well done.",
-  "There is nothing better than to enjoy your work. Ecclesiastes 3:22. Rest.",
-  "That's a job worth being proud of. Head home, crew.",
-  "You never let the hard day get the better of you. Nice work.",
-  "The hardworking farmer gets the first share. 2 Timothy 2:6.",
-  "Done for the day. Go put your boots up and breathe.",
-  "You earned this evening the honest way. Enjoy every minute.",
-  "Diligent hands bring wealth. Proverbs 10:4. Rest those hands now.",
-  "Long day, and you carried your share and then some. Well done.",
-  "Supper's waiting and so is your rest. Head home, crew.",
-  "Come away by yourselves and rest. Mark 6:31. You earned it.",
-  "That was a real grinder. You beat it. Proud of you.",
-  "Tools down, day done. Go enjoy what's left of the light.",
-  "The Lord loves a diligent worker. Rest well, you were one today.",
-  "You handled the cold and the load like a champ. Go warm up.",
-  "Big day in the books. Feet up, worries away.",
-  "The precious possession of a man is diligence. Proverbs 12:27. Rest easy tonight.",
-  "You gave a full day's honest effort. Now go rest it off.",
-  "Long welding day. Steady hands, good work. Head home safe.",
-  "Enjoy your food and drink and find good in your toil. Ecclesiastes 3:13.",
-  "That's a solid day behind you. Time to slow down, crew.",
-  "You outworked the weather and the clock. Well done.",
-  "The plans of the diligent lead to profit. Proverbs 21:5. Rest now.",
-  "Hard day handled with heart. Proud of you, crew.",
-  "Boots off, feet up, day done. Enjoy your evening.",
-  "Cast your bread upon the waters. Ecclesiastes 11:1. Your work will come back to you.",
-  "You brought grit and stayed steady all day. Nice work.",
-  "Long day at the ranch. Go home and let it go.",
-  "Whatever you do, do it all for the glory of God. 1 Corinthians 10:31.",
-  "That was a big one and you finished it right. Well done.",
-  "Time to head home and let the tired feeling be a good one.",
-  "The diligent find their desires satisfied. Proverbs 13:4. Rest, crew.",
-  "You gave today everything and it showed. Go put your feet up.",
-  "Chores wrapped, cattle fed, day done. Head in for supper.",
-  "Well done today. Rest is the next job on the list.",
-  "Faithful in little, faithful in much. Luke 16:10. Good day, crew.",
-  "You never coasted once today. Proud to have you on the crew.",
-  "Long harvest push. You brought it home. Go rest now.",
-  "The sleep of the laborer is sweet. Ecclesiastes 5:12. Sleep well tonight.",
-  "That was honest, hard work. Now go enjoy the quiet.",
-  "You handled the long day without complaint. Respect, crew.",
-  "Let the beauty of the Lord be upon us and establish our work. Psalm 90:17.",
-  "Job done right, day done well. Head home, crew.",
-  "You earned the couch and the supper both tonight. Enjoy.",
-  "Whatever you do, work at it with all your heart. Colossians 3:23.",
-  "Big grind today, and you never let up. Well done, crew.",
-  "Sun's setting on a good day's work. Time to head in.",
-  "Come to me and I will give you rest. Matthew 11:28. Rest well.",
-  "You put the work in and it shows. Now go put your feet up.",
-  "Long cold morning, warm honest finish. Proud of you today.",
-  "The diligent will rule. Proverbs 12:24. You ruled the day.",
-  "That's a day well spent. Head home and slow down, crew.",
-  "You gave it all you had out there. Rest is yours tonight.",
-  "In all toil there is profit. Proverbs 14:23. Go enjoy yours.",
-  "Fences fixed, day finished. Head home safe and rest.",
-  "You made today count in every hour. Well done, crew.",
-  "May the work of your hands be blessed. Psalm 90:17. Good day.",
-  "Long day under a big prairie sky. Go find your rest.",
-  "You showed up and outworked the tough hours. Proud of you.",
-  "Enjoy the good of all your labor. Ecclesiastes 3:13. Supper time.",
-  "That was a full and honest day. Now go take it easy.",
-  "Boots off, day done, evening yours. You earned it, crew.",
-  "The hardworking farmer should be first to share the crops. 2 Timothy 2:6.",
-  "You carried a heavy day well. Now set it down and rest.",
-  "Job wrapped and wrapped right. Head home, crew, and unwind.",
-  "Be strong and do the work, for the Lord is with you. 1 Chronicles 28:20. Rest now.",
-  "You brought steady effort all day long. Nice work, crew.",
-  "Time to head in from the cold and warm up. You earned it.",
-  "Those who sow in tears will reap with songs of joy. Psalm 126:5. Rest tonight.",
-  "That was a grinder of a day and you won it. Proud of you.",
-  "Supper, family, and rest ahead. You earned the whole evening.",
-  "The one unwilling to work shall not eat. 2 Thessalonians 3:10. You more than earned yours.",
-  "You gave the ranch a full day. Now the evening's all yours.",
-  "Long day done right. Feet up and let it go, crew.",
-  "Commit your work to the Lord and it will succeed. Proverbs 16:3.",
-  "You never quit when it got hard today. That's real grit.",
-  "Home you go, crew. Rest up, you more than earned it.",
-  "You will eat the fruit of your labor, and it will go well. Psalm 128:2.",
-  "That's a wrap on a hard, honest day. Head home proud.",
-  "You outlasted the long day and finished strong. Well done, crew.",
-  "Do not grow weary in doing good, the harvest will come. Galatians 6:9.",
-  "You gave today your muscle, your patience, and your heart. Rest now.",
-  "Well done, good and faithful worker. Matthew 25:23. Rest easy, crew.",
-  "You handled every hour like a pro today. Proud of you, crew."
+  "Clock out achieved. Couch loading\u2026 87%.",
+  "Another honest day in the books. Head home easy.",
+  "What you did today compounds. Interest starts accruing overnight.",
+  "Whatever you do, work at it with all your heart. \u2014 Colossians 3:23. You did.",
+  "The day tried. You tried harder. Final score posted at supper.",
+  "Supper tastes better on days like this. Go find out.",
+  "Success is a few small disciplines repeated daily. Today: repeated.",
+  "The sleep of a labourer is sweet. \u2014 Ecclesiastes 5:12. Yours is earned.",
+  "You are now free to move about the evening.",
+  "You did right by the day. Now do right by your rest.",
+  "You moved the needle today, even if only you saw it move.",
+  "Come to me, all you who are weary, and I will give you rest. \u2014 Matthew 11:28.",
+  "Tools down. Standards still up. Go home.",
+  "The evening is yours, free and clear. Spend it on the good stuff.",
+  "Rest is a discipline too. The strong take it seriously.",
+  "Commit to the Lord whatever you do, and he will establish your plans. \u2014 Proverbs 16:3.",
+  "That list didn't know what hit it. (It was you. You hit it.)",
+  "Somebody's glad you're on the way home. That's the real paycheque.",
+  "The reward for good work is more capability. You leveled up today.",
+  "May the favour of the Lord rest on us; establish the work of our hands. \u2014 Psalm 90:17.",
+  "Somewhere a recliner just felt a disturbance. It knows you're coming.",
+  "Let the day go. It got everything it needed from you.",
+  "Every day you finish builds the person who starts tomorrow.",
+  "Well done, good and faithful servant. \u2014 Matthew 25:23. Rest easy tonight.",
+  "Work's done. The dog requires a full report.",
+  "Boots off, shoulders down, kettle on.",
+  "You kept the standard when it would've been easier not to. That's the whole game.",
+  "You will eat the fruit of your labour; blessings and prosperity will be yours. \u2014 Psalm 128:2.",
+  "Your boots have filed for overtime. Denied. Go rest them.",
+  "You gave the day your hands and your patience. Keep the evening for your heart.",
+  "Consistency looks unremarkable daily and unbeatable yearly.",
+  "Let us not become weary in doing good. \u2014 Galatians 6:9. Today, you didn't.",
+  "Official ruling: that counts as a full day. And then some.",
+  "Home is the job site where you're always on break.",
+  "Well done is better than well said. \u2014 Franklin. Today, you did.",
+  "In all toil there is profit. \u2014 Proverbs 14:23. Today's is banked.",
+  "You've earned the good chair and the last word tonight.",
+  "Rest isn't a reward for work. It's part of the work. Do it well.",
+  "The credit belongs to those actually in the arena. You were in it.",
+  "Unless the Lord builds the house, the builders labour in vain. \u2014 Psalm 127:1. Build with him.",
+  "Day: closed. Fridge: about to be opened.",
+  "The site is quiet, the tools are down, and you did good.",
+  "A hard day's work is a vote for your own future.",
+  "The plans of the diligent lead to profit. \u2014 Proverbs 21:5.",
+  "Scientists confirm supper tastes 40% better after a day like that.",
+  "Carry home the satisfaction. Leave the stress in the truck.",
+  "It is not the mountain we conquer but ourselves. \u2014 Hillary. Conquered.",
+  "Come away by yourselves and rest a while. \u2014 Mark 6:31. That's an instruction.",
+  "The job site will spend all night missing you. It'll cope.",
+  "A day like today is why the bed feels so honest tonight.",
+  "Mastery is a long apprenticeship. Another day served, another skill sharpened.",
+  "There is nothing better than to enjoy the good of one's labour. \u2014 Ecclesiastes 3:13.",
+  "Congratulations on defeating today. Rematch tomorrow, same time.",
+  "You showed up for everyone today. Tonight, show up for yourself.",
+  "You did what you said you'd do. In this world, that's rare currency.",
+  "The hardworking farmer should be the first to share in the crops. \u2014 2 Timothy 2:6.",
+  "Hang up the tool belt. It needs to think about what it did.",
+  "The porch light's on for a reason. Go be the reason.",
+  "No one stumbles onto excellence. You walked there again today, on purpose.",
+  "He gives strength to the weary. \u2014 Isaiah 40:29. Collect yours tonight.",
+  "Weather took its best shot. You filed it under 'noise.'",
+  "Good work done, good people waiting. That's a rich life.",
+  "The finish line of today is the training block for tomorrow.",
+  "God is not unjust; he will not forget your work. \u2014 Hebrews 6:10.",
+  "Achievement unlocked: Went To Work And Did The Work.",
+  "Tomorrow will ask again. Tonight, you've already answered.",
+  "Quiet effort makes loud results \u2014 eventually. Keep stacking.",
+  "By the seventh day God had finished his work, and he rested. \u2014 Genesis 2:2. Follow suit.",
+  "Your hands did math, art, and heavy lifting today. Pay them in supper.",
+  "Let supper be slow and the phone be far away.",
+  "Today's sweat is tomorrow's shortcut.",
+  "Diligent hands will rule. \u2014 Proverbs 12:24. Rest them tonight anyway.",
+  "The couch has been notified of your ETA.",
+  "You built things today that will outlast the tiredness. Fair trade.",
+  "You can be proud without being finished. Tonight: proud. Tomorrow: back at it.",
+  "Those who work their land will have abundant food. \u2014 Proverbs 12:11.",
+  "Timesheet updated. Legend status: maintained.",
+  "The day's ledger: effort given, pride earned, evening owed. Collect.",
+  "The tallest oaks grow slow through weather nobody remembers. Yours grew today.",
+  "In peace I will lie down and sleep, for you alone, Lord, make me dwell in safety. \u2014 Psalm 4:8.",
+  "That's a wrap. Craft services (your kitchen) is now open.",
+  "May your chair be soft and your family louder than the TV.",
+  "What you practiced today, you'll be known for someday.",
+  "Cast all your anxiety on him because he cares for you. \u2014 1 Peter 5:7. Tools down, worries too.",
+  "You may now stop being impressive. Resume at 7 a.m.",
+  "Take the long way home if the sky's doing something nice.",
+  "Real confidence is a stack of kept promises to yourself. Add today.",
+  "The Lord is my shepherd, I lack nothing. \u2014 Psalm 23:1. Not even after today.",
+  "Shift's over. The only thing left to fix is a plate of food.",
+  "Hard work has a quiet after-glow. You're wearing it now.",
+  "The great ones finish tired too. They just come back.",
+  "Be strong and courageous... for the Lord goes with you. \u2014 Deuteronomy 31:6. Today included.",
+  "Today has been thoroughly worked. No refunds.",
+  "The work's wrapped, the doors are locked, your part's done.",
+  "There's genius in persistence that talent can't buy.",
+  "My presence will go with you, and I will give you rest. \u2014 Exodus 33:14.",
+  "Whatever you couldn't finish today was clearly tomorrow's fault.",
+  "Some jobs end at a whistle. Yours ends at a sunset. Better deal.",
+  "You built proof today. Proof beats promise, every time.",
+  "Whatever your hand finds to do, do it with all your might. \u2014 Ecclesiastes 9:10. Done.",
+  "Clocking out at the top of your game. And the bottom of your energy. Balanced.",
+  "Put the day down gently. It served you well.",
+  "When your character out-works your circumstances, days end like this.",
+  "Each of you should eat and drink and find satisfaction in your toil \u2014 a gift of God. \u2014 Ecclesiastes 3:13.",
+  "Do not operate heavy machinery. Except the recliner lever.",
+  "You were useful today. That's no small thing. Rest like you know it.",
+  "Endurance is patience concentrated. \u2014 Carlyle. You concentrated well today.",
+  "He makes me lie down in green pastures. \u2014 Psalm 23:2. Take the hint.",
+  "You gave 100%. The other 30% was coffee. Math checks out.",
+  "There's stew-and-biscuits weather coming. Tonight might be it.",
+  "Do a little more each day than you think you can \u2014 you just did.",
+  "The end of a matter is better than its beginning. \u2014 Ecclesiastes 7:8. Good ending today.",
+  "Home: the only job site where lying down is encouraged.",
+  "Go easy tonight. Even good engines idle.",
+  "A finished day is a beaten excuse.",
+  "Six days you shall labour... but the seventh is rest. \u2014 Exodus 20:9-10. Pace yourself, friend.",
+  "The truck knows the way home. Let it do its thing.",
+  "The house missed you. The couch especially.",
+  "You showed up when it was hard. That's the line on the resume that matters.",
+  "A generous person will prosper; whoever refreshes others will be refreshed. \u2014 Proverbs 11:25.",
+  "Boots off at the door. House rules outrank work ethic.",
+  "Whatever's left undone will keep. You won't, without rest. Priorities.",
+  "Progress isn't loud. It sounds exactly like today did.",
+  "Trust in the Lord with all your heart. \u2014 Proverbs 3:5. The day is safely his now.",
+  "One more day where everything you touched works better now. Show-off.",
+  "Today you were somebody's steady. Tonight, be your own.",
+  "The habit of finishing is the rarest tool in any box. It's in yours.",
+  "He will bless the work of your hands. \u2014 Deuteronomy 28:12.",
+  "Your shadow clocked out an hour ago. Slacker.",
+  "Wash the day off, keep the pride on.",
+  "Look back at today's work once, then forward twice.",
+  "I have fought the good fight, I have finished the race. \u2014 2 Timothy 4:7. Today's leg: complete.",
+  "The evening has been cleared for your arrival. No hard hat required.",
+  "A tired body and a clear conscience: sleep's favourite recipe.",
+  "Your standards worked overtime today. Give them the evening off.",
+  "Do not worry about tomorrow, for tomorrow will worry about itself. \u2014 Matthew 6:34.",
+  "All problems remaining at quitting time are officially future problems.",
+  "The evening was bought and paid for by 7 a.m. you. Enjoy it.",
+  "Iron sharpens iron. Today sharpened you.",
+  "The joy of the Lord is your strength. \u2014 Nehemiah 8:10. Refuel on it tonight.",
+  "Well fought. The paperwork surrendered first.",
+  "Kick off the boots. The floor can handle a little honest dirt.",
+  "Nothing great was ever built in a day, but every day something great was built on.",
+  "Better one handful with tranquillity than two with toil. \u2014 Ecclesiastes 4:6. Tonight: tranquillity.",
+  "Nothing left to prove today. Except maybe how fast you can get to supper.",
+  "Let the last thought of the day be something you fixed.",
+  "Deserve your ambitions. Today you did.",
+  "Every good and perfect gift is from above. \u2014 James 1:17. Today's strength was one.",
+  "You're leaving the site better than you found it. The site says thanks.",
+  "Quiet evenings are the interest paid on loud days.",
+  "The compound interest of showing up: you'll cash it later. Deposit made.",
+  "He who watches over you will not slumber. \u2014 Psalm 121:3. So you can.",
+  "Quitting time: the most punctual you'll ever be.",
+  "You kept your word today, hour by hour. Sleep on that.",
+  "Grit means the story continues tomorrow. And it will.",
+  "Honour the Lord with your wealth and the firstfruits of your labour. \u2014 Proverbs 3:9.",
+  "Today's overtime is tonight's story time.",
+  "Come in from the cold. Or the heat. Whichever. Just come in.",
+  "Not every day is a highlight. Every day is a foundation.",
+  "Let the beauty of the Lord be upon us; establish the work of our hands. \u2014 Psalm 90:17.",
+  "Somebody worked hard today. The timesheet is pointing at you.",
+  "Real success: tired, home, and wanted.",
+  "You outworked your doubts today. They'll be quieter tomorrow.",
+  "A day's work is a day's answer to the question of who you are.",
+  "Break out the good salsa. You've earned condiments tonight.",
+  "Trade the work gear for a kitchen chair. Both fit you fine.",
+  "Effort keeps its own books. Yours are balanced and then some.",
+  "Good work remembers careful hands. So do people.",
+  "The stars are clocking in. Shift change complete.",
+  "You tended what needed tending. That's the whole job. Rest now.",
+  "The difference you made today is real, even where it's invisible.",
+  "You traded eight-plus hours of your life for this day's work. It was a fair trade, honestly made.",
+  "Toolbox closed. Kitchen table open.",
+  "The day ended better because you were in it. So will supper.",
+  "Character is what you do on the third hard day in a row.",
+  "What was hard today will be a story someday. Stories are wages too.",
+  "Your work here is done. Dramatically walk away from the explosion (sunset).",
+  "The work will still respect you in the morning. Go rest.",
+  "Today took discipline. Tomorrow takes one more day of it. You have plenty.",
+  "Tools get put away. Skills stay out all night.",
+  "Even your coffee cup is proud of you, and it's seen everything.",
+  "Nothing left to lift tonight but a fork.",
+  "A reputation is built shift by shift. Today: another course of brick.",
+  "Tired is the body's receipt for a day that meant something.",
+  "The lawn chair by the fire has your name on it. Literally, if you own a Sharpie.",
+  "Tell somebody about your day. The good part. There was one \u2014 you.",
+  "Excellence isn't a mood. You proved that today.",
+  "The best evenings are unearned by nothing and earned by everything.",
+  "Muscles sore in all the respectable places. Rest up.",
+  "Sleep comes easy to the honest and the busy. You're both.",
+  "Somewhere in today's hours was your best work yet. It'll show up again.",
+  "Look at your hands tonight. They're a resume no paper can hold.",
+  "Someone else's problem now? No \u2014 nobody's problem. You fixed it.",
+  "May the evening be slow and the biscuits be plenty.",
+  "The trade rewards the patient. You banked patience today.",
+  "A day of work is a long conversation with the real world. You listened well.",
+  "Jobs done, customers happy, jokes still mediocre. Perfect day.",
+  "You're the kind of tired that means it mattered.",
+  "Fatigue is temporary. The standard you kept is permanent.",
+  "Whatever else is uncertain, today you were useful. Hold onto that.",
+  "You beat rush hour by living somewhere with no rush hour. And by working late. Go home.",
+  "Set it all down. Every wrench, every worry.",
+  "Your ceiling rose a little today. It does that when you push.",
+  "Every generation thinks the work was harder in their day. Yours will be right too.",
+  "The day is now a highlight reel. Skip to the supper scene.",
+  "The best part of a hard day is the soft landing. Incoming.",
+  "The extra care you took today has a long memory.",
+  "There's an old kind of wealth in being spent on something worthwhile.",
+  "Signing off with all ten fingers. Professionalism.",
+  "Family, food, feet up. In any order. All three.",
+  "Persistence outlasts resistance. Today: outlasted.",
+  "Craft is memory in the hands. You added a page today.",
+  "Today's performance review: would hire again. \u2014 The Universe.",
+  "Days like this are the bricks. The life you're building is the house.",
+  "The strongest steel is forged on days that felt like today.",
+  "The quiet at day's end isn't empty. It's full of everything you finished.",
+  "Go home before the job thinks of something else.",
+  "You earned an evening where the hardest choice is what's on TV.",
+  "You held the line. Lines like that become legacies.",
+  "Somewhere in today was a moment you were exactly the right person for. That's a career.",
+  "Hard hat off, thinking cap optional until morning.",
+  "The shop's quiet now. It's proud too, in its way.",
+  "To finish well is a skill. You're getting dangerously good at it.",
+  "Work shapes the worker more than the workpiece. Today shaped you well.",
+  "You did the thing! All the things. Several things, anyway. Enough things.",
+  "One more day of doing it right. It adds up. It already has.",
+  "Every rep counts, and today was full of them.",
+  "Rest tonight isn't stopping. It's the other half of the craft.",
+  "Payday cares about this moment. Honour it with rest.",
+  "Go home to the people who knew you before you were this good.",
+  "The path to mastery looks exactly like an ordinary tired evening. This one.",
+  "You can't rush craftsmanship and you can't skip a day. You honoured this one.",
+  "The site's tidy, the truck's loaded, the evening's yours. Textbook.",
+  "A well-worked day deserves a well-fed evening.",
+  "You made hard look routine today. That's what expertise is.",
+  "The day is spent, and it was spent well. Few can say it. You can.",
+  "May your shower be hot and your phone stay quiet.",
+  "Rest your hands. They earned their keep and then some.",
+  "Today asked a fair price and you paid in full. Ownership feels like this.",
+  "Sunsets hit different when you've been useful since sunrise.",
+  "Everything hurts a normal, honest amount. Nailed it.",
+  "The stars punch in so you can punch out.",
+  "Slow progress is still progress, and yours wasn't even slow.",
+  "An honest day holds its value in any economy.",
+  "The couch commute begins now. Watch for slow-moving pets.",
+  "You made a living and kept your soul. Good shift.",
+  "You're not the same worker who clocked in this morning. Slightly better. Daily.",
+  "What you fixed today stays fixed. What you built stays built. Sleep on that.",
+  "You can't pour from an empty thermos. Refill overnight.",
+  "Tonight's forecast: warm kitchen, low stress, zero percent chance of email.",
+  "Winners are ordinary people with non-negotiable habits. Exhibit: today.",
+  "The work will teach you if you let it, the old-timers say. Today it taught. You learned.",
+  "Last one standing: you. As usual.",
+  "Being needed is a blessing. Being home is one too. You've got both.",
+  "Leave it all on the field, then refill overnight. That's the cycle. Honour it.",
+  "The day asked its questions. Your hands answered every one.",
+  "Dust off, punch out, chin up.",
+  "The shop's locked, the day's done, and you did well.",
+  "The best investment today: the effort nobody had to ask for.",
+  "Tomorrow inherits a little order because of today. That's legacy, small and real.",
+  "The job called you a machine today. You blushed. Machines can't blush. Checkmate.",
+  "Some evenings feel earned to the bone. This is one of them.",
+  "Keep promises, keep standards, keep going. Three for three today.",
+  "Nothing about care is wasted. Not one careful hour of it.",
+  "Nothing on tonight's schedule but well-earned nothing.",
+  "Time to go be somebody's favourite person instead of somebody's contractor.",
+  "Your future self just watched today and nodded.",
+  "The pride in a done day never shows up on an invoice. It's yours anyway.",
+  "You've officially run out of workday. Tragic. Anyway, supper.",
+  "The road home is the best part of the map.",
+  "Today's tired is the good kind \u2014 the kind with receipts.",
+  "A person who can end a day satisfied has already won most of what matters.",
+  "Take the win. Take the leftovers too.",
+  "Your chair, your table, your people. Clock out and claim them.",
+  "A body of work is built one honest day at a time. Volume added.",
+  "The trade is old, the day was new, and you held both well.",
+  "Today's blooper reel was short and the highlight reel was long.",
+  "Even the dog knows you did good. Especially the dog.",
+  "You met the day's resistance with better resistance.",
+  "Good days don't announce themselves in the morning. They confess at night. Hear that? Confession.",
+  "Somewhere, a spreadsheet just recorded your greatness.",
+  "Nothing sweeter than a done list and an open evening.",
+  "What you maintain, you keep. Standards included. Maintained.",
+  "You gave the day weight. That's why it sat heavy and finished full.",
+  "End of shift. Beginning of shift-lessness.",
+  "Home now. The rest is tomorrow's business.",
+  "Even on autopilot, your autopilot has high standards. That took years. It shows.",
+  "Between first coffee and last light, you mattered all day.",
+  "Your evening has zero action items. Keep it that way.",
+  "You wore the day well. Now wear the slippers.",
+  "You were the constant in today's chaos. Constants win.",
+  "Days like today don't trend. They endure.",
+  "Home stretch, literal version: go stretch, at home.",
+  "Let gratitude get the last word tonight.",
+  "History belongs to the diligent. Today is in your column.",
+  "Quiet accomplishment is still accomplishment. Quieter, in fact, and deeper.",
+  "The tools rest. The legend showers.",
+  "Full hands all day, full heart tonight.",
+  "One day of real effort is worth a month of intention. Banked.",
+  "The work took what it needed and left you tired and true. Even trade.",
+  "Even the sun called it a day. Great minds.",
+  "Peace, quiet, and potatoes. Go.",
+  "The secret ingredient was never talent. It was today, repeated.",
+  "Let the day close like a good book \u2014 finished, not abandoned.",
+  "Full day, empty list, happy exit.",
+  "The day gave what it gave. You gave more. Rest up, friend.",
+  "Strong finish. Stronger pattern. Unbreakable habit.",
+  "You were needed. You showed. You delivered. Repeat tomorrow.",
+  "Freedom smells like wood smoke and supper. Go get it.",
+  "Close the gate on today. It'll still be there to open tomorrow.",
+  "Let tonight's rest be as intentional as today's work was.",
+  "May tonight be as kind to you as you were useful today."
 ];
 
 /* ============================================================================
@@ -422,379 +457,383 @@ const ENCOURAGEMENTS = [
  * Random pick that avoids the last 20 shown (localStorage), so nobody sees a
  * repeat within a week even clocking in multiple times a day.
  * ==========================================================================*/
-/* 366 clock-in messages, injected build-time. */
+/* 366 clock-in messages, rewritten: four moods interleaved (dry-clever, playful,
+ * warm/grounded, motivational) - index%4 = mood; pickClockin avoids repeating a mood
+ * back-to-back as well as repeating any of the last 20 messages. */
 const CLOCKINS = [
-  "Fresh day, clean slate. Let's get after it.",
-  "Coffee first, conduit second.",
-  "Boots laced, mind right, ready to roll.",
-  "Let's make some sparks fly — safely.",
-  "The cattle have been up for hours — time to catch up.",
-  "New day, new chances. Make it count.",
-  "Another day, another perfectly bent EMT.",
-  "Show up, gear up, level up.",
-  "Feeling grounded and ready to conduct business.",
-  "The herd waits for no one. Neither does the job.",
-  "Start strong, finish stronger.",
-  "Time to amp up and get to work.",
-  "Today's forecast: 100% chance of getting things done.",
-  "Watt a beautiful morning to get to work.",
-  "Sun's up over the pasture — let's ride.",
-  "One good hour sets up the whole day.",
-  "Current mood: fully charged.",
-  "Small steps this morning, big wins by supper.",
-  "Ohm my goodness, it's time to work.",
-  "Coffee's hot, cattle are fed, let's build something.",
-  "Attack the day before it attacks you.",
-  "Breaker's on, brain's on, let's go.",
-  "Bring the energy you want to see on site.",
-  "Wired and ready — mostly the coffee's doing.",
-  "Fresh air, open sky, honest work ahead.",
-  "Every big project starts with clocking in.",
-  "Positive attitude, negative terminal — know the difference.",
-  "Today is a good day to do good work.",
-  "Twist it, tape it, tidy it — let's get wiring.",
-  "Boots in the mud, head in the game.",
-  "Rise, grind, and shine — in that order.",
-  "Let's keep the current flowing and the coffee too.",
-  "First one in sets the tone. Might as well be me.",
-  "Panel schedules and pancake breakfasts — living the dream.",
-  "The tractor's warmed up and so am I.",
-  "Do it right the first time, starting now.",
-  "High voltage enthusiasm, low resistance to hard work.",
-  "Clocked in and locked in.",
-  "Time to torque some lugs and take some names.",
-  "Smells like hay and opportunity out here.",
-  "Great days are built one task at a time.",
-  "Let's ground ourselves and elevate the work.",
-  "Today I choose effort over excuses.",
-  "Fish tape in hand, victory in sight.",
-  "Even the rooster clocked in before me today.",
-  "Effort is free. Spend it generously today.",
-  "Warming up the multimeter and the mindset.",
-  "Good mornings make good paycheques.",
-  "May your splices be tight and your coffee tighter.",
-  "Gates open, sun's out, let's move some cattle.",
-  "Consistency beats intensity — show up again today.",
-  "Let's put the pro in PRO Electrical today.",
-  "The best view comes after the hardest morning.",
-  "Voltage checked, attitude checked, let's roll.",
-  "Fence lines and finish lines — chasing both today.",
-  "Discipline is choosing the hard hat over the snooze button.",
-  "Time to run wire like it's a race.",
-  "Momentum starts with the first clock-in.",
-  "Neutral is a wire, not an attitude.",
-  "The Wagyu are wagging — must be a good day coming.",
-  "Winners warm up. Consider this my stretch.",
-  "Let's bend some pipe and impress some inspectors.",
-  "Every sunrise is an invitation to build.",
-  "Today's circuit: coffee, work, repeat.",
-  "Dust on the boots, plans in the pocket.",
-  "Be the reason the job goes smooth today.",
-  "Amped up and ready to conduct myself professionally.",
-  "The day is young and so is my to-do list.",
-  "Zip ties and high fives — let's get organized.",
-  "Frost on the windshield, fire in the belly.",
-  "Earn your coffee break — clock in first.",
-  "Let's terminate today's tasks, not our patience.",
-  "Show the day who's boss before lunch.",
-  "Junction boxes and jump starts — the morning special.",
-  "Feed the cattle, then feed the ambition.",
-  "Your future self says thanks for starting now.",
-  "Ready to rock and re-lamp.",
-  "Strong start, steady middle, proud finish.",
-  "Today's goal: zero callbacks, all clean work.",
-  "Barn chores done, big chores next.",
-  "Progress loves an early start.",
-  "Time to make the electrons earn their keep.",
-  "Good habits clock in on time.",
-  "Label the panel, love the process.",
-  "The prairie sun is up — no excuses left.",
-  "Bring your A-game and your PPE.",
-  "Ohm sweet ohm, back on the job.",
-  "One day of focus beats a week of drifting.",
-  "Wire nuts and work boots — fully equipped.",
-  "The calves are calling and I must go — to work.",
-  "Set the pace, don't chase it.",
-  "Circuits don't finish themselves. Let's go.",
-  "Today deserves my best effort. It's getting it.",
-  "Measuring twice, cutting once, starting now.",
-  "Cool morning, warm truck, good outlook.",
-  "Purpose in the morning, pride in the evening.",
-  "Time to light up someone's day — literally.",
-  "Half of success is just showing up sharp.",
-  "Let's keep the loads balanced and the day too.",
-  "Boots, gloves, gate latch, go.",
-  "Dream big, wire bigger, finish cleaner.",
-  "Nothing shocking about a strong work ethic.",
-  "Start with gratitude, finish with results.",
-  "Today's agenda: watts and lots of them.",
-  "Hay's stacked, sky's clear, let's get at it.",
-  "Make this morning your masterpiece.",
-  "Three-phase focus engaged.",
-  "Hustle quietly and let the work speak.",
-  "Grounded, bonded, and ready for anything.",
-  "The herd's fed and I'm fired up.",
-  "The early start is the easy win. Take it.",
-  "Time to trace some circuits and chase some goals.",
-  "Energy up, phone down, let's work.",
-  "Today runs on caffeine and copper.",
-  "Mornings on the ranch never need an alarm clock.",
-  "Show up like it's your name on the truck.",
-  "Live wire attitude, dead calm hands.",
-  "Focus is the best tool in the box.",
-  "Let's give this panel a glow-up.",
-  "Chinook or not, we're clocking in.",
-  "Do the hard thing first. Then coffee number two.",
-  "Sparky by trade, ready by nature.",
-  "One clock-in closer to the goal.",
-  "The conduit to success is literal today.",
-  "Cattle sorted, tools loaded, let's move.",
-  "Champions start before they feel ready.",
-  "Nothing but blue sky and blueprints ahead.",
-  "The grind is on and so is the kettle.",
-  "Time to put some watts behind these words.",
-  "Prairie mornings build strong backs and stronger character.",
-  "Make today so good yesterday gets jealous.",
-  "Keep calm and check for voltage first.",
-  "Every task done well is money in the bank.",
-  "Receptacles and responsibility — my morning combo.",
-  "The dog's excited for work. Matching that energy.",
-  "Show up early, stay curious, work smart.",
-  "Amp it up — the day won't run itself.",
-  "Good tools, good people, good morning.",
-  "Breakers reset, buddy. Let's go again.",
-  "Sunrise over the feedlot beats any screensaver.",
-  "You don't need luck when you have a plan.",
-  "Watts up? Time to find out.",
-  "Bring the effort — the results will follow.",
-  "Cable trays and clear skies today.",
-  "Somewhere a steer is judging my start time.",
-  "Turn the key, turn the page, start the day.",
-  "Insulated gloves on, insulated attitude off.",
-  "Winning mornings win days.",
-  "Let's keep this job site tighter than a wire nut.",
-  "Morning frost melts, work ethic doesn't.",
-  "Commit to the day before the day commits you.",
-  "Full charge, no shorts, all systems go.",
-  "Every board, every wire, every detail matters today.",
-  "The gate's open and so is my schedule — let's fill it.",
-  "Head up, standards higher.",
-  "Meter's calibrated and so am I.",
-  "Purpose beats pressure every morning.",
-  "Rough-in today, celebration later.",
-  "Cows milked zero, cattle checked plenty, spirits high.",
-  "The work won't know what hit it.",
-  "Time to connect the dots — and the conductors.",
-  "Fuel up, gear up, cheer up.",
-  "May your circuits be closed and your options open.",
-  "Boots dusty by nine or it wasn't a real morning.",
-  "Play the long game, starting this morning.",
-  "This crew runs on volts and good vibes.",
-  "Better an honest hour than a perfect plan.",
-  "Cranking amps and cranking tunes — responsibly.",
-  "Big sky, bigger plans this morning.",
-  "Turn the coffee into craftsmanship.",
-  "Time to give this building a heartbeat.",
-  "Excellence is a habit. Practicing it today.",
-  "Grounding rod planted, goals planted too.",
-  "The bulls are bulking and so is my task list.",
-  "Direct your energy like direct current — one way, forward.",
-  "Own the morning and the afternoon behaves.",
-  "Sparks of genius, zero sparks of trouble.",
-  "Another sunrise, another chance to nail it.",
-  "GFCI tested, gratitude tested, both working.",
-  "Ranch dust is just rural glitter. Let's shine.",
-  "Effort compounds. Deposit some now.",
-  "It's a beautiful day to bend conduit.",
-  "Kindness and craftsmanship cost nothing extra.",
-  "Voltmeter says ready. I agree.",
-  "The pasture's peaceful — the schedule is not. Let's go.",
-  "Doing hard things is the whole job. Love it.",
-  "Copper prices are up and so is my motivation.",
-  "Start scrappy, finish classy.",
-  "Let's make the inspector smile today.",
-  "Feed truck's rolling and so are we.",
-  "Strong coffee, stronger commitment.",
-  "Today's load calculation: heavy, but I can carry it.",
-  "One task at a time until there are none.",
-  "Twist-on connectors and can-do attitudes.",
-  "Sunshine and silage — a ranch kind of morning.",
-  "Show up like somebody's counting on you. They are.",
-  "Time to put the power in power trip — the good kind.",
-  "First hour focus, all-day payoff.",
-  "Reading prints and drinking coffee — the sacred ritual.",
-  "Even the barn cats are on shift. Get moving.",
-  "The plan is simple: work hard, be useful.",
-  "Warm hands, cold beer later, wiring now.",
-  "You can't pour concrete on excuses.",
-  "Service call energy from the first minute.",
-  "Round bales and round numbers on the timesheet.",
-  "Consistency is my superpower today.",
-  "Let's light this place up properly.",
-  "The alarm rang once. That's all it took.",
-  "Panel covers off, game face on.",
-  "Country roads, take me to the job site.",
-  "Effort now, easy evenings later.",
-  "Every conductor counted, every minute too.",
-  "Focus like a laser, work like a farmhand.",
-  "Low resistance path straight to the tool belt.",
-  "Chores at dawn, wiring by mid-morning — full life.",
-  "Bring solutions, leave excuses in the truck.",
-  "Time to make these blueprints a reality.",
-  "Deep breath, tall posture, full send.",
-  "Wire strippers sharp, wit sharper.",
-  "Muddy corrals can't slow this crew down.",
-  "The standard is the standard. Meet it early.",
-  "Volts, bolts, and no-fault mornings.",
-  "Do today well and tomorrow gets easier.",
-  "Nothing beats the click of a breaker done right.",
-  "Cattle guards down, guard rails up, let's work.",
-  "Ambition looks good on you. Wear it all day.",
-  "Time to make electrons dance in straight lines.",
-  "Slow is smooth and smooth is fast — starting now.",
-  "The service panel and I have an appointment.",
-  "Morning dew, heavy boots, light heart.",
-  "Prove yesterday's plans right.",
-  "Charged up like a fresh battery bank.",
-  "The best project on site is your attitude.",
-  "Splice it nice or splice it twice — going with nice.",
-  "The heifers say hustle. Who am I to argue.",
-  "A little grit goes a long way before noon.",
-  "Testing one, two, three-phase.",
-  "Optimism is my first tool out of the bag.",
-  "Let's pull cable like we mean it.",
-  "Auction day energy, workday focus.",
-  "Get one percent better before the first break.",
-  "In rod we trust — grounding rod, that is.",
-  "Look sharp, think sharp, cut carefully.",
-  "Lugs torqued to spec, day torqued to eleven.",
-  "The north wind builds character. So does this job.",
-  "Begin like you plan to brag about it.",
-  "It's always sunny inside a well-lit panel room.",
-  "Precision today prevents headaches tomorrow.",
-  "Ladder secured, confidence secured.",
-  "The steers are steering clear — they know it's go time.",
-  "Talk less, torque more, smile plenty.",
-  "May your day be short-free and your list be short.",
-  "Sweat now so the future can coast a little.",
-  "Rocking the rock pit and the receptacles.",
-  "Clear skies over the coulee, clear head over here.",
-  "Motivation gets you here. Discipline keeps you here.",
-  "Time to earn my stripes and strip my wires.",
-  "Every clock-in is a promise. Keeping this one.",
-  "Fittings, fasteners, and fresh starts.",
-  "The barn swallows beat me here — barely.",
-  "Set a goal so good you wake up for it. Done.",
-  "Positive terminal, positive thinking.",
-  "Steady hands build lasting things.",
-  "Ampacity checked, capacity for greatness confirmed.",
-  "Boots by the door no more — they're on the job.",
-  "Great work is quiet. Let's be very quiet today.",
-  "Circuit by circuit, we get there.",
-  "The day rewards the ready.",
-  "There's no app for hard work — just this timesheet.",
-  "Pasture checked, priorities checked.",
-  "One honest day coming right up.",
-  "Meggering the motor and mustering the motivation.",
-  "Start where you are, use what you have, do it well.",
-  "Kilowatts and kind words all day.",
-  "Tractor tracks in the frost — the day has begun.",
-  "The finish line starts right here.",
-  "No loose ends, no loose connections.",
-  "Confidence is quiet preparation, and I prepared.",
-  "Bonding jumpers and bonding with the crew.",
-  "Ranch tough, trade smart.",
-  "The clock started. So did I.",
-  "Fault-finding on circuits only, not on people.",
-  "Bring the horsepower, keep the humility.",
-  "Trenches dug, ducts laid, dreams big.",
-  "Snow in the forecast, fire in the effort.",
-  "Deliver more than you promised today.",
-  "Live by the code — the electrical one.",
-  "Craftsmanship starts with the first cut.",
-  "Transformers step up. So do we.",
-  "Chased a calf, caught my breath, catching up on work now.",
-  "An early start is a gift to your afternoon.",
-  "Whip that panel into shape and label it too.",
-  "Persistence pays better than talent alone.",
-  "Raceways ready, race pace steady.",
-  "Feed bunks full, fuel tank full, let's go.",
-  "Set the tone in the first ten minutes.",
-  "Today's playlist: hum of the transformer.",
-  "Details are the difference. Chasing them today.",
-  "Knockouts punched, doubts punched harder.",
-  "Wind's howling but the herd's happy — good enough.",
-  "Look for the win in every task.",
-  "Load side, line side, bright side.",
-  "Grit is just love for the finished product.",
-  "Bushings, bushings everywhere, and every one installed right.",
-  "Prairie hardy and job ready.",
-  "Progress over perfection, but aiming for both.",
-  "Warm up the drill, the bits, and the banter.",
-  "Trust the process and the torque specs.",
-  "Overhead lines and overachieving minds.",
-  "The salt lick crowd sends their regards. Back to work.",
-  "The comeback starts at clock-in.",
-  "Continuity confirmed — in the wire and the work ethic.",
-  "Be so good the job asks for you by name.",
-  "Staples straight, cables straighter.",
-  "Silage smells like success this morning.",
-  "One clean sweep of the task list, coming up.",
-  "Arc flash studies done, arc of the day rising.",
-  "Better every day is the only quota.",
-  "Bender in hand, no offsets in attitude.",
-  "Mornings this crisp were made for hard work.",
-  "Turn intention into installation.",
-  "Phase A, phase B, phase let's-get-going.",
-  "Effort echoes long after the shift ends.",
-  "Cable pulled, coffee poured, character built.",
-  "Herding cattle taught me patience. Applying it today.",
-  "Win the morning quietly, one task at a time.",
-  "Voltage drop calculated, standards never dropping.",
-  "Give the day a firm handshake.",
-  "Luminaires up, spirits higher.",
-  "Fresh straw, fresh start.",
-  "Today is day one of something good.",
-  "Short circuits belong in textbooks, not on my watch.",
-  "Do common things uncommonly well today.",
-  "Sub-panel love and main panel respect.",
-  "The stock trailer's clean and so is my conscience. Working.",
-  "Make your first move your best move.",
-  "Buzzing with ideas, not with faulty ballasts.",
-  "Today I will out-work my doubts.",
-  "Cord caps on, thinking caps on.",
-  "The windmill's spinning and so are my wheels.",
-  "Anything worth doing starts before you feel like it.",
-  "Full boxes, tidy runs, happy clients.",
-  "Show up as the teammate you'd want.",
-  "Estimates sharp, pencil sharper.",
-  "Rain or shine, the ranch clocks in.",
-  "Turn the morning chill into morning drive.",
-  "Reels loaded, plans studied, hands steady.",
-  "Every hour logged is a brick in something bigger.",
-  "Multi-tool in the pouch, multi-tasking in the brain.",
-  "Sorting pens and sorting priorities.",
-  "The work is the reward. Collecting early.",
-  "Right wire, right gauge, right away.",
-  "Stack good hours like hay bales.",
-  "Terminations tight, timelines tighter.",
-  "Home on the range, hustle on the clock.",
-  "Ready, steady, energized — the shift starts now.",
-  "Long summer light means long honest hours.",
-  "Cold snap outside, warm work ethic inside.",
-  "Neutral bar polished, attitude anything but neutral.",
-  "The bull pen is quiet — the tool bag is not.",
-  "Make the checklist nervous today.",
-  "Two conductors, one purpose — let's connect.",
-  "Corral the chaos and start with task one.",
-  "Great mornings are built, not found.",
-  "Pigtails on the wires, ponytail optional.",
-  "Chinook winds and change orders — bring both on.",
+  "The coffee is in charge for the first hour. Then you.",
+  "Coffee's ready. Everything else is negotiable.",
+  "Show up for the morning and the afternoon takes care of itself.",
+  "Discipline is choosing between what you want now and what you want most.",
+  "Officially on the clock. Unofficially still waking up. Both count.",
+  "The to-do list woke up cocky today. That won't last.",
+  "One honest hour to start. The rest will follow it anywhere.",
+  "Hard days build the person easy days get to enjoy.",
+  "Today's forecast: work, with a chance of more work.",
+  "May your emails be short and your lunch be long.",
+  "You keep this place running. Don't forget that on the ordinary days.",
+  "You don't rise to the occasion. You fall to your training. Train well today.",
+  "Somewhere out there is a to-do list with your name on it. Go scare it.",
+  "Officially awake. Results may vary until the second coffee.",
+  "Good work starts quiet. Just a person deciding to begin.",
+  "The obstacle in the path becomes the path. Marcus Aurelius knew it. So do you.",
+  "Punched in before the sun got smug about it.",
+  "Today has main-character energy, and it's you.",
+  "The day is unwritten and you've got the good pen.",
+  "Well begun is half done. \u2014 Aristotle. The other half is also you.",
+  "The job doesn't know how organized you are today. Surprise it.",
+  "The plan is solid. The backup plan is also coffee.",
+  "Whatever yesterday was, it's not the boss of today.",
+  "Excellence is not an act but a habit. Today: one more rep.",
+  "You versus the day. The odds favour you.",
+  "Somebody set the thermostat to 'productive.'",
+  "Somebody's counting on what you build today. Build it kind and build it straight.",
+  "How you do anything is how you do everything.",
+  "Statistically, days that start with a clock-in go better.",
+  "Monday called. Tuesday answered. Whatever day it is, you've got it.",
+  "Slow is smooth, smooth is fast, and you've got all day to be both.",
+  "Nobody drifts to the top of their trade. They climb, mornings like this.",
+  "The early bird gets the worm. You get billable hours. Better deal.",
+  "You, the list, and a fighting chance. Begin.",
+  "Begin where you are. Use what you've got. It's always been enough.",
+  "The days are long but the years are short. Spend this one deliberately.",
+  "Step one complete: showing up. The other steps should be nervous.",
+  "The printer, the traffic, and the weather all tried. You showed up anyway.",
+  "There's a rhythm to good work. You'll find it by the second task.",
+  "What gets done before eight sets the ceiling for the day. Raise it.",
+  "Your future self already said thanks for starting now. Rude to keep them waiting.",
+  "Breakfast of champions: whatever was fastest.",
+  "A steady person on a steady morning is a beautiful thing.",
+  "Comparison is a thief. Craft is a gift. Choose craft.",
+  "Warning: productivity ahead.",
+  "Today's word of the day: 'handled.'",
+  "The work will test you a little. That's how you know it matters.",
+  "You are what you repeatedly do. Today, repeat the good stuff.",
+  "The day blinked first.",
+  "The chair spins, the clock ticks, the work quakes.",
+  "Bring patience for the work and for yourself. Both pay.",
+  "Fortune favours the bold, but it pays the prepared.",
+  "This timesheet has seen things. Today it sees excellence.",
+  "Snacks are packed. Morale is secured. Deploy.",
+  "Every nail, every wire, every chore \u2014 small things done well become a life.",
+  "Amateurs wait for motivation. Professionals get to work. \u2014 after Chuck Close.",
+  "Clocked in. The rumours about your work ethic are true.",
+  "Nothing on the schedule you haven't beaten before.",
+  "You don't need a perfect day. Just a started one.",
+  "A river cuts through rock not by power but persistence.",
+  "Plot twist: you were the reliable one all along.",
+  "New day, fresh page, same excellent handwriting. Metaphorically.",
+  "Care about the little stuff. It's all little stuff, and it's all somebody's home.",
+  "Today's small extra effort is next year's obvious advantage.",
+  "Some people press snooze. You press on.",
+  "The commute playlist really understood you today.",
+  "The first task sets the tone. Choose a good tone.",
+  "Courage doesn't always roar. Sometimes it just starts the truck.",
+  "May your list be short and your tape measure findable.",
+  "Someone's about to be very good at their job. Wild guess who.",
+  "Today, be the calm one in the room. Rooms need one.",
+  "Strive not to be a success, but rather to be of value. \u2014 Einstein.",
+  "Whatever broke overnight just felt a chill run down its spine.",
+  "Rumour has it the good parking spot was yours today. Momentum.",
+  "Work you're proud of starts with a morning you respect.",
+  "There's no elevator to mastery. You take the stairs, daily.",
+  "You have arrived. The chaos may now be scheduled.",
+  "The kettle and the plan are both coming to a boil.",
+  "It's a privilege to be trusted with the keys. Carry them lightly.",
+  "Your future is built during unwitnessed hours. Like these ones.",
+  "There are two kinds of mornings. You picked the useful kind.",
+  "Small wins before nine, bragging rights by five.",
+  "Your hands know what to do. Let your head stay out of their way.",
+  "Do the hard thing first and the day loses its favourite weapon.",
+  "It's not the caffeine. It's the character. Okay, it's a little the caffeine.",
+  "Do it tired, do it caffeinated, but do it. You're doing it.",
+  "Do the next right thing. Then the next one. That's the whole trick.",
+  "The best time to plant a tree was twenty years ago. The second best is now.",
+  "The to-do list called. It wants to negotiate. Decline.",
+  "You've survived 100% of your workdays so far. Strong stats.",
+  "Weather changes, prices change, seasons change. Showing up doesn't.",
+  "Nothing will work unless you do. \u2014 Maya Angelou.",
+  "Nobody ever regretted starting early. Citation needed, but still.",
+  "The desk is where dreams get filed. The site is where they get built. Pick your arena.",
+  "There's dignity in dusty boots.",
+  "Every task today is a chance to prove your standards to yourself.",
+  "You're the reason the schedule has hope today.",
+  "The stapler is where you left it. Today is already a win.",
+  "Let the work be honest and the breaks be earned.",
+  "Great things are done by a series of small things brought together. \u2014 van Gogh.",
+  "Alert: a professional has entered the job site.",
+  "May your phone battery outlast your patience, and your patience outlast the day.",
+  "You've built a reputation one morning at a time. Here's another brick.",
+  "Show me your habits and I'll show you your future.",
+  "The day had plans. Then you showed up with better ones.",
+  "Somewhere, your future self is bragging about what you did today.",
+  "Nobody sees most of what you do right. Do it right anyway.",
+  "Don't count the days. Make the days count. \u2014 Muhammad Ali.",
+  "Confidence level: someone who brought two pencils.",
+  "The office smells like coffee and ambition. Mostly coffee.",
+  "A good name is built on days exactly like this one.",
+  "You didn't come this far to only come this far.",
+  "Clock says start. Legend says finish.",
+  "Weather report: 100% chance of getting on with it.",
+  "Start gentle if you need to. Just start.",
+  "Somebody with half your talent is out-working someone with twice of it. Be the worker.",
+  "This is the part of the movie where the montage begins.",
+  "First one in gets to pick the radio station. Rules are rules.",
+  "The trade teaches what school couldn't: everything worth having takes care and time.",
+  "Perseverance is not a long race; it's many short races one after the other.",
+  "Being unstoppable looks a lot like just starting. Strange but true.",
+  "Today's agenda: crush list, hydrate, repeat.",
+  "Today will ask you to be patient exactly once more than you'd like. Say yes.",
+  "The grind doesn't care about your mood, and rewards you anyway.",
+  "New day, same skilled hands.",
+  "The morning yawns. You don't. Advantage: you.",
+  "Strong isn't loud. Strong is consistent.",
+  "Set the bar where nobody's watching. That's where it counts.",
+  "Somewhere a problem is bragging that it can't be fixed. It hasn't met you.",
+  "Lists fear commitment. You ARE commitment.",
+  "May the work go smooth, and when it doesn't, may you go steady.",
+  "What you tolerate, you teach. Tolerate excellence.",
+  "You've done harder days than this one on less sleep. It should worry.",
+  "Consider the inbox warned.",
+  "You're allowed to enjoy this. The sky, the skill, the purpose.",
+  "He who has a why can bear almost any how. \u2014 after Nietzsche.",
+  "The list is long, but so is the daylight. Advantage: you.",
+  "A fresh coffee and an old grudge against unfinished tasks. Perfect fuel.",
+  "Somewhere down the line, someone benefits from you doing this right today.",
+  "Talent whispers. Consistency shouts.",
+  "Nothing gets built by accident. Good thing you're on purpose.",
+  "You brought your A-game and a spare pen. Unstoppable.",
+  "Trust the process \u2014 you built the process.",
+  "Either you run the day or the day runs you. \u2014 Jim Rohn.",
+  "Today's difficulty setting: adjustable. You hold the knob.",
+  "The day started without your permission. Correct that.",
+  "Keep the promises you made to yourself last night.",
+  "The work you avoid grows. The work you face shrinks.",
+  "That first task never sees you coming.",
+  "Whatever's on the schedule, it's had this coming.",
+  "An honest morning forgives almost anything the afternoon does.",
+  "Ten years from now, you'll wish you'd started today. You just did.",
+  "You bring order to chaos for a living. Chaos hates that.",
+  "Good morning to everyone except unfinished paperwork.",
+  "Be where your boots are.",
+  "Motivation gets you going. Habit gets you there.",
+  "Today's motto: fewer trips back to the truck.",
+  "The team group chat is quiet. Too quiet. Work anyway.",
+  "Today's work is tomorrow's foundation. Pour it well.",
+  "Do what you can, with what you have, where you are. \u2014 Roosevelt.",
+  "The morning fog will burn off. Your focus won't.",
+  "Shoes on, game face optional but recommended.",
+  "The best crews are built from people who just keep showing up. Exhibit A: you.",
+  "Standards are personal weather. Bring your own climate.",
+  "If it was easy, they wouldn't have called you.",
+  "Every big accomplishment starts as a to-do item. Go collect some.",
+  "Let the small wins count today. They're the ones that add up.",
+  "Be so reliable it's boring. Boring is a superpower.",
+  "Reminder: you're the person other people call when it breaks.",
+  "Your reputation arrived five minutes before you. It said good things.",
+  "You carry more than tools to this site. Steadiness. Humour. Standards.",
+  "Success is the sum of small efforts, repeated day in and day out.",
+  "Site inspection of your own attitude: passed.",
+  "Today is 90% showing up and 10% snacks. You're fully equipped.",
+  "What you do today outlasts today.",
+  "Your effort is the one thing entirely yours today. Spend it proudly.",
+  "Fortune favours whoever loaded the truck last night.",
+  "The clock said 'go' and honestly, who are we to argue.",
+  "No shortcuts, no drama, no problem.",
+  "The difference between ordinary and extraordinary is that little extra.",
+  "Quality can't be rushed, but it can start on time. Look at that \u2014 it did.",
+  "Fuelled by coffee, guided by the list, feared by the backlog.",
+  "The day doesn't need you to be perfect. It needs you present. Done.",
+  "Begin, and the mind grows heated. Begin, and the task is completed.",
+  "Today's agenda: make it look easy, know it wasn't.",
+  "It's a beautiful day to cross things off.",
+  "Some jobs pay in money, some in pride. Today pays both.",
+  "Luck is what happens when preparation meets opportunity. \u2014 Seneca.",
+  "Overthinking is cancelled until further notice.",
+  "The workday blinked first. It always does.",
+  "Kindness on a crew is a power tool. Bring yours.",
+  "Make the next hour undeniable.",
+  "The clock is now your witness. Make it a good story.",
+  "Confidence is quiet. So is the office before you get there. Coincidence?",
+  "You've weathered worse mornings than this one, and built things anyway.",
+  "No one is coming to do your reps for you. Good \u2014 they're yours.",
+  "Your competition is still hitting snooze. Not that it was close.",
+  "You're the kind of dependable that doesn't need a slogan. Here's one anyway: go.",
+  "Keep it simple: good work, good word, good day.",
+  "When you feel like quitting, remember why you started.",
+  "Measure twice, cut once, clock in first.",
+  "Today's tasks were assigned to the right person. That's you. It says so right here.",
+  "The quiet satisfaction of a job started right \u2014 that's yours in about an hour.",
+  "Diligence is the mother of good fortune. \u2014 Cervantes.",
+  "There's no traffic on the extra mile. Roads are clear.",
+  "Deep breath. Big list. Bigger you.",
+  "Grit isn't glamorous. It's just you, again, on time, again.",
+  "The person who moves a mountain begins by carrying small stones. \u2014 Confucius.",
+  "This day has your name on the work order.",
+  "The phone will ring. The doors will open. You'll be great at both.",
+  "Leave every site better than you found it. Starting with your own head.",
+  "Act as if what you do makes a difference. It does. \u2014 William James.",
+  "First one to the problem wins. You're already moving.",
+  "Grab the day by the handle. It has a handle. It's the coffee mug.",
+  "Your word is worth more than the invoice. Protect both.",
+  "Winter asks what summer did. Answer well.",
+  "The work doesn't care what day of the week it is. Neither do you. Respect.",
+  "Nothing builds character like a Tuesday. Or whatever today is.",
+  "It's the tending that makes it yours \u2014 the land, the trade, the day.",
+  "Every champion was once a contender who refused to give up.",
+  "Focus is your superpower. Cape optional. Safety glasses mandatory.",
+  "Your work ethic entered the building three steps ahead of you.",
+  "Nothing about today is ordinary to the people you're doing it for.",
+  "Sweat in practice so you don't bleed in battle. Today is practice and battle.",
+  "A good day starts with a bad joke and a full thermos. One down.",
+  "The supply run, the school run, the payroll run \u2014 somebody runs it all. Hi, somebody.",
+  "Work like someone's watching. Rest like no one is.",
+  "You can't build a reputation on what you're going to do. \u2014 Henry Ford.",
+  "Whatever the day throws, you've caught heavier.",
+  "Warm vehicle, cold morning, warm heart, cold coffee already? Classic.",
+  "There is a version of tonight where you're proud of today. Aim there.",
+  "It always seems impossible until it's done. \u2014 Mandela.",
+  "The best part of clocking in: everything after.",
+  "The day is fully charged. So is your phone. Rare double.",
+  "The craft chose you back. Mornings like this are why.",
+  "Push yourself, because no one else is going to do it for you.",
+  "It's a great day to be the dependable one.",
+  "Big plans, small steps, steady coffee.",
+  "Steady beats speedy over any distance that matters.",
+  "Quality means doing it right when no one is looking. \u2014 Henry Ford.",
+  "Skill: loaded. Patience: charging. Coffee: assisting.",
+  "You're not late. Everyone else is early. Anyway \u2014 go.",
+  "Warm up the hands, quiet down the worries, and begin.",
+  "The secret of getting ahead is getting started. \u2014 Twain.",
+  "Punch in like you mean it. Oh \u2014 you just did.",
+  "The break room fridge holds your reward. Guard it with your morning.",
+  "You know the difference between done and done right. It's why you're here.",
+  "Effort is a full-time job with lifetime benefits.",
+  "The universe rewards momentum. So does payday.",
+  "Whatever went sideways yesterday is officially yesterday's problem.",
+  "Every morning is a small vote for the person you're becoming.",
+  "Don't wish it were easier. Wish you were better. \u2014 Jim Rohn. Then get better.",
+  "Big things have small beginnings. This clock-in, for instance.",
+  "The to-do list is long but your attention span is longer. Today, anyway.",
+  "Hold the standard, share the credit, eat the big lunch.",
+  "A year from now you may wish you had started today. \u2014 Karen Lamb.",
+  "Quietly competent is still competent.",
+  "Roll up the sleeves. Both of them. It's a two-sleeve day.",
+  "Let today be simple: show up, do good, go home.",
+  "Energy and persistence conquer all things. \u2014 Franklin.",
+  "You've officially out-morninged the morning.",
+  "May the wifi be strong and the interruptions be few.",
+  "The world runs on people nobody claps for. Consider this your applause.",
+  "Your ceiling is set by your daily floor. Raise the floor.",
+  "Someone has to be great at this today. Might as well be you.",
+  "Fun fact: you're most people's 'reliable one.' No pressure. Some pressure.",
+  "Honest work has a way of sorting out a cluttered mind.",
+  "Hard work beats talent when talent doesn't work hard.",
+  "Today runs on decisions, not moods. You've made the first good one.",
+  "The calendar says busy. Your face says bring it.",
+  "Your best is a moving target. Chase it kindly.",
+  "There are no traffic jams along the extra mile. \u2014 Roger Staubach.",
+  "The hardest part of the day is now behind you. Probably.",
+  "One eyebrow raised at the workload. It backed down immediately.",
+  "Roots first, then branches. Mornings first, then everything.",
+  "Do it with passion or not at all \u2014 and you showed up, so: passion.",
+  "Talent sometimes shows up late. Reliability just clocked in.",
+  "Today's forecast: brief showers of chaos, clearing by coffee number two.",
+  "May the day meet you halfway, and may you carry it the rest.",
+  "Believe you can and you're halfway there. \u2014 Roosevelt.",
+  "Do it right, do it once, be home for supper.",
+  "Start the day like you park the truck: confidently, mostly straight.",
+  "The good ones make it look boring. Be gloriously boring today.",
+  "Every morning you get to choose your reputation again.",
+  "The day is officially under new management.",
+  "The early hours are undefeated. Join the winning team.",
+  "You're not just filling hours. You're building something with your name on it.",
+  "The trees that are slow to grow bear the best fruit. \u2014 Moli\u00e8re.",
+  "Precision is a love language. Speak it fluently today.",
+  "There's a checkmark out there with your name on it. Several, actually.",
+  "A calm start is a competitive advantage.",
+  "Dreams don't work unless you do. \u2014 John C. Maxwell.",
+  "Somewhere, an inspector smiles and doesn't know why.",
+  "Clock in, cape off. Heroes here work in regular clothes.",
+  "Somebody taught you how to do this work. Honour them by starting well.",
+  "Champions keep playing until they get it right. \u2014 Billie Jean King.",
+  "The job list flinched.",
+  "The office plant believes in you. It told me.",
+  "The work never quite ends, but neither does the satisfaction. Fair trade.",
+  "Do today what others won't, so tomorrow you can do what others can't.",
+  "You, a plan, and daylight. Hardly a fair fight.",
+  "Quietly excellent is still excellent. Loudly is also available.",
+  "Look after the work and the work looks after you.",
+  "The harder you work, the luckier you get. \u2014 Gary Player.",
+  "May your morning run smooth and your knots come loose easy.",
+  "Your keys, your coffee, your moment.",
+  "You get to do this. Rain, shine, or chinook \u2014 you get to.",
+  "Excellence is never an accident. \u2014 Aristotle.",
+  "Every legend's origin story starts on an ordinary morning. Like this one.",
+  "Two kinds of people: those who dread the list and those who ARE the list. Morning, list.",
+  "Today has room in it for one small act of excellence. Minimum.",
+  "Fall seven times, stand up eight.",
+  "The workday just got outnumbered.",
+  "Success is 1% inspiration, 99% just answering the phone politely.",
+  "Keep your head where your hands are and the day goes easy.",
+  "You will never always be motivated. Learn to be disciplined.",
+  "Steady hands, steady pace, steady paycheque.",
+  "The workday auditioned several people. You got the part.",
+  "Real wealth: skills, sunrise, somewhere to be.",
+  "Great work is done by people who are not afraid to be great.",
+  "Consider the day warned.",
+  "Every legend clocked in this morning. See? You're right on schedule.",
+  "The measure of the day isn't speed. It's what's still standing in ten years.",
+  "Chop your own wood and it will warm you twice. \u2014 Henry Ford.",
+  "Start strong. Coast never.",
+  "May the customers be kind and the surprises be small.",
+  "Begin like a professional. Continue like a neighbour.",
+  "Perfection is not attainable, but if we chase it we catch excellence. \u2014 Lombardi.",
+  "The difference between a rough day and a good story is about twelve hours. Begin.",
+  "You beat the alarm. The alarm is rethinking its career.",
+  "You've started a thousand days like this. The streak continues.",
+  "Someday is not a day of the week.",
+  "Buildings don't wire themselves. Paperwork doesn't file itself. Hence: you.",
+  "It's giving 'productive.' It's giving 'on time.' It's giving you.",
+  "Let the first hour be your best hour, and dare the rest to keep up.",
+  "Success doesn't come to you. You go to it.",
+  "Someone's got to keep the standards up around here. Tag \u2014 you're it.",
+  "The day ordered a professional. You're the delivery.",
+  "Some people find their church in a building. Yours might have a tin roof.",
+  "Strength doesn't come from what you can do. It comes from overcoming what you couldn't.",
+  "A checklist walks into a bar. You close out its tab by noon.",
+  "Paperwork, fieldwork, teamwork \u2014 all work, all yours, all handled.",
+  "Take care of the morning and the afternoon takes care of itself.",
+  "What we do now echoes for a long time. Make good echoes.",
+  "Batteries charged. Yours and the drill's.",
+  "A little chaos keeps the job interesting. A little you keeps it running.",
+  "It all counts. Every hour. Every connection. Every clean panel.",
+  "An investment in effort pays the best interest.",
+  "The forecast said wind. It always says wind. Onward.",
+  "The doughnut run is a sacred duty. So is everything after it.",
+  "There's no app for what you do. That's the point.",
+  "The future depends on what you do today. \u2014 Gandhi.",
+  "Rumour has it you're good at this. Confirm it.",
+  "Headphones in or radio on \u2014 either way, the montage has begun.",
+  "Quality is just love made visible. Go be visible.",
+  "Be stronger than your strongest excuse.",
+  "Zero-excuse mornings are undefeated.",
+  "Today will be a story someday. Give it a good plot.",
+  "Your patience is a tool. Keep it sharp today.",
+  "First we make our habits, then our habits make us.",
+  "You know exactly what to do first. That's rarer than you think.",
+  "You make this look easy. It isn't. That's the point.",
+  "One day, this becomes 'remember when.' Make it worth remembering.",
+  "Doubt kills more dreams than failure ever will.",
+  "Let the record show: on time, on task, on purpose.",
+  "Go get 'em. All of 'em. In a reasonable order."
 ];
 function pickClockin(){
   let hist=[]; try{ hist=JSON.parse(localStorage.getItem('ciHist')||'[]'); }catch(e){}
+  const lastMood = hist.length ? hist[hist.length-1] % 4 : -1; // arrays are mood-interleaved (index%4)
   let idx, tries=0;
-  do { idx=Math.floor(Math.random()*CLOCKINS.length); tries++; } while (hist.includes(idx) && tries<60);
+  do { idx=Math.floor(Math.random()*CLOCKINS.length); tries++; }
+  while ((hist.includes(idx) || idx % 4 === lastMood) && tries<80); // new message AND new mood each time
   hist.push(idx); if (hist.length>20) hist=hist.slice(-20);
   try{ localStorage.setItem('ciHist', JSON.stringify(hist)); }catch(e){}
   return CLOCKINS[idx];
@@ -1028,7 +1067,7 @@ async function doLogin(){
     S.booted = true;
     await DB.setCache('bootstrap', json.data.boot);
     flushQueue(); render();
-    loadCustomers(); loadMaterials();
+    loadCustomers(); loadMaterials(); loadOnboarding();
   } catch(e){ S.session=null; toast(e.message); render(); }
 }
 
@@ -1089,7 +1128,7 @@ async function boot(){
         render();
       } else scheduleRefresh();
     }
-    loadCustomers(); loadMaterials(); // warm client-side caches for instant autocomplete
+    loadCustomers(); loadMaterials(); loadOnboarding(); // warm client-side caches for instant autocomplete
   } catch(e){
     if (cached) toast('Showing last synced data — will retry');
     else { toast(e.message); render(); }
@@ -1233,13 +1272,18 @@ function render(loading){
   else if (S.tab==='entries') body = entriesView();
   else if (S.tab==='admin') body = adminView();
   else if (S.tab==='team') body = teamView();
-  app.innerHTML = `<div class="wrap">${topBar()}${offlineBanner()}${body}</div>${tabBar()}`;
+  else if (S.tab==='hours') body = hoursView();
+  else if (S.tab==='jobs') body = jobsView();
+  else if (S.tab==='jha') body = jhaView();
+  else if (S.tab==='sched') body = schedView();
+  app.innerHTML = `<div class="wrap tab-${S.tab}">${topBar()}${offlineBanner()}${body}</div>${tabBar()}`; // tab-* class drives the desktop layout
   wire();
 }
 
 function signInView(){
   return `<div class="wrap center" style="margin-top:22vh">
     <h1>PCW / PRO Timesheet</h1>
+    <div class="pulseline"></div>
     <p class="muted">Peace Country Wagyu &amp; PRO Electrical</p>
     <div class="card">
       <p>Sign in with your work Google account to clock in.</p>
@@ -1249,14 +1293,31 @@ function signInView(){
   </div>`;
 }
 
+/* Company choice is per-employee: without the viewAllCompanies permission the crew books
+   PRO time only — their one no-PO option is labelled as shop work. Admin grants the choice
+   per hire (Add employee checkbox) or later via the permission editor. */
+function companyOptions(){
+  const all=S.companies||[];
+  const can=S.me&&(S.me.role==='admin'||(S.me.permissions&&S.me.permissions.viewAllCompanies));
+  if(can) return all.map(c=>({c,label:c}));
+  const home=(S.me&&S.me.permissions&&S.me.permissions.homeCompany)||all[0]||'PRO';
+  const label = home==='PCW' ? '🌾 Farm work — no PO'
+              : '🔧 Shop work — no PO'+(home!==(all[0]||'PRO')?(' ('+home+')'):'');
+  return [{c:home, label, noPO:true}];
+}
+
 function topBar(){
   const m=S.me||{};
-  return `<div class="row between" style="margin-bottom:6px">
-    <div class="row"><img class="avatar" src="${esc(m.picture||'')}" onerror="this.style.visibility='hidden'"><div>
-      <div style="font-weight:700">${esc(m.name||m.email||'')}</div>
-      <div class="small muted">${esc(m.role||'')}${m.hourlyRate?(' · $'+m.hourlyRate+'/hr'):''}</div>
-    </div></div>
-    <button class="ghost" onclick="signOut()">Sign out</button>
+  const first=((m.name&&m.name.trim()) || String(m.email||'').split('@')[0]).split(/\s+/)[0];
+  return `<div class="apphead">
+    <div>
+      <div class="hello">Hello, ${esc(first)}! 👋</div>
+      <div class="hello-sub">${(m.role==='admin'||m.role==='bookkeeper')?`<span class="cap">${esc(m.role)}</span> · `:''}${new Date().toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'})}</div>
+    </div>
+    <div class="row">
+      <img class="avatar" src="${esc(m.picture||'')}" onerror="this.style.display='none'">
+      <button class="ghost" onclick="signOut()">Sign out</button>
+    </div>
   </div>`;
 }
 function offlineBanner(){
@@ -1331,6 +1392,7 @@ function clockView(){
   const totals = periodTotals();
   let ot = weekHours() > (S.config.otThreshold||44)
     ? `<div class="banner ot">⚠ Overtime: ${weekHours().toFixed(1)} hrs this week (over ${S.config.otThreshold||44}).</div>` : '';
+  ot = obBanner() + ot; // onboarding nag sits above everything until it's done
   if (S.openEntry){
     const site = S.openEntry['Customer/Job Site'] || S.openEntry.Company || 'Working';
     const breaking = onBreak();
@@ -1403,7 +1465,9 @@ function periodCard(t){
 function entriesView(){
   const items = (S.entries||[]);
   const rows = items.length ? items.map(e=>entryRow(e)).join('') : '<p class="muted center">No entries yet.</p>';
-  return `<div class="row between"><h2>My entries</h2><button class="secondary" onclick="openManual()">+ Manual</button></div>
+  return `<div class="row between"><h2>My entries</h2>
+      <div class="row"><button class="secondary" onclick="openReceiptScan()">📷 Receipt</button>
+      <button class="secondary" onclick="openManual()">+ Manual</button></div></div>
     <div class="card">${rows}</div>`;
 }
 /* GPS visibility: absence is explicit ("no GPS"), presence is a tappable map link for
@@ -1445,7 +1509,7 @@ function entryRow(e, employeeEmail){
     ${e.Media?`<div class="small"><a href="#" onclick="openMediaView('${k}');return false" style="color:var(--accent2)">📎 ${String(e.Media).split(' | ').filter(Boolean).length} photo/video</a></div>`:''}
     <div class="row" style="margin-top:6px">
       ${canEdit?`<button class="ghost" onclick="openEditEntry('${k}')">Edit</button>`:''}
-      <button class="ghost" onclick="openUpload('${k}')">Add photo/video</button>
+      ${canEdit?`<button class="ghost" onclick="openUpload('${k}')">Add photo/video</button>`:''}
     </div>
   </div>`;
 }
@@ -1453,12 +1517,23 @@ function entryRow(e, employeeEmail){
 /* ----- TEAM (bookkeeper/admin read) ----- */
 function teamView(){
   const emps = S.employees||[];
-  return `<h2>Team</h2>
-    <div class="card">${emps.map(emp=>`
+  const row = emp=>`
       <div class="list-item row between">
         <div><b>${esc(emp.name)}</b><div class="small muted">${esc(emp.email)} · ${esc(emp.role)}${emp.active?'':' · inactive'}</div></div>
         <button class="ghost" onclick="viewEmployee('${esc(emp.email)}')">View</button>
-      </div>`).join('')}</div>`;
+      </div>`;
+  const act=emps.filter(e=>e.active), inact=emps.filter(e=>!e.active);
+  return `<h2>Team</h2>
+    <div class="card">${act.map(row).join('')||'<p class="muted small">No active employees.</p>'}
+      ${inactiveToggle(inact, row)}</div>`;
+}
+/* Deactivated employees are hidden from the everyday lists (they can't sign in, but their
+   history is kept for payroll) — expandable here when you need to look one up. */
+function inactiveToggle(inact, row){
+  if (!inact.length) return '';
+  return `<button class="ghost" style="width:100%;margin-top:6px" onclick="S.showInactive=!S.showInactive;render()">
+      ${S.showInactive?'▾ Hide':'▸ Show'} ${inact.length} deactivated</button>
+    ${S.showInactive? inact.map(row).join('') : ''}`;
 }
 
 /* ----- ADMIN TAB ----- */
@@ -1472,12 +1547,16 @@ function adminView(){
     </div>
     <div class="card">
       <div class="row between"><h3>Employees</h3><button class="secondary" onclick="openAddEmployee()">+ Add</button></div>
-      ${emps.map(empAdminRow).join('')}
+      ${emps.filter(e=>e.active).map(empAdminRow).join('')||'<p class="muted small">No active employees.</p>'}
+      ${inactiveToggle(emps.filter(e=>!e.active), empAdminRow)}
     </div>
+    ${obStatusCard()}
     <div class="card">
       <h3>Materials</h3>
       <p class="small muted">Free-typed field entries waiting to be matched against supplier receipts.</p>
       <button class="secondary" onclick="openMatReview()">Review flagged materials</button>
+      <button class="secondary" style="margin-left:8px" onclick="openReceiptScan()">📷 Scan a receipt</button>
+      <button class="ghost" style="width:100%;margin-top:6px" onclick="seedMats()">Load starter catalog (1,179 common parts)</button>
     </div>
     <div class="card">
       <h3>Payroll</h3>
@@ -1513,14 +1592,610 @@ function tabBar(){
   return `<div class="tabbar">
     ${t('clock','⏱','Clock')}
     ${t('entries','📋','Entries')}
+    ${t('sched','📅','Schedule')}
+    ${t('jha','🦺','JHA')}
+    ${canTeam?t('hours','📊','Hours'):''}
+    ${canTeam?t('jobs','🏗️','Jobs'):''}
     ${canTeam?t('team','👥','Team'):''}
     ${isAdmin?t('admin','⚙️','Admin'):''}
   </div>`;
 }
 function go(tab){
   S.tab=tab; render();
-  if (tab==='admin' && S.online) loadPending();          // fetched on demand, not at boot
+  if (tab==='admin' && S.online){ loadPending(); loadObStatus(); } // fetched on demand, not at boot
+  if (tab==='hours' && S.online) loadHours();            // refresh totals on every open
+  if (tab==='jobs' && S.online) loadJobs();              // refresh job costs on every open
+  if (tab==='jha') { if(S.online) loadJha(); loadCustomers(); } // JHA needs the job picker warm too
+  if (tab==='sched' && S.online) loadSched();            // schedule reads the admin calendar live
   if (tab==='clock' || tab==='entries') loadCustomers(); // keep autocomplete warm
+}
+
+/* ----- JOBS TAB (admin + bookkeeper): per-customer hours + labour cost -----
+   All-time approved hours per job, costed at each worker's CURRENT rate (a rate change
+   re-prices history — good enough for job costing, not an accounting ledger). Includes
+   internal company time (PRO/PCW/etc.) as its own rows. Never visible to the crew. */
+function jobsRowsHtml(){
+  const d=S.jobsData; if(!d) return '';
+  const q=(S.jobsQuery||'').trim().toLowerCase();
+  const list=d.jobs.filter(j=>!q || j.name.toLowerCase().includes(q) || (j.po||'').toLowerCase().includes(q));
+  let h=list.map(j=>{ const k=reg(j); return `<div class="list-item row between" style="cursor:pointer" onclick="openJobDetail('${k}')">
+      <div><b>${esc(j.name||j.po||'—')}</b>
+        <div class="small muted">${j.po?('PO '+esc(j.po)+' · '):''}${esc(j.status||'')}</div></div>
+      <div style="text-align:right"><b>${j.hours.toFixed(2)} hrs</b>
+        ${j.pending?`<div class="small" style="color:var(--pending)">+ ${j.pending.toFixed(2)} pending</div>`:''}
+        <div class="small muted">≈ $${j.cost.toFixed(2)} labour</div></div>
+    </div>`; }).join('');
+  if (!h) h = `<p class="muted small">${q?'No jobs match your search.':'No hours logged against any job yet.'}</p>`;
+  return h;
+}
+function jobsView(){
+  return `<div class="row between"><h2>Jobs</h2>${S.jobsLoading?'<span class="spin"></span>':''}</div>
+    <input id="jobsSearch" placeholder="Search job or PO…" autocomplete="off" value="${esc(S.jobsQuery||'')}" oninput="jobsFilter(this.value)">
+    <div class="card">
+      <p class="small muted" style="margin-top:0">All-time approved hours and labour cost per job. Tap one for the per-person breakdown.</p>
+      <div id="jobsList">${jobsRowsHtml() || (S.jobsLoading?'<p class="muted small">Loading…</p>':'<p class="muted small">Open this tab while online to load.</p>')}</div>
+    </div>`;
+}
+function jobsFilter(v){ S.jobsQuery=v; const el=document.getElementById('jobsList'); if(el) el.innerHTML=jobsRowsHtml(); }
+async function loadJobs(){
+  if (S.jobsLoading) return;
+  S.jobsLoading=true; if(S.tab==='jobs') render();
+  try{ const r=await api('jobCosts',{}); S.jobsData=r; }
+  catch(e){ toast(e.message); }
+  S.jobsLoading=false; if(S.tab==='jobs') render();
+}
+function openJobDetail(k){
+  const j=dereg(k); if(!j) return;
+  const pk=reg({jobSite:j.name});
+  sheet(`<h2>${esc(j.name||j.po||'—')}</h2>
+    <p class="small muted">${j.po?('PO '+esc(j.po)+' · '):''}${esc(j.status||'')} ·
+      <b>${j.hours.toFixed(2)} hrs</b> ≈ $${j.cost.toFixed(2)} labour${j.pending?` · ${j.pending.toFixed(2)} hrs pending`:''}</p>
+    ${(j.employees||[]).map(e=>`<div class="list-item row between">
+      <div><b>${esc(e.name)}</b></div>
+      <div style="text-align:right"><b>${e.hours.toFixed(2)} hrs</b><div class="small muted">≈ $${e.cost.toFixed(2)}</div></div>
+    </div>`).join('')||'<p class="muted small">No breakdown available.</p>'}
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="openJobPhotos('${pk}')">📷 View job photos</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+}
+
+/* Job photo browser: a window into the job's Google Drive folder (the folder stays the
+   permanent home — this is just the quick look; the Drive link is there for bulk work). */
+async function openJobPhotos(pk){
+  const ref=dereg(pk); if(!ref) return;
+  sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center"><span class="spin"></span> Loading photos…</p>`);
+  const mine=S._sheet; // dismissed while loading? then stay dismissed (same guard as showClockinMsg)
+  try{
+    const r=await api('jobMedia',{jobSite:ref.jobSite});
+    if (S._sheet!==mine) return;
+    const files=r.files||[];
+    const grid=files.map(f=>`<a href="${esc(f.url)}" target="_blank" style="width:31%;text-decoration:none">
+        ${f.isVideo
+          ? `<div style="width:100%;aspect-ratio:1;border-radius:12px;background:var(--panel2);display:flex;align-items:center;justify-content:center;font-size:1.8rem">🎬</div>`
+          : `<img src="https://drive.google.com/thumbnail?id=${esc(f.id)}&sz=w300" loading="lazy"
+               style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:12px;background:var(--panel2)"
+               onerror="this.replaceWith(Object.assign(document.createElement('div'),{textContent:'📷',style:'font-size:1.8rem;text-align:center'}))">`}
+        <div class="small muted" style="text-align:center">${fmtDay(f.date)}${f.by?(' · '+esc(String(f.by).split('@')[0])):''}</div>
+      </a>`).join('');
+    sheet(`<h2>${esc(ref.jobSite)}</h2>
+      <p class="small muted" style="margin-top:-6px">${files.length} photo/video${files.length===1?'':'s'}
+        ${r.folderUrl?` · <a href="${esc(r.folderUrl)}" target="_blank" style="color:var(--accent2)">open folder in Drive ↗</a>`:''}</p>
+      ${files.length? `<div class="row" style="flex-wrap:wrap;gap:8px;align-items:flex-start">${grid}</div>`
+        : '<p class="muted small">No photos for this job yet — they show up here when the crew attaches them to entries.</p>'}
+      <button class="secondary" style="width:100%;margin-top:12px" onclick="closeSheet()">Close</button>`);
+  }catch(e){ toast(e.message); closeSheet(); }
+}
+
+/* ----- SCHEDULE TAB (everyone): the admin calendar, with per-event crew assignment -----
+   Source of truth is admin@proes.ca's Google Calendar (the one the AI books). Crew see only
+   the events they're assigned to — plus who else is coming; admins see everything and assign
+   from the event detail sheet. Newly-assigned workers get an email. */
+async function loadSched(){
+  if (S.schedLoading) return;
+  S.schedLoading=true; if(S.tab==='sched') render();
+  try{ const r=await api('scheduleList',{}); S.sched=r; }
+  catch(e){ toast(e.message); }
+  S.schedLoading=false; if(S.tab==='sched') render();
+}
+function schedDayLabel(dstr){
+  const t=localDateStr(new Date());
+  const tomorrow=localDateStr(new Date(Date.now()+86400000));
+  if(dstr===t) return 'Today';
+  if(dstr===tomorrow) return 'Tomorrow';
+  const p=dstr.split('-');
+  return new Date(Number(p[0]),Number(p[1])-1,Number(p[2])).toLocaleDateString([],{weekday:'long', month:'short', day:'numeric'});
+}
+function schedView(){
+  const d=S.sched;
+  let body='';
+  if(d){
+    const byDay={};
+    d.events.forEach(ev=>{ const k=localDateStr(new Date(ev.start)); (byDay[k]=byDay[k]||[]).push(ev); });
+    (d.holidays||[]).forEach(h=>{ byDay[h.date]=byDay[h.date]||[]; }); // holiday-only days still get a header
+    const offByDay={};
+    if(d.canAssign) (d.timeOff||[]).forEach(t=>{ if(t.status!=='approved') return;
+      Object.keys(byDay).forEach(day=>{ if(day>=t.start&&day<=t.end) (offByDay[day]=offByDay[day]||[]).push(t.name); }); });
+    const days=Object.keys(byDay).sort();
+    body=days.map(day=>{
+      const hol=(d.holidays||[]).filter(h=>h.date===day);
+      return `<h3 style="margin:14px 0 4px">${esc(schedDayLabel(day))}</h3>`+
+      hol.map(h=>`<div class="banner" style="background:#fef9c3;color:#854d0e;border:1px solid #fde68a;margin:4px 0">🎉 ${esc(h.name)} — stat holiday</div>`).join('')+
+      (offByDay[day]?`<div class="small" style="color:var(--pending);margin:2px 0 4px">🏖 Off: ${offByDay[day].map(esc).join(', ')}</div>`:'')+
+      byDay[day].map(ev=>{ const k=reg(ev);
+        return `<div class="list-item" style="cursor:pointer" onclick="openSchedDetail('${k}')">
+          <div class="row between"><b>${esc(ev.title)}</b>
+            <span class="small muted">${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}</span></div>
+          ${ev.location?`<div class="small muted">📍 ${esc(ev.location)}</div>`:''}
+          <div class="small" style="margin-top:2px">${ev.assigned.length
+            ? ev.assigned.map(a=>`<span class="chip" style="padding:3px 10px;font-size:.78rem">${esc(a.name)}</span>`).join(' ')
+            : (d.canAssign?'<span style="color:var(--pending)">⚠ nobody assigned — tap to assign</span>':'')}</div>
+        </div>`; }).join('');
+    }).join('');
+    if(!days.length) body = d.canAssign
+      ? '<p class="muted small">Nothing on the calendar for the next 2 weeks.</p>'
+      : '<p class="muted small">Nothing scheduled for you in the next 2 weeks. Check back — new jobs show up here when you\'re assigned.</p>';
+  } else body = S.schedLoading?'':'<p class="muted small">Open this tab while online to load the schedule.</p>';
+  return `<div class="row between"><h2>Schedule</h2>${S.schedLoading?'<span class="spin"></span>':''}</div>
+    <div class="card">
+      <p class="small muted" style="margin:0">${(S.sched&&S.sched.canAssign)
+        ? 'Your admin@proes.ca calendar, next 2 weeks. Tap a job to assign the crew — new assignees get an email.'
+        : 'Your jobs for the next 2 weeks, with everything you need: time, address, details, and who\'s with you.'}</p>
+    </div>
+    ${body}
+    ${d?timeOffSection():''}`;
+}
+/* Time off: crew request + track; admins approve/deny right here. */
+function timeOffSection(){
+  const d=S.sched||{}, list=d.timeOff||[];
+  const pill=s=>`<span class="pill ${s==='approved'?'approved':(s==='pending'?'pending':'rejected')}">${esc(s)}</span>`;
+  if(d.canAssign){
+    const pending=list.filter(t=>t.status==='pending');
+    const off=list.filter(t=>t.status==='approved');
+    return `<div class="card"><h3>Time off</h3>
+      ${pending.length? pending.map(t=>{ const k=reg(t); return `<div class="list-item">
+          <div class="row between"><div><b>${esc(t.name)}</b> · ${esc(t.start)}${t.end!==t.start?(' → '+esc(t.end)):''}
+            ${t.reason?`<div class="small muted">${esc(t.reason)}</div>`:''}</div>${pill(t.status)}</div>
+          <div class="row" style="margin-top:6px">
+            <button class="grow" onclick="toDecide('${k}',true,this)">Approve</button>
+            <button class="secondary grow" onclick="toDecide('${k}',false,this)">Deny</button></div>
+        </div>`; }).join('') : '<p class="muted small">No pending requests.</p>'}
+      ${off.length?`<p class="small muted" style="margin-bottom:0">Approved leave in this window: ${off.map(t=>esc(t.name)+' ('+esc(t.start)+(t.end!==t.start?('→'+esc(t.end)):'')+')').join(' · ')}</p>`:''}
+    </div>`;
+  }
+  return `<div class="card"><h3>My time off</h3>
+    ${list.length? list.map(t=>{ const k=reg(t); return `<div class="list-item row between">
+        <div>${esc(t.start)}${t.end!==t.start?(' → '+esc(t.end)):''}${t.reason?`<div class="small muted">${esc(t.reason)}</div>`:''}</div>
+        <div class="row">${pill(t.status)}${t.status==='pending'?`<button class="ghost" onclick="toCancel('${k}',this)">✕</button>`:''}</div>
+      </div>`; }).join('') : '<p class="muted small">No requests yet.</p>'}
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="openTimeOff()">🏖 Request time off</button>
+  </div>`;
+}
+function openTimeOff(){
+  const t=todayStr();
+  sheet(`<h2>Request time off</h2>
+    <p class="small muted">Paul gets an email right away and you'll get one back when it's decided.</p>
+    <label>First day off</label><input id="toStart" type="date" value="${t}" min="${t}">
+    <label>Last day off (same day for a single day)</label><input id="toEnd" type="date" value="${t}" min="${t}">
+    <label>Reason (optional)</label><input id="toReason" placeholder="e.g. family trip, appointment">
+    <button style="width:100%;margin-top:12px" onclick="toSubmit(this)">Send request</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
+}
+async function toSubmit(btn){
+  if(!S.online) return toast('You need signal to send a request.');
+  const s=val('toStart'), e=val('toEnd')||s;
+  if(!s) return toast('Pick the first day.');
+  if(e<s) return toast('Last day is before the first day.');
+  btn.disabled=true; btn.textContent='Sending…';
+  try{ await api('timeOffRequest',{startDate:s,endDate:e,reason:val('toReason')});
+    closeSheet(); toast('Request sent — Paul has been emailed.'); loadSched();
+  }catch(err){ toast(err.message); btn.disabled=false; btn.textContent='Send request'; }
+}
+async function toCancel(k,btn){
+  const t=dereg(k); if(!t) return;
+  if(!S.online) return toast('You need signal to cancel.');
+  btn.disabled=true;
+  try{ await api('timeOffCancel',{reqId:t.id}); toast('Request cancelled'); loadSched(); }
+  catch(e){ toast(e.message); btn.disabled=false; }
+}
+async function toDecide(k,approve,btn){
+  const t=dereg(k); if(!t) return;
+  if(!S.online) return toast('You need signal.');
+  btn.disabled=true;
+  try{ const r=await api('timeOffDecide',{reqId:t.id,approve});
+    toast((approve?'Approved':'Denied')+' — '+t.name+' has been emailed.'); loadSched();
+  }catch(e){ toast(e.message); btn.disabled=false; }
+}
+async function openSchedDetail(k){
+  const ev=dereg(k); if(!ev) return;
+  const d=S.sched||{};
+  // Admins need the employee list for the assignment editor — fetch it if the Admin tab
+  // hasn't loaded it yet this session.
+  if(d.canAssign && !(S.employees&&S.employees.length) && S.online){
+    try{ const r=await api('listEmployees'); S.employees=r.employees||[]; }catch(e){}
+  }
+  const when=`${schedDayLabel(localDateStr(new Date(ev.start)))} · ${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}`;
+  const asg=new Set(ev.assigned.map(a=>a.email));
+  sheet(`<h2>${esc(ev.title)}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(when)}</p>
+    ${ev.location?`<p class="small">📍 <a href="https://maps.google.com/?q=${encodeURIComponent(ev.location)}" target="_blank" style="color:var(--accent2)">${esc(ev.location)}</a></p>`:''}
+    ${ev.desc?`<div class="card" style="margin:8px 0"><div class="small" style="white-space:pre-wrap">${esc(ev.desc)}</div></div>`:''}
+    <h3 style="margin:10px 0 4px">${d.canAssign?'Assign the crew':'Who\'s on this job'}</h3>
+    ${d.canAssign
+      ? `${(S.employees||[]).filter(e=>e.active&&e.role!=='bookkeeper').map(e=>`<div class="perm">
+           <input type="checkbox" class="sa-emp" value="${esc(e.email)}" id="sa_${esc(e.email)}" ${asg.has(e.email)?'checked':''}>
+           <label for="sa_${esc(e.email)}" style="margin:0">${esc(e.name)}</label></div>`).join('')
+           || '<p class="muted small">No active employees to assign.</p>'}
+         <button style="width:100%;margin-top:10px" onclick="schedSave('${k}',this)">Save assignments</button>`
+      : (ev.assigned.length
+          ? ev.assigned.map(a=>`<div class="list-item"><b>${esc(a.name)}</b></div>`).join('')
+          : '<p class="muted small">Just you so far.</p>')}
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+}
+async function schedSave(k,btn){
+  const ev=dereg(k); if(!ev) return;
+  if(!S.online) return toast('You need signal to save assignments.');
+  const emails=[...document.querySelectorAll('.sa-emp:checked')].map(c=>c.value);
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const when=`${schedDayLabel(localDateStr(new Date(ev.start)))} · ${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}`;
+    const r=await api('scheduleAssign',{eventId:ev.id, emails, title:ev.title, when, location:ev.location,
+      appUrl: location.origin+location.pathname});
+    closeSheet();
+    toast(r.notified? `Saved — ${r.notified} ${r.notified===1?'person':'people'} emailed` : 'Saved');
+    loadSched();
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Save assignments'; }
+}
+
+/* ----- JHA TAB (everyone): digital Job Hazard Assessment with real signatures -----
+   For the big projects that need the documentation. One JHA per job per day; anyone on site
+   starts it (usually the lead), the whole crew signs before work. Filed as a PDF beside the
+   job's photos in Drive — the evidence trail if there's ever an incident. Optional: small
+   jobs simply never open this tab. Needs signal (the PDF files to Drive on every signature). */
+const JHA_HAZARDS = [
+ ['Electrical', [
+   ['Shock — energized equipment','Verify de-energized, lockout/tagout, test before touch, rated gloves'],
+   ['Arc flash','De-energize where possible, arc-rated PPE, unqualified workers kept back'],
+   ['Working in live panels','Qualified workers only, insulated tools, no metal jewelry, barriers up'],
+   ['Overhead / underground utilities','Locates current & on site, limits of approach, spotter'],
+ ]],
+ ['Heights & access', [
+   ['Ladder work','Inspect first, correct angle & rating, 3-point contact, secure the top'],
+   ['Scaffold / lift work','Trained operators, guardrails in place, inspected, harness in boom lift'],
+   ['Fall hazard over 3 m','Fall protection plan, harness + anchor, guardrails, cover floor openings'],
+ ]],
+ ['Environment', [
+   ['Extreme heat / cold','Water & shade breaks, warm-up breaks, layered clothing, watch each other'],
+   ['Poor lighting','Temporary lighting or headlamps before work starts'],
+   ['Confined space','Permit + attendant, air monitoring, ventilation, rescue plan'],
+   ['Dust / fumes / insulation','Respirator or dust mask, ventilation, glasses, long sleeves'],
+   ['Wet or slippery surfaces','Keep the area dry, GFCI protection, footwear with grip'],
+ ]],
+ ['Tools & materials', [
+   ['Power tools','Guards on, cords inspected, GFCI, eye & hearing protection'],
+   ['Cuts / pinch points','Cut away from the body, gloves on, knives retracted when not in use'],
+   ['Heavy lifting','Lift with the legs, team lift over 50 lb, carts/dollies where possible'],
+   ['Wire pulling strain','Pulling lube & gear, clear communication, staged pulls, good body position'],
+ ]],
+ ['Site', [
+   ['Vehicle / equipment traffic','Hi-vis on, eye contact with operators, stay in designated walkways'],
+   ['Other trades overhead / nearby','Coordinate at the tailgate, hard hats, barricade drop zones'],
+   ['Housekeeping / trip hazards','Clear walkways, coil cords, clean as you go'],
+   ['Excavations / trenches','Sloped or shored, ladder access, spoil kept back, no entry unless protected'],
+   ['Noise','Hearing protection in noisy areas, limit exposure time'],
+ ]],
+];
+function jhaView(){
+  const l=S.jhaList||null, tstr=localDateStr(new Date()); // localDateStr(d) is the app-wide helper
+  const todays=(l||[]).filter(j=>j.date===tstr), earlier=(l||[]).filter(j=>j.date!==tstr).slice(0,40);
+  const item=j=>{ const k=reg(j); return `<div class="list-item row between" style="cursor:pointer" onclick="openJhaDetail('${k}')">
+      <div><b>${esc(j.jobSite)}</b><div class="small muted">${esc(j.date)} · ${j.sigs.length} signature${j.sigs.length===1?'':'s'}</div></div>
+      <div>${j.signedByMe?'<span class="small" style="color:#3fa46a">✓ signed</span>':'<span class="small" style="color:#d99a2b">sign ›</span>'}</div>
+    </div>`; };
+  return `<div class="row between"><h2>Hazard Assessment</h2>${S.jhaLoading?'<span class="spin"></span>':''}</div>
+    <div class="card">
+      <p class="small muted" style="margin-top:0">For jobs that need the paper trail. One per job per day — whoever's leading starts it, everyone on site signs before work. Files itself as a PDF in the job's folder.</p>
+      <button style="width:100%" onclick="openJhaCreate()">🦺 Start today's JHA</button>
+    </div>
+    ${todays.length?`<h3>Today</h3>${todays.map(item).join('')}`:''}
+    ${earlier.length?`<h3>Earlier</h3>${earlier.map(item).join('')}`:''}
+    ${l&&!l.length?'<p class="muted small">No JHAs filed yet.</p>':''}
+    ${!l&&!S.jhaLoading?'<p class="muted small">Open this tab while online to load past JHAs.</p>':''}`;
+}
+async function loadJha(){
+  if (S.jhaLoading) return;
+  S.jhaLoading=true; if(S.tab==='jha') render();
+  try{ const r=await api('jhaList',{}); S.jhaList=r.jhas||[]; }
+  catch(e){ toast(e.message); }
+  S.jhaLoading=false; if(S.tab==='jha') render();
+}
+
+/* Finger-drawn signature pad. White canvas + dark ink so it prints clean on the PDF. */
+let _sigDrawn=false;
+function sigPadHtml(){
+  return `<canvas id="sigPad" width="600" height="220" style="width:100%;height:150px;background:#fff;border:1.5px dashed #8a8f98;border-radius:12px;touch-action:none;display:block"></canvas>
+    <div class="row between" style="margin-top:6px"><span class="small muted">Sign above with your finger</span>
+    <button class="secondary" style="padding:6px 14px" onclick="sigClear()">Clear</button></div>`;
+}
+function sigInit(){
+  const c=document.getElementById('sigPad'); if(!c) return;
+  _sigDrawn=false;
+  const r=c.getBoundingClientRect();
+  if(r.width>0){ c.width=Math.round(r.width*2); c.height=Math.round(r.height*2); } // match on-screen aspect, 2x for crispness
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,c.width,c.height);
+  ctx.strokeStyle='#14213d'; ctx.lineWidth=3.5; ctx.lineCap='round'; ctx.lineJoin='round';
+  let draw=false,last=null;
+  const pos=e=>{ const r=c.getBoundingClientRect(); return {x:(e.clientX-r.left)*c.width/r.width, y:(e.clientY-r.top)*c.height/r.height}; };
+  c.onpointerdown=e=>{ draw=true; last=pos(e); try{c.setPointerCapture(e.pointerId);}catch(_){} e.preventDefault(); };
+  c.onpointermove=e=>{ if(!draw) return; const p=pos(e); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; _sigDrawn=true; e.preventDefault(); };
+  c.onpointerup=c.onpointercancel=()=>{ draw=false; };
+}
+function sigClear(){ sigInit(); }
+function sigData(){ if(!_sigDrawn) return null; const c=document.getElementById('sigPad'); return c?c.toDataURL('image/png'):null; }
+
+let jhaDraft=null;
+function openJhaCreate(){
+  const jobs=openPOs('').concat(companyOptions().map(o=>({name:(o.noPO?(o.c==='PCW'?'Farm work':'Shop work'):o.c+' (internal)'), po:''}))); // shop/farm days need JHAs too
+  if(!jobs.length && !S.customers) { toast('Job list still loading — try again in a second.'); loadCustomers(true); return; }
+  jhaDraft={ jobs };
+  sheet(`<h2>Start today's JHA</h2>
+    <p class="small muted">Check every hazard that applies to today's work — the standard controls are listed under each. Add anything site-specific, then sign.</p>
+    <label>Job</label>
+    <select id="jhaJob"><option value="">— pick the job —</option>${jobs.map((c,i)=>`<option value="${i}">${esc(c.name)}${c.po?(' — PO '+esc(c.po)):''}</option>`).join('')}</select>
+    ${JHA_HAZARDS.map((g,gi)=>`<h3 style="margin:14px 0 4px">${esc(g[0])}</h3>`+g[1].map((h,hi)=>`
+      <label class="list-item" style="display:flex;gap:10px;align-items:flex-start;cursor:pointer">
+        <input type="checkbox" data-jha="${gi}:${hi}" style="width:auto;margin:3px 0 0">
+        <span><b>${esc(h[0])}</b><span class="small muted" style="display:block">${esc(h[1])}</span></span>
+      </label>`).join('')).join('')}
+    <h3 style="margin:14px 0 4px">Site-specific (optional)</h3>
+    <div id="jhaCustom"></div>
+    <button class="secondary" style="width:100%" onclick="jhaAddCustom()">+ Add your own hazard</button>
+    <label style="margin-top:10px">Notes — muster point, first aid, permits… (optional)</label>
+    <textarea id="jhaNotes" rows="2"></textarea>
+    <button style="width:100%;margin-top:12px" onclick="jhaToSign()">Continue — sign the form</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
+}
+function jhaAddCustom(){
+  const d=document.getElementById('jhaCustom'); if(!d) return;
+  d.appendChild(el(`<div class="jha-row" style="margin-bottom:8px">
+    <input class="jh" placeholder="Hazard (e.g. crane lifts overhead)" style="margin-bottom:4px">
+    <input class="jc" placeholder="Controls — what keeps it safe">
+  </div>`));
+}
+function jhaToSign(){
+  const sel=document.getElementById('jhaJob');
+  if(!sel || sel.value==='') return toast('Pick the job first.');
+  const job=jhaDraft.jobs[Number(sel.value)];
+  const hazards=[...document.querySelectorAll('[data-jha]:checked')].map(cb=>{
+    const [gi,hi]=cb.dataset.jha.split(':').map(Number); const h=JHA_HAZARDS[gi][1][hi];
+    return {hazard:h[0], controls:h[1]}; });
+  const custom=[...document.querySelectorAll('#jhaCustom .jha-row')].map(r=>({
+    hazard:r.querySelector('.jh').value.trim(), controls:r.querySelector('.jc').value.trim() })).filter(c=>c.hazard);
+  if(!hazards.length && !custom.length) return toast('Check at least one hazard that applies today.');
+  jhaDraft.jobSite=job.name; jhaDraft.po=job.po||''; jhaDraft.hazards=hazards; jhaDraft.custom=custom;
+  jhaDraft.notes=(document.getElementById('jhaNotes')?.value||'').trim();
+  sheet(`<h2>Sign the JHA</h2>
+    <p class="small muted"><b>${esc(job.name)}</b> · ${hazards.length+custom.length} hazard${hazards.length+custom.length===1?'':'s'} identified.
+      Signing confirms you led or took part in this assessment before work.</p>
+    ${sigPadHtml()}
+    <button style="width:100%;margin-top:12px" onclick="jhaSubmitCreate(this)">File the JHA</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
+  sigInit();
+}
+async function jhaSubmitCreate(btn){
+  const sig=sigData(); if(!sig) return toast('Draw your signature first.');
+  if(!S.online) return toast('You need signal to file a JHA — it saves the PDF to Drive.');
+  btn.disabled=true; btn.textContent='Filing…';
+  try{
+    await api('jhaCreate',{ jobSite:jhaDraft.jobSite, poNumber:jhaDraft.po, hazards:jhaDraft.hazards,
+      custom:jhaDraft.custom, notes:jhaDraft.notes, sigDataUrl:sig });
+    closeSheet(); toast('JHA filed — now have the rest of the crew sign it from this tab.'); loadJha();
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='File the JHA'; }
+}
+function openJhaDetail(k){
+  const j=dereg(k); if(!j) return;
+  const d=j.data||{}, all=(d.hazards||[]).concat(d.custom||[]);
+  sheet(`<h2>${esc(j.jobSite)}</h2>
+    <p class="small muted">${esc(j.date)}${j.po?' · PO '+esc(j.po):''} · started by ${esc(String(j.createdBy).split('@')[0])}</p>
+    ${all.map(h=>`<div class="list-item"><b>${esc(h.hazard)}</b><div class="small muted">${esc(h.controls)}</div></div>`).join('')}
+    ${d.notes?`<p class="small"><b>Notes:</b> ${esc(d.notes)}</p>`:''}
+    <h3 style="margin:12px 0 4px">Signatures (${j.sigs.length})</h3>
+    ${j.sigs.map(s=>`<div class="list-item row between"><b>${esc(s.name)}</b><span class="small muted">${fmtDay(s.at)} · ${fmtTime(s.at)}</span></div>`).join('')}
+    ${j.pdfUrl?`<p class="small"><a href="${esc(j.pdfUrl)}" target="_blank" style="color:var(--accent2)">open the filed PDF ↗</a></p>`:''}
+    ${j.signedByMe
+      ? '<p class="small" style="color:#3fa46a">✓ You have signed this JHA.</p>'
+      : `<h3 style="margin:12px 0 4px">Your signature</h3>${sigPadHtml()}
+         <button style="width:100%;margin-top:10px" onclick="jhaSubmitSign('${k}',this)">✍️ Sign — I took part in this JHA</button>`}
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+  if(!j.signedByMe) sigInit();
+}
+async function jhaSubmitSign(k,btn){
+  const j=dereg(k); if(!j) return;
+  const sig=sigData(); if(!sig) return toast('Draw your signature first.');
+  if(!S.online) return toast('You need signal to sign — it refiles the PDF with your name on it.');
+  btn.disabled=true; btn.textContent='Signing…';
+  try{ await api('jhaSign',{jhaId:j.id, sigDataUrl:sig}); closeSheet(); toast('Signed — you are on the JHA.'); loadJha(); }
+  catch(e){ toast(e.message); btn.disabled=false; btn.textContent='✍️ Sign — I took part in this JHA'; }
+}
+
+/* ----- ONBOARDING (everyone): new-hire checklist with in-app videos + signed completion -----
+   Checklist rows live in the master sheet's 'Onboarding' tab (edit there, no code). Videos are
+   Drive/YouTube links embedded IN the app — the new hire never leaves it. Nag-not-block: they
+   can clock in from day one, but a banner sits on the Clock tab until they finish and sign.
+   Completion files a signed PDF training record in Drive (Onboarding Records folder). */
+async function loadOnboarding(){
+  if (S._obLoading || !S.online) return;
+  S._obLoading=true;
+  try{ S.onboard = await api('onboardingGet',{}); if(S.tab==='clock') render(); }
+  catch(e){ /* non-critical — banner just won't show */ }
+  S._obLoading=false;
+}
+function obReqProgress(){
+  const ob=S.onboard; if(!ob) return null;
+  const req=ob.items.filter(i=>i.required);
+  return { done:req.filter(i=>ob.done[i.id]).length, total:req.length };
+}
+function obBanner(){
+  const ob=S.onboard;
+  if(!ob || ob.completedAt || !ob.items.length) return '';
+  const p=obReqProgress();
+  return `<div class="banner" style="background:#dbeafe;color:var(--accent2);border:1px solid #b6d4f5;cursor:pointer" onclick="openOnboarding()">
+    🎓 <b>Finish your onboarding</b> — ${p.done} of ${p.total} done · tap to continue</div>`;
+}
+function obEmbed(link){
+  let m=/drive\.google\.com\/(?:file\/d\/|open\?id=)([-\w]{25,})/.exec(link);
+  if(m) return `https://drive.google.com/file/d/${m[1]}/preview`;
+  m=/(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([-\w]{6,})/.exec(link);
+  if(m) return `https://www.youtube.com/embed/${m[1]}`;
+  return null;
+}
+function obTypeIcon(t){ return t==='video'?'🎬':(t==='task'?'📝':'📄'); }
+function openOnboarding(){
+  const ob=S.onboard;
+  if(!ob){ toast(S.online?'Still loading — try again in a second.':'You need signal to load onboarding.'); loadOnboarding(); return; }
+  const p=obReqProgress();
+  const rows=ob.items.map(it=>{
+    const k=reg(it), did=!!ob.done[it.id];
+    return `<div class="list-item row between" style="cursor:pointer" onclick="openObItem('${k}')">
+      <div class="row" style="gap:8px"><span style="font-size:1.1rem">${did?'✅':obTypeIcon(it.type)}</span>
+        <div><b style="${did?'opacity:.55':''}">${esc(it.title)}</b>
+        ${!it.required?'<div class="small muted">optional</div>':''}</div></div>
+      <span class="small muted">›</span></div>`;
+  }).join('');
+  const allDone=p.done>=p.total;
+  sheet(`<h2>Onboarding</h2>
+    <p class="small muted">${ob.completedAt
+      ? `✓ Completed ${fmtDay(ob.completedAt)}${ob.pdfUrl?` · <a href="${esc(ob.pdfUrl)}" target="_blank" style="color:var(--accent2)">your signed record ↗</a>`:''} — everything stays available below for review.`
+      : `Work through each item — tap it, read or watch, mark it done. ${p.done} of ${p.total} required items done.`}</p>
+    ${rows}
+    ${!ob.completedAt && allDone ? `<button style="width:100%;margin-top:12px" onclick="obFinish()">✍️ Sign &amp; finish onboarding</button>`:''}
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+}
+function openObItem(k){
+  const it=dereg(k); if(!it) return;
+  const ob=S.onboard, did=!!ob.done[it.id];
+  const embed=it.link?obEmbed(it.link):null;
+  sheet(`<h2>${esc(it.title)}</h2>
+    ${embed?`<div style="position:relative;width:100%;aspect-ratio:16/9;border-radius:12px;overflow:hidden;background:#000">
+      <iframe src="${esc(embed)}" style="position:absolute;inset:0;width:100%;height:100%;border:0" allow="autoplay; fullscreen" allowfullscreen></iframe></div>`:''}
+    ${it.link&&!embed?`<p class="small"><a href="${esc(it.link)}" target="_blank" style="color:var(--accent2)">open link ↗</a></p>`:''}
+    ${it.details?`<p style="white-space:pre-wrap">${esc(it.details)}</p>`:''}
+    <button style="width:100%;margin-top:10px" onclick="obToggle('${k}',${did?'false':'true'},this)">${did?'Undo — mark as not done':'✓ Mark as done'}</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="openOnboarding()">Back to the list</button>`);
+}
+async function obToggle(k,done,btn){
+  const it=dereg(k); if(!it) return;
+  if(!S.online) return toast('You need signal to save progress.');
+  btn.disabled=true;
+  try{
+    const r=await api('onboardingCheck',{itemId:it.id,done:done});
+    S.onboard.done=r.done;
+    openOnboarding(); render(); // refresh list + banner count
+  }catch(e){ toast(e.message); btn.disabled=false; }
+}
+function obFinish(){
+  sheet(`<h2>Sign to finish</h2>
+    <p class="small muted">By signing you confirm you completed the orientation, understand the safety practices and expectations, and agree to work by them. A signed PDF files to the office automatically.</p>
+    ${sigPadHtml()}
+    <button style="width:100%;margin-top:12px" onclick="obSubmit(this)">Finish onboarding</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="openOnboarding()">Back</button>`);
+  sigInit();
+}
+async function obSubmit(btn){
+  const sig=sigData(); if(!sig) return toast('Draw your signature first.');
+  if(!S.online) return toast('You need signal to finish — it files your signed record.');
+  btn.disabled=true; btn.textContent='Filing…';
+  try{
+    const r=await api('onboardingComplete',{sigDataUrl:sig});
+    S.onboard.completedAt=new Date().toISOString(); S.onboard.pdfUrl=r.pdfUrl;
+    closeSheet(); render();
+    toast('🎉 Onboarding complete — welcome to the crew!');
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Finish onboarding'; }
+}
+/* Admin: who's finished, who's stalled (loaded when the Admin tab opens). */
+async function loadObStatus(){
+  if(S._obsLoading) return; S._obsLoading=true;
+  try{ const r=await api('onboardingStatus',{}); S.obStatus=r.employees||[]; if(S.tab==='admin') render(); }
+  catch(e){}
+  S._obsLoading=false;
+}
+function obStatusCard(){
+  const st=S.obStatus;
+  return `<div class="card">
+    <h3>Onboarding</h3>
+    ${!st?(S.online?'<p class="muted small">Loading…</p>':'<p class="muted small">Open while online to load.</p>'):(st.length?st.map(e=>`<div class="list-item row between">
+      <div><b>${esc(e.name)}</b></div>
+      <div>${e.completedAt
+        ? `<span class="pill approved">✓ ${fmtDay(e.completedAt)}</span>${e.pdfUrl?` <a class="small" href="${esc(e.pdfUrl)}" target="_blank" style="color:var(--accent2)">record ↗</a>`:''}`
+        : `<span class="pill pending">${e.done}/${e.total}</span>`}</div>
+    </div>`).join(''):'<p class="muted small">No active employees.</p>')}
+    <p class="small muted" style="margin-bottom:0">Edit the checklist in the <b>Onboarding</b> tab of your master sheet — add video links there and they play inside the app.</p>
+  </div>`;
+}
+
+/* ----- HOURS TAB (admin + bookkeeper): monthly hours in-app, no CSV required -----
+   Overview: one row per active employee (bookkeeper excluded server-side — subcontracted)
+   with approved + pending hours and estimated pay for the picked month. Tap a name for
+   the day-by-day breakdown. The CSV download in Admin still exists for reconciliation. */
+function curMonthStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+function monthLabel(m){ const p=String(m).split('-'); return new Date(Number(p[0]),Number(p[1])-1,1).toLocaleDateString([],{month:'long',year:'numeric'}); }
+function hoursView(){
+  const month=S.hoursMonth||curMonthStr();
+  const d=(S.hoursData && S.hoursData.month===month)? S.hoursData : null;
+  let rows='';
+  if (d){
+    rows = d.rows.map(r=>{ const k=reg(r); return `<div class="list-item row between" style="cursor:pointer" onclick="openHoursDetail('${k}')">
+        <div><b>${esc(r.name)}</b><div class="small muted">$${r.rate||0}/hr</div></div>
+        <div style="text-align:right"><b>${r.approved.toFixed(2)} hrs</b>
+          ${r.pending?`<div class="small" style="color:var(--pending)">+ ${r.pending.toFixed(2)} pending</div>`:''}
+          <div class="small muted">≈ $${(r.estPay||0).toFixed(2)}</div></div>
+      </div>`; }).join('') || '<p class="muted small">No active employees.</p>';
+    if (d.rows.length) rows += `<div class="list-item row between" style="border-top:2px solid var(--line)">
+        <b>Everyone</b>
+        <div style="text-align:right"><b>${d.totals.approved.toFixed(2)} hrs</b>
+          ${d.totals.pending?`<div class="small" style="color:var(--pending)">+ ${d.totals.pending.toFixed(2)} pending</div>`:''}
+          <div class="small muted">≈ $${d.totals.estPay.toFixed(2)}</div></div>
+      </div>`;
+  }
+  return `<div class="row between"><h2>Hours</h2>
+      <input type="month" value="${esc(month)}" style="width:auto;margin:0" onchange="setHoursMonth(this.value)"></div>
+    <div class="card">
+      <div class="row between"><h3>${esc(monthLabel(month))}</h3>${S.hoursLoading?'<span class="spin"></span>':''}</div>
+      <p class="small muted" style="margin-top:-4px">Tap an employee for their day-by-day entries. Pay is estimated from approved hours × current rate.</p>
+      ${rows || (S.hoursLoading?'<p class="muted small">Loading…</p>':'<p class="muted small">No data yet — pull up this tab while online.</p>')}
+    </div>`;
+}
+async function loadHours(){
+  if (S.hoursLoading) return;
+  S.hoursLoading=true; if(S.tab==='hours') render();
+  try{ const r=await api('hoursOverview',{month:S.hoursMonth||curMonthStr()}); S.hoursData=r; }
+  catch(e){ toast(e.message); }
+  S.hoursLoading=false; if(S.tab==='hours') render();
+}
+function setHoursMonth(m){ if(!m) return; S.hoursMonth=m; S.hoursData=null; loadHours(); }
+async function openHoursDetail(k){
+  const ref=dereg(k); if(!ref) return;
+  const month=S.hoursMonth||curMonthStr();
+  const p=month.split('-'); const start=new Date(Number(p[0]),Number(p[1])-1,1), end=new Date(Number(p[0]),Number(p[1]),1);
+  const days=Math.max(1, Math.ceil((Date.now()-start.getTime())/86400000)+1);
+  sheet(`<h2>${esc(ref.name)}</h2><p class="small muted">${esc(monthLabel(month))}</p><p class="center"><span class="spin"></span></p>`);
+  const mine=S._sheet; // dismissed while loading? stay dismissed
+  try{
+    const r=await api('listEntries',{email:ref.email, days, maxRows:20000});
+    if (S._sheet!==mine) return;
+    const inMonth=(r.entries||[]).filter(e=>{ const t=new Date(e.ClockIn||e.Date); return !isNaN(t)&&t>=start&&t<end; });
+    let appr=0,pend=0;
+    const items=inMonth.map(e=>{ const h=Number(e.Hours)||0;
+      if(e.Status==='approved')appr+=h; else if(e.Status==='pending')pend+=h;
+      return `<div class="list-item row between">
+        <div><b>${fmtDay(e.ClockIn||e.Date)}</b><div class="small muted">${esc(e['Customer/Job Site']||e.Company||'—')} · ${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)}</div></div>
+        <div style="text-align:right"><b>${(e.Hours!==''&&e.Hours!=null)?e.Hours+' hrs':'—'}</b>
+          <div class="small"><span class="pill ${esc(e.Status)}">${esc(e.Status)}</span></div></div>
+      </div>`; }).join('') || '<p class="muted small">No entries this month.</p>';
+    sheet(`<h2>${esc(ref.name)}</h2>
+      <p class="small muted">${esc(monthLabel(month))} · <b>${(Math.round(appr*100)/100).toFixed(2)} hrs approved</b>${pend?` · ${(Math.round(pend*100)/100).toFixed(2)} pending`:''}</p>
+      <div style="max-height:60vh;overflow:auto">${items}</div>
+      <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  }catch(e){ toast(e.message); if (S._sheet===mine) closeSheet(); }
 }
 async function loadPending(){
   try{ const r=await api('pendingApprovals'); S.pending=r.pending||[]; if(S.tab==='admin') render(); }
@@ -1607,9 +2282,11 @@ let pickerState = null;
 let poResults=[]; // index-referenced by tap (apostrophe-safe)
 function openJobPicker(isSwitch){
   pickerState = { isSwitch, mode:null, company:'', jobSite:'', poNumber:'', isNew:false, newType:'', notes:'' };
-  renderPicker();
-  // customers may not be loaded yet (first run / stale cache) — refresh the PO list when they land
-  loadCustomers().then(()=>{ if (S._sheet && pickerState) refreshPoList(); });
+  renderPicker(); // paints instantly from the cached list — nobody waits on the network
+  // Stale-while-revalidate: ALWAYS re-fetch in the background (force=true skips the 10-min
+  // TTL) so a PO row added by hand in the sheet shows up here within ~a minute, then swap
+  // the fresh list into the open picker when it lands.
+  loadCustomers(true).then(()=>{ if (S._sheet && pickerState) refreshPoList(); });
 }
 /* Open POs = rows in the PO Log whose Status is "In Progress". Done jobs are hidden. */
 function openPOs(q){
@@ -1634,7 +2311,8 @@ function pickPO(i){
   renderPicker();
 }
 function renderPicker(){
-  const comp = S.companies.map(c=>`<span class="chip ${pickerState.company===c?'sel':''}" onclick="pickCompany('${esc(c)}')">${esc(c)}</span>`).join('');
+  const liveNotes=document.getElementById('pnotes'); if(liveNotes) pickerState.notes=liveNotes.value; // survive re-renders
+  const comp = companyOptions().map((o,i)=>`<span class="chip ${pickerState.company===o.c?'sel':''}" onclick="pickCompany(companyOptions()[${i}].c)">${esc(o.label)}</span>`).join('');
   sheet(`
     <h2>${pickerState.isSwitch?'Switch to…':'Clock in'}</h2>
     ${pickerState.poNumber?`<div class="banner sync">Selected: <b>${esc(pickerState.poNumber)}</b> · ${esc(pickerState.jobSite)}</div>`:''}
@@ -1768,7 +2446,7 @@ async function submitPicker(){
    clock — nothing was sent, so no time is lost either way. The clock-out time is the moment
    you CONFIRMED (coState.stopAt), not when you finish the form: filling in materials and
    photos doesn't pad the day. */
-let coState=null, coJobResults=[], coMatResults=[];
+let coState=null, coSubmittedId=null, coJobResults=[], coMatResults=[];
 
 function openClockOut(){
   const site = S.openEntry && (S.openEntry['Customer/Job Site']||S.openEntry.Company) || '';
@@ -1801,12 +2479,17 @@ function startClockOutReview(){
   };
   // GPS resolves while they review; if they submit first, it patches in afterwards.
   const eid = coState.entryId;
+  coSubmittedId=null; // set by submitClockOut — distinguishes "submitted before GPS" from "cancelled"
   getGps(15000).then(g=>{
     if (!g) return;
     if (coState && coState.entryId===eid) coState.gps=g;
-    else apiMutate('patchGps',{entryId:eid, which:'out', gps:g});
+    else if (coSubmittedId===eid) apiMutate('patchGps',{entryId:eid, which:'out', gps:g});
+    // cancelled → drop the fix: the entry is still open and this is NOT its clock-out location
   });
-  loadMaterials(); loadCustomers();
+  loadMaterials();
+  // Force-refresh customers in the background (same stale-while-revalidate as the clock-in
+  // picker) and update the "Change job" list if it's showing when the fresh data lands.
+  loadCustomers(true).then(()=>{ if (coState) coJobFilter(val('coJobSearch')); });
   renderClockOutReview();
 }
 
@@ -1829,7 +2512,7 @@ function renderClockOutReview(){
         <input id="coJobSearch" placeholder="Search open jobs…" autocomplete="off" oninput="coJobFilter(this.value)">
         <div id="coJobList" style="max-height:30vh;overflow:auto"></div>
         <label>Internal company time (no PO)</label>
-        <div>${S.companies.map(x=>`<span class="chip" onclick="coPickCompany('${esc(x)}')">${esc(x)}</span>`).join('')}</div>
+        <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="coPickCompany(companyOptions()[${i}].c)">${esc(o.label)}</span>`).join('')}</div>
       </div>
     </div>
     <div class="card" style="margin:10px 0">
@@ -1993,6 +2676,7 @@ async function submitClockOut(){
     coUpdateWorked();
     return;
   }
+  coSubmittedId=c.entryId; // review really submitted — the late-GPS patch may now target it
   coState=null; closeSheet();
   S.mutSeq++; // flicker guard — invalidate any in-flight bootstrap snapshot
   const gross=Math.round((gms/3600000)*100)/100;
@@ -2033,7 +2717,7 @@ async function submitClockOut(){
 
 /* ---- Manual entry ---- */
 function openManual(){
-  const today=new Date().toISOString().slice(0,10);
+  const today=todayStr(); // LOCAL date — toISOString() is UTC and prefills tomorrow every evening
   sheet(`<h2>Manual entry</h2>
     <p class="small muted">Flagged for admin approval. You can edit it until it's approved.</p>
     <label>Date</label><input id="mDate" type="date" value="${today}">
@@ -2042,7 +2726,7 @@ function openManual(){
     <p class="small muted" style="margin:2px 0 0">Out earlier than in = overnight shift (ends the next day).</p>
     <label>Break time (minutes, deducted from hours)</label><input id="mBreak" type="number" min="0" step="5" placeholder="0">
     <label>Company (optional)</label>
-    <select id="mCompany"><option value="">— none —</option>${S.companies.map(c=>`<option>${esc(c)}</option>`).join('')}</select>
+    <select id="mCompany"><option value="">— none —</option>${companyOptions().map(o=>`<option value="${esc(o.c)}">${esc(o.label)}</option>`).join('')}</select>
     <label>Customer / job site (optional)</label><input id="mSite" placeholder="Job site">
     <label>Notes</label><textarea id="mNotes" rows="2"></textarea>
     <div class="row" style="margin-top:14px">
@@ -2067,7 +2751,8 @@ function openEditEntry(k){
   edState={ e, employeeEmail:ref.employeeEmail,
     jobSite:e['Customer/Job Site']||'', poNumber:e['PO#']||'', company:e.Company||'',
     jobEdited:false, items:[] };
-  loadMaterials(); loadCustomers();
+  loadMaterials();
+  loadCustomers(true).then(()=>{ if (edState) edJobFilter(val('edJobSearch')); }); // fresh open-PO list here too
   const inT = e.ClockIn? fmtHM(e.ClockIn):'';
   const outT= e.ClockOut? fmtHM(e.ClockOut):'';
   const date= e.ClockIn? localDateStr(new Date(e.ClockIn)) : String(e.Date||'').slice(0,10);
@@ -2085,7 +2770,7 @@ function openEditEntry(k){
         <input id="edJobSearch" placeholder="Search open jobs…" autocomplete="off" oninput="edJobFilter(this.value)">
         <div id="edJobList" style="max-height:30vh;overflow:auto"></div>
         <label>Internal company time (no PO)</label>
-        <div>${S.companies.map(x=>`<span class="chip" onclick="edPickCompany('${esc(x)}')">${esc(x)}</span>`).join('')}</div>
+        <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="edPickCompany(companyOptions()[${i}].c)">${esc(o.label)}</span>`).join('')}</div>
       </div>
     </div>
     <label>Date (the day the shift started)</label><input id="eDate" type="date" value="${esc(date)}">
@@ -2256,24 +2941,39 @@ function openAddEmployee(){
     <label>Name</label><input id="aeName" placeholder="Full name">
     <label>Role</label><select id="aeRole"><option value="employee">Employee</option><option value="admin">Admin</option><option value="bookkeeper">Bookkeeper</option></select>
     <label>Hourly rate</label><input id="aeRate" type="number" step="0.01" value="0">
+    <label>Company access</label>
+    <select id="aeCompany">${(S.companies||[]).map((c,i)=>`<option value="${esc(c)}">${esc(c)} only${i===0?' — typical crew':''}</option>`).join('')}<option value="__ALL__">Can choose any company</option></select>
+    <div class="perm"><input type="checkbox" id="aeInvite" checked>
+      <label for="aeInvite" style="margin:0">Email them an invite with setup instructions</label></div>
     <div class="row" style="margin-top:14px"><button class="secondary grow" onclick="closeSheet()">Cancel</button>
     <button class="grow" onclick="submitAddEmployee()">Add</button></div>`);
 }
 async function submitAddEmployee(){
-  const p={ email:val('aeEmail'), name:val('aeName'), role:val('aeRole'), hourlyRate:val('aeRate') };
+  const inviteEl=document.getElementById('aeInvite');
+  const compSel=val('aeCompany')||'';
+  const p={ email:val('aeEmail'), name:val('aeName'), role:val('aeRole'), hourlyRate:val('aeRate'),
+    sendInvite: inviteEl? inviteEl.checked : true,
+    canChooseCompany: compSel==='__ALL__',
+    homeCompany: compSel==='__ALL__'? '' : compSel,
+    appUrl: location.origin + location.pathname }; // the backend puts this link in the invite
   if(!p.email){ toast('Email required'); return; }
   closeSheet();
-  try{ await api('addEmployee',p); toast('Added'); await refresh(true);}catch(e){toast(e.message);}
+  try{ const r=await api('addEmployee',p);
+    toast(r&&r.invited ? 'Added — invite emailed to '+p.email : 'Added');
+    await refresh(true);
+  }catch(e){toast(e.message);}
 }
 function openEmployee(email){
   const emp=(S.employees||[]).find(e=>e.email===email); if(!emp) return;
   const perms=emp.permissions||{};
   const pl=[['approveHours','Approve hours'],['editPastEntries','Edit past entries'],['manageEmployees','Add/remove employees'],
-    ['setRates','Set hourly rates'],['viewAllCompanies','View all companies'],['viewAllEmployees','View all employees'],['exportPayroll','Export payroll']];
+    ['setRates','Set hourly rates'],['viewAllCompanies','Can choose company (PCW/GNG/…)'],['viewAllEmployees','View all employees'],['exportPayroll','Export payroll']];
   sheet(`<h2>${esc(emp.name)}</h2><div class="small muted">${esc(emp.email)}</div>
     <label>Role</label><select id="edRole">${['employee','admin','bookkeeper'].map(r=>`<option ${emp.role===r?'selected':''}>${r}</option>`).join('')}</select>
     <label>Hourly rate</label><input id="edRate" type="number" step="0.01" value="${emp.hourlyRate||0}">
     <label>Active</label><select id="edActive"><option value="true" ${emp.active?'selected':''}>Active</option><option value="false" ${!emp.active?'selected':''}>Inactive</option></select>
+    <label>Home company — which company they book when they can't choose</label>
+    <select id="edHome">${(S.companies||[]).map(c=>`<option ${(perms.homeCompany||S.companies[0])===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
     <label>Permissions</label>
     <div>${pl.map(([k,lbl])=>`<div class="perm"><input type="checkbox" id="pm_${k}" ${perms[k]?'checked':''}><label for="pm_${k}" style="margin:0">${lbl}</label></div>`).join('')}</div>
     <div class="row" style="margin-top:14px"><button class="secondary grow" onclick="closeSheet()">Close</button>
@@ -2283,9 +2983,10 @@ function openEmployee(email){
 async function saveEmployee(email){
   const keys=['approveHours','editPastEntries','manageEmployees','setRates','viewAllCompanies','viewAllEmployees','exportPayroll'];
   const permissions={}; keys.forEach(k=>permissions[k]=document.getElementById('pm_'+k).checked);
+  permissions.homeCompany=val('edHome')||'';
   const p={ email, role:val('edRole'), hourlyRate:Number(val('edRate'))||0, active: val('edActive')==='true', permissions };
   closeSheet();
-  try{ await api('updateEmployee',p); await api('setPermissions',{email,permissions}); toast('Saved'); await refresh(true);}catch(e){toast(e.message);}
+  try{ await api('updateEmployee',p); toast('Saved'); await refresh(true);}catch(e){toast(e.message);} // updateEmployee persists permissions too — one round-trip
 }
 async function removeEmp(email){ closeSheet(); try{ await api('removeEmployee',{email}); toast('Deactivated'); await refresh(true);}catch(e){toast(e.message);} }
 
@@ -2340,6 +3041,93 @@ function localMatSearch(q){
 }
 /* The clock-out materials prompt now lives inline on the review screen (coMat*); the same
    catalog + fuzzy search also powers the edit-entry sheet (edMat*). */
+
+/* One-tap starter catalog (backend dedupes by name — safe to tap again after adding your own). */
+async function seedMats(){
+  try{
+    const r=await api('seedMaterials');
+    toast(r.added? ('Added '+r.added+' parts'+(r.skipped?(' — '+r.skipped+' were already in the list'):'')) : 'Every starter part is already in the list');
+    loadMaterials(true); // refresh the search cache so they're usable right away
+  }catch(e){ toast(e.message); }
+}
+
+/* ---- AI receipt scan: photo → Gemini reads line items → match against catalog →
+   review screen → confirmed new parts land in the Materials sheet. Online-only. ---- */
+let rcState=null;
+function openReceiptScan(){
+  if (!S.online){ toast('Receipt scanning needs a connection'); return; }
+  rcState=null;
+  sheet(`<h2>Scan a receipt</h2>
+    <p class="small muted">Take a straight, well-lit photo of the supplier receipt. The AI reads the line items, matches them against your materials list, and you approve anything new.</p>
+    <label>Photo of receipt</label>
+    <input type="file" accept="image/*" capture="environment" onchange="rcScan(this)">
+    <div id="rcStatus" class="small muted"></div>
+    <div id="rcResults"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Close</button>
+      <button class="grow hidden" id="rcConfirm" onclick="rcAdd()">Add checked items</button>
+    </div>`);
+  if (S._sheet) S._sheet.onclick=null; // don't lose a scan to a stray backdrop tap
+}
+async function rcScan(input){
+  const f=input.files && input.files[0]; if(!f) return;
+  if (f.size > MAX_MEDIA_MB*1048576){ toast('Photo too large — lower the camera resolution'); return; }
+  const st=document.getElementById('rcStatus');
+  st.innerHTML='<span class="spin"></span> Reading the receipt… (10–20 seconds)';
+  try{
+    const b64=await fileToB64(f);
+    const r=await api('scanReceipt',{dataBase64:b64, mimeType:f.type||'image/jpeg', filename:f.name});
+    rcState={items:r.items||[], receiptUrl:r.receiptUrl||''};
+    rcRender();
+  }catch(e){ st.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; }
+}
+function rcRender(){
+  const st=document.getElementById('rcStatus'), box=document.getElementById('rcResults'),
+        btn=document.getElementById('rcConfirm');
+  if(!rcState||!box) return;
+  const items=rcState.items;
+  const newOnes=items.filter(i=>!i.match).length;
+  st.innerHTML=`Found <b>${items.length}</b> line item(s) — ${items.length-newOnes} already in your list, <b>${newOnes} new</b>.`+
+    (rcState.receiptUrl?` <a href="${esc(rcState.receiptUrl)}" target="_blank" style="color:var(--accent2)">receipt saved ↗</a>`:'');
+  box.innerHTML = (items.map((it,i)=>`<div class="list-item">
+      <div class="row between">
+        <div class="grow">${it.match?'':`<input type="checkbox" id="rc_${i}" checked style="width:auto;margin:0 8px 0 0">`}<b>${esc(it.desc)}</b>
+          ${it.qty?` <span class="small muted">× ${esc(it.qty)} ${esc(it.unit||'')}</span>`:''}</div>
+      </div>
+      <div class="small ${it.match?'muted':''}" style="margin-top:2px">
+        ${it.match?`✓ matches: ${esc(it.match)}`:`<span style="color:var(--pending)">new — will be added to the materials list</span>`}
+      </div>
+    </div>`).join('') || '<p class="muted small">No line items found — try a clearer photo.</p>')
+    // On the clock? Offer to log the whole receipt against the current job too.
+    + (S.openEntry && items.length ? `<div class="perm" style="margin-top:8px">
+        <input type="checkbox" id="rcLogJob" checked>
+        <label for="rcLogJob" style="margin:0">Also log these materials to <b>${esc(S.openEntry['Customer/Job Site']||S.openEntry.Company||'current job')}</b></label>
+      </div>` : '');
+  if (btn){ btn.classList.remove('hidden');
+    btn.textContent = newOnes ? `Add ${newOnes} new item(s)` : 'Done'; }
+}
+async function rcAdd(){
+  if(!rcState) return;
+  const adds=rcState.items.map((it,i)=>(!it.match && (document.getElementById('rc_'+i)||{}).checked)
+    ? {name:it.desc, unit:it.unit||'ea'} : null).filter(Boolean);
+  const logJob = S.openEntry && (document.getElementById('rcLogJob')||{}).checked;
+  const btn=document.getElementById('rcConfirm'); if(btn) btn.disabled=true;
+  try{
+    let added=0;
+    if (adds.length){ const r=await api('addMaterialsBulk',{items:adds}); added=r.added; }
+    // Log the receipt's items against the job being worked (matched name where known).
+    if (logJob){
+      const items=rcState.items.map(it=>({ name: it.match||it.desc, qty: it.qty||'',
+        unit: it.unit||'', matched: !!it.match }));
+      await apiMutate('logMaterials',{ entryId:S.openEntry.EntryID,
+        jobSite:S.openEntry['Customer/Job Site']||S.openEntry.Company||'',
+        poNumber:S.openEntry['PO#']||'', items });
+    }
+    toast((added?('Added '+added+' new item(s)'):'All items already in the list')+(logJob?' — logged to the job':''));
+    loadMaterials(true);
+    closeSheet();
+  }catch(e){ toast(e.message); if(btn) btn.disabled=false; }
+}
 
 /* ---- Admin: materials review ---- */
 async function openMatReview(){
@@ -2402,7 +3190,7 @@ function toast(msg){
 /* ============================================================================
  * ONLINE/OFFLINE + STARTUP
  * ==========================================================================*/
-window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); });
+window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); if(!S.onboard) loadOnboarding(); });
 window.addEventListener('offline', ()=>{ S.online=false; render(); });
 
 async function start(){
