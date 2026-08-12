@@ -7,7 +7,7 @@
  * already cached. Now the app paints instantly from cache and the fetch that runs in the
  * background updates the cache, so a fresh deploy lands on the SECOND open after it ships.
  */
-const CACHE = 'pcw-pro-timesheet-v10'; // v10: Schedule+time off, JHA, onboarding, Jobs tab, receipt scan, PRO branding, audit fixes (+ v9 Hours/invites, v8-v5 earlier)
+const CACHE = 'pcw-pro-timesheet-v11'; // v11: speed (cached tabs), job drill-down, clock-tab receipt button, driving hazard (+ v10 schedule/JHA/onboarding batch)
 const SHELL = ['./', './index.html', './manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {

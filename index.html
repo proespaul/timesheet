@@ -1411,6 +1411,7 @@ function clockView(){
             : `<button class="btn-break grow" onclick="doStartBreak()">☕ Start Break</button>`}
           <button class="btn-switch grow" onclick="openJobPicker(true)">⏸ Pause &amp; Switch</button>
         </div>
+        <button class="ghost" style="width:100%;margin-top:4px" onclick="openReceiptScan()">📷 Bought materials? Scan the receipt</button>
       </div>
       ${pausedCard()}
       ${periodCard(totals)}`;
@@ -1639,14 +1640,15 @@ function jobsView(){
 function jobsFilter(v){ S.jobsQuery=v; const el=document.getElementById('jobsList'); if(el) el.innerHTML=jobsRowsHtml(); }
 async function loadJobs(){
   if (S.jobsLoading) return;
+  if (!S.jobsData){ const c=await DB.getCache('jobsData'); if(c){ S.jobsData=c; if(S.tab==='jobs') render(); } }
   S.jobsLoading=true; if(S.tab==='jobs') render();
-  try{ const r=await api('jobCosts',{}); S.jobsData=r; }
+  try{ const r=await api('jobCosts',{}); S.jobsData=r; DB.setCache('jobsData',r); }
   catch(e){ toast(e.message); }
   S.jobsLoading=false; if(S.tab==='jobs') render();
 }
 function openJobDetail(k){
   const j=dereg(k); if(!j) return;
-  const pk=reg({jobSite:j.name});
+  const pk=reg({jobSite:j.name, po:j.po||''});
   sheet(`<h2>${esc(j.name||j.po||'—')}</h2>
     <p class="small muted">${j.po?('PO '+esc(j.po)+' · '):''}${esc(j.status||'')} ·
       <b>${j.hours.toFixed(2)} hrs</b> ≈ $${j.cost.toFixed(2)} labour${j.pending?` · ${j.pending.toFixed(2)} hrs pending`:''}</p>
@@ -1654,8 +1656,40 @@ function openJobDetail(k){
       <div><b>${esc(e.name)}</b></div>
       <div style="text-align:right"><b>${e.hours.toFixed(2)} hrs</b><div class="small muted">≈ $${e.cost.toFixed(2)}</div></div>
     </div>`).join('')||'<p class="muted small">No breakdown available.</p>'}
-    <button class="secondary" style="width:100%;margin-top:10px" onclick="openJobPhotos('${pk}')">📷 View job photos</button>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="openJobEntries('${pk}')">📆 Day-by-day breakdown</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobPhotos('${pk}')">📷 View job photos</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+}
+
+/* Day-by-day drill-down: every shift on the job — when, who, how long, status. */
+async function openJobEntries(pk){
+  const ref=dereg(pk); if(!ref) return;
+  if(!S.online) return toast('You need signal to load the breakdown.');
+  sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center"><span class="spin"></span> Loading shifts…</p>`);
+  const mine=S._sheet; // dismissed while loading? stay dismissed
+  try{
+    const r=await api('jobEntries',{jobSite:ref.jobSite, po:ref.po||''});
+    if (S._sheet!==mine) return;
+    const rows=r.rows||[];
+    const byDate={};
+    rows.forEach(x=>{ (byDate[x.date]=byDate[x.date]||[]).push(x); });
+    const days=Object.keys(byDate).sort().reverse();
+    const html=days.map(d=>{
+      const list=byDate[d];
+      const dayTotal=list.reduce((s,x)=>s+x.hours,0);
+      return `<div class="list-item">
+        <div class="row between"><b>${esc(schedDayLabel(d)!=='Today'&&schedDayLabel(d)!=='Tomorrow'?new Date(d+'T12:00').toLocaleDateString([],{weekday:'short',month:'short',day:'numeric',year:'numeric'}):schedDayLabel(d))}</b>
+          <b>${dayTotal.toFixed(2)} hrs</b></div>
+        ${list.map(x=>`<div class="row between small" style="margin-top:2px">
+          <span>${esc(x.who)}${x.in?` <span class="muted">${fmtTime(x.in)}–${x.out?fmtTime(x.out):'…'}</span>`:''}</span>
+          <span>${x.hours.toFixed(2)}h ${x.status==='pending'?'<span class="pill pending">pending</span>':''}</span>
+        </div>${x.notes?`<div class="small muted" style="margin-left:2px">↳ ${esc(x.notes)}</div>`:''}`).join('')}
+      </div>`; }).join('');
+    sheet(`<h2>${esc(ref.jobSite)}</h2>
+      <p class="small muted" style="margin-top:-4px">${rows.length} shift${rows.length===1?'':'s'}, newest first${rows.length>=400?' (showing the most recent 400)':''}</p>
+      ${html||'<p class="muted small">No shifts logged against this job yet.</p>'}
+      <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
 }
 
 /* Job photo browser: a window into the job's Google Drive folder (the folder stays the
@@ -1691,8 +1725,9 @@ async function openJobPhotos(pk){
    from the event detail sheet. Newly-assigned workers get an email. */
 async function loadSched(){
   if (S.schedLoading) return;
+  if (!S.sched){ const c=await DB.getCache('sched'); if(c){ S.sched=c; if(S.tab==='sched') render(); } } // paint instantly
   S.schedLoading=true; if(S.tab==='sched') render();
-  try{ const r=await api('scheduleList',{}); S.sched=r; }
+  try{ const r=await api('scheduleList',{}); S.sched=r; DB.setCache('sched',r); }
   catch(e){ toast(e.message); }
   S.schedLoading=false; if(S.tab==='sched') render();
 }
@@ -1876,6 +1911,7 @@ const JHA_HAZARDS = [
    ['Wire pulling strain','Pulling lube & gear, clear communication, staged pulls, good body position'],
  ]],
  ['Site', [
+   ['Driving to / between sites','Seatbelts on, phone down while driving, speed to conditions, secure the load'],
    ['Vehicle / equipment traffic','Hi-vis on, eye contact with operators, stay in designated walkways'],
    ['Other trades overhead / nearby','Coordinate at the tailgate, hard hats, barricade drop zones'],
    ['Housekeeping / trip hazards','Clear walkways, coil cords, clean as you go'],
@@ -1902,8 +1938,9 @@ function jhaView(){
 }
 async function loadJha(){
   if (S.jhaLoading) return;
+  if (!S.jhaList){ const c=await DB.getCache('jhaList'); if(c){ S.jhaList=c; if(S.tab==='jha') render(); } }
   S.jhaLoading=true; if(S.tab==='jha') render();
-  try{ const r=await api('jhaList',{}); S.jhaList=r.jhas||[]; }
+  try{ const r=await api('jhaList',{}); S.jhaList=r.jhas||[]; DB.setCache('jhaList',S.jhaList); }
   catch(e){ toast(e.message); }
   S.jhaLoading=false; if(S.tab==='jha') render();
 }
@@ -2023,9 +2060,11 @@ async function jhaSubmitSign(k,btn){
    can clock in from day one, but a banner sits on the Clock tab until they finish and sign.
    Completion files a signed PDF training record in Drive (Onboarding Records folder). */
 async function loadOnboarding(){
-  if (S._obLoading || !S.online) return;
+  if (S._obLoading) return;
+  if (!S.onboard){ const c=await DB.getCache('onboard'); if(c){ S.onboard=c; if(S.tab==='clock') render(); } }
+  if (!S.online) return;
   S._obLoading=true;
-  try{ S.onboard = await api('onboardingGet',{}); if(S.tab==='clock') render(); }
+  try{ S.onboard = await api('onboardingGet',{}); DB.setCache('onboard',S.onboard); if(S.tab==='clock') render(); }
   catch(e){ /* non-critical — banner just won't show */ }
   S._obLoading=false;
 }
@@ -2113,8 +2152,10 @@ async function obSubmit(btn){
 }
 /* Admin: who's finished, who's stalled (loaded when the Admin tab opens). */
 async function loadObStatus(){
-  if(S._obsLoading) return; S._obsLoading=true;
-  try{ const r=await api('onboardingStatus',{}); S.obStatus=r.employees||[]; if(S.tab==='admin') render(); }
+  if(S._obsLoading) return;
+  if(!S.obStatus){ const c=await DB.getCache('obStatus'); if(c){ S.obStatus=c; if(S.tab==='admin') render(); } }
+  S._obsLoading=true;
+  try{ const r=await api('onboardingStatus',{}); S.obStatus=r.employees||[]; DB.setCache('obStatus',S.obStatus); if(S.tab==='admin') render(); }
   catch(e){}
   S._obsLoading=false;
 }
@@ -2166,8 +2207,12 @@ function hoursView(){
 }
 async function loadHours(){
   if (S.hoursLoading) return;
+  const month=S.hoursMonth||curMonthStr();
+  if (!S.hoursData || S.hoursData.month!==month){
+    const c=await DB.getCache('hours_'+month); if(c){ S.hoursData=c; if(S.tab==='hours') render(); } // paint instantly
+  }
   S.hoursLoading=true; if(S.tab==='hours') render();
-  try{ const r=await api('hoursOverview',{month:S.hoursMonth||curMonthStr()}); S.hoursData=r; }
+  try{ const r=await api('hoursOverview',{month}); S.hoursData=r; DB.setCache('hours_'+month,r); }
   catch(e){ toast(e.message); }
   S.hoursLoading=false; if(S.tab==='hours') render();
 }
