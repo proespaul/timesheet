@@ -54,10 +54,11 @@
   .timer{font-size:2.4rem; font-weight:800; text-align:center; letter-spacing:.02em}
   .tabbar{position:fixed; left:0; right:0; bottom:0; display:flex; background:var(--panel);
     border-top:1px solid var(--line); padding-bottom:var(--safe); z-index:20}
-  .tabbar button{flex:1; min-width:0; background:transparent; color:var(--muted); border-radius:0; padding:12px 2px; font-size:.72rem; font-weight:600;
+  .tabbar button{flex:1; min-width:0; background:transparent; color:var(--muted); border-radius:0; padding:12px 2px 13px; font-size:.76rem; font-weight:600;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
-  .tabbar button.active{color:var(--accent2)}
-  .tabbar .ic{display:block; font-size:1.3rem; line-height:1}
+  .tabbar button.active{color:var(--accent2); font-weight:800; background:rgba(46,117,182,.10);
+    box-shadow:inset 0 3px 0 var(--accent2)}
+  .tabbar .ic{display:block; font-size:1.55rem; line-height:1.15}
   .banner{padding:10px 14px; border-radius:12px; margin:8px 0; font-size:.9rem}
   .banner.offline{background:#fef3c7; color:#92400e; border:1px solid #fcd34d}
   .banner.ot{background:#fee2e2; color:#b91c1c; border:1px solid #fca5a5}
@@ -98,6 +99,28 @@
   .apphead .avatar{border:2px solid rgba(255,255,255,.45)}
   .pulseline{height:3px; max-width:220px; margin:10px auto 14px; border-radius:2px;
     background:linear-gradient(90deg,#aeb6c2,var(--pulse) 48%,var(--pulse) 62%,#2a2e35)}
+  /* ---- Month calendar (Schedule tab) ---- */
+  .cal{display:grid; grid-template-columns:repeat(7,1fr); gap:4px}
+  .cal .dow{text-align:center; font-size:.68rem; color:var(--muted); font-weight:700; padding:2px 0}
+  .cal .day{aspect-ratio:1; border-radius:10px; background:var(--panel); border:1px solid var(--line);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:.85rem;
+    cursor:pointer; position:relative; -webkit-user-select:none; user-select:none}
+  .cal .day.blank{background:transparent; border:none; cursor:default}
+  .cal .day.today{border:2px solid var(--accent2); font-weight:800}
+  .cal .day.hol{background:#fef9c3; border-color:#fde68a}
+  .cal .dots{display:flex; gap:2px; margin-top:2px; height:5px}
+  .cal .dot{width:5px; height:5px; border-radius:50%; background:var(--accent)}
+  .cal .dot.warn{background:var(--warn)}
+  .cal .off{position:absolute; top:1px; right:3px; font-size:.6rem}
+  .seg{display:flex; background:var(--panel2); border-radius:12px; padding:3px; gap:3px}
+  .seg button{flex:1; background:transparent; color:var(--muted); padding:7px 12px; border-radius:9px; font-size:.85rem}
+  .seg button.on{background:var(--panel); color:var(--navy); box-shadow:0 1px 3px rgba(31,56,100,.15)}
+  .co-logo{height:20px; max-width:64px; object-fit:contain; display:inline-block; vertical-align:middle}
+  /* Tab-bar calendar icon that shows TODAY'S date (emoji calendars are stuck on a printed date) */
+  .calic{display:inline-flex; flex-direction:column; align-items:center; width:21px; height:21px;
+    border-radius:5px; background:#fff; border:1px solid #c6cfdc; overflow:hidden; margin:0 auto}
+  .calic-top{width:100%; height:5px; background:var(--bad); flex:none}
+  .calic-num{font-size:.6rem; font-weight:800; color:var(--navy); line-height:15px}
   /* ---- Desktop layout (≥900px): wide and roomy for admin work; phones untouched. ---- */
   @media (min-width: 900px){
     .wrap{max-width:1080px}
@@ -900,22 +923,42 @@ const DB = (() => {
 /* ============================================================================
  * API — POST to Apps Script with text/plain to avoid CORS preflight.
  * ==========================================================================*/
-async function api(action, payload){
+/* Slow-tap protection (Charles): if a tap's server call takes >0.7s, show a calm notice so
+   nobody taps twice. Background refreshes pass {bg:true} and never trigger it. */
+let _slowN=0,_slowTimer=null;
+function busyShow(){ if(document.getElementById('busyNote')) return;
+  const el=document.createElement('div'); el.id='busyNote';
+  el.style.cssText='position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:70;background:var(--navy);color:#fff;padding:10px 18px;border-radius:12px;font-size:.9rem;box-shadow:0 6px 20px rgba(31,56,100,.35);max-width:92%;text-align:center';
+  el.textContent='⏳ Working — one moment, no need to tap again…';
+  document.body.appendChild(el); }
+function busyHide(){ const el=document.getElementById('busyNote'); if(el) el.remove(); }
+function busyStart(){ _slowN++; if(!_slowTimer) _slowTimer=setTimeout(()=>{ if(_slowN>0) busyShow(); },700); }
+function busyEnd(){ _slowN=Math.max(0,_slowN-1); if(_slowN===0){ if(_slowTimer){clearTimeout(_slowTimer);_slowTimer=null;} busyHide(); } }
+async function api(action, payload, opts){
+  const bg = opts && opts.bg;
+  if(!bg) busyStart();
+  try{ return await apiRaw_(action, payload); }
+  finally{ if(!bg) busyEnd(); }
+}
+function apiBg(action, payload){ return api(action, payload, {bg:true}); } // background refreshes — silent
+async function apiRaw_(action, payload){
   // 24h session token (issued by the backend at login) — Google's own ID tokens die after
   // ~1h, which used to strand people mid-shift.
-  if (!S.session || Date.now() > S.session.exp - 60000){
-    // Clear the dead session and nudge Google one-tap so the next tap can re-auth silently.
-    S.session=null; DB.setCache('session', null);
+  if (!S.session){
     try{ google.accounts.id.prompt(); }catch(e){}
-    throw new Error('Session expired. Please sign in again.');
+    throw new Error('Please sign in.');
   }
+  // NOTE: no local expiry check — sessions renew themselves server-side on every use
+  // (30-day rolling), and only a real server rejection means signing in again.
   const t0 = performance.now();
   const res = await fetch(CONFIG.APPS_SCRIPT_URL, {
     method:'POST',
     headers:{'Content-Type':'text/plain;charset=utf-8'},
     body: JSON.stringify({ sessionToken:S.session.token, action, payload: payload||{} }),
   });
-  const json = await res.json();
+  let json;
+  try { json = await res.json(); }
+  catch(e){ throw new Error('Google is busy right now — trying again shortly.'); } // HTML error page, not JSON
   // Profiling: total = network + server; `ms` is server-side time reported by the backend.
   console.debug(`[api] ${action}: ${Math.round(performance.now()-t0)}ms total (server ${json.ms??'?'}ms)`);
   if (!json.ok){
@@ -963,7 +1006,7 @@ async function apiMutate(action, payload, optimistic){
         // RECOVERABLE failures (network down, or an expired/invalid session that a re-sign-in
         // will cure) must KEEP the write-ahead copy queued — flushQueue replays it after the
         // next login. Previously an expired session deleted the punch outright (data loss).
-        if (!/Failed to fetch|NetworkError|Session expired|sign-in token|signed in|audience mismatch/i.test(e.message)){
+        if (!/Failed to fetch|NetworkError|Session expired|sign-in token|signed in|audience mismatch|busy right now/i.test(e.message)){
           if (tracked) await DB.del(qid); // server REJECTED it — a bad punch must not replay forever
           throw e;
         }
@@ -1104,6 +1147,7 @@ function signOut(){
  * BOOT / REFRESH
  * ==========================================================================*/
 async function boot(){
+  try{ history.replaceState({tab:S.tab||'clock'},''); }catch(e){}
   // Stale-while-revalidate: paint instantly from the cached bootstrap, refresh in background.
   const cached = await DB.getCache('bootstrap');
   if (cached){ applyBootstrap(cached); S.booted = true; render(); }
@@ -1117,7 +1161,7 @@ async function boot(){
       S.booted = true; render();
     } else {
       const seq = S.mutSeq;
-      const data = await api('bootstrap');
+      const data = await apiBg('bootstrap');
       // Same staleness guard as refresh(): if the user punched in/out while this initial
       // bootstrap was in flight, its snapshot predates the punch — applying it would flash
       // the old button state. Drop it and re-sync shortly.
@@ -1128,7 +1172,7 @@ async function boot(){
         render();
       } else scheduleRefresh();
     }
-    loadCustomers(); loadMaterials(); loadOnboarding(); // warm client-side caches for instant autocomplete
+    loadCustomers(); loadMaterials(); loadOnboarding(); flushReceipts(); // warm caches + push any phone-only receipts up
   } catch(e){
     if (cached) toast('Showing last synced data — will retry');
     else { toast(e.message); render(); }
@@ -1161,7 +1205,7 @@ async function refresh(silent){
     // refreshes on its own when it lands something.
     if ((await DB.all()).length){ flushQueue(); return; }
     const seq = S.mutSeq;
-    const d = await api('bootstrap');
+    const d = await apiBg('bootstrap');
     if (seq !== S.mutSeq || mutsInFlight > 0 || syncing){ scheduleRefresh(); return; } // stale
     applyBootstrap(d); await DB.setCache('bootstrap', d); render();
   }
@@ -1296,6 +1340,11 @@ function signInView(){
 /* Company choice is per-employee: without the viewAllCompanies permission the crew books
    PRO time only — their one no-PO option is labelled as shop work. Admin grants the choice
    per hire (Add employee checkbox) or later via the permission editor. */
+/* Company chip face: the company's logo if the file exists on the host, else the letters.
+   (Selects/dropdowns can't render images, so those keep text.) */
+function coFace(c){
+  return `<img class="co-logo" src="logos/${String(c).toLowerCase()}.png" alt="" onerror="this.replaceWith(document.createTextNode('${esc(c)}'))">`;
+}
 function companyOptions(){
   const all=S.companies||[];
   const can=S.me&&(S.me.role==='admin'||(S.me.permissions&&S.me.permissions.viewAllCompanies));
@@ -1389,10 +1438,13 @@ async function resumeJob(k){
   if (S.openEntry) await doSwitchSite(p); else await doClockIn(p);
 }
 function clockView(){
-  const totals = periodTotals();
   let ot = weekHours() > (S.config.otThreshold||44)
     ? `<div class="banner ot">⚠ Overtime: ${weekHours().toFixed(1)} hrs this week (over ${S.config.otThreshold||44}).</div>` : '';
   ot = obBanner() + ot; // onboarding nag sits above everything until it's done
+  if (S.openEntry){
+    const ageH=(Date.now()-new Date(S.openEntry.ClockIn))/3600000;
+    if (ageH>14) ot = `<div class="banner ot" style="cursor:pointer" onclick="openForgotFix()">⚠ <b>Still clocked in since ${fmtDay(S.openEntry.ClockIn)} ${fmtTime(S.openEntry.ClockIn)}</b> — forgot to clock out? Tap here to fix it.</div>` + ot;
+  }
   if (S.openEntry){
     const site = S.openEntry['Customer/Job Site'] || S.openEntry.Company || 'Working';
     const breaking = onBreak();
@@ -1408,13 +1460,12 @@ function clockView(){
         <div class="row" style="margin-top:10px">
           ${breaking
             ? `<button class="btn-resume grow" onclick="doEndBreak()">▶ Resume Work</button>`
-            : `<button class="btn-break grow" onclick="doStartBreak()">☕ Start Break</button>`}
-          <button class="btn-switch grow" onclick="openJobPicker(true)">⏸ Pause &amp; Switch</button>
+            : `<button class="btn-break grow" style="padding:18px 12px" onclick="doStartBreak()">☕ Start Break</button>`}
+          <button class="btn-switch grow" style="padding:18px 12px" onclick="openJobPicker(true)">⏸ Pause &amp; Switch</button>
         </div>
-        <button class="ghost" style="width:100%;margin-top:4px" onclick="openReceiptScan()">📷 Bought materials? Scan the receipt</button>
+        <button class="secondary" style="width:100%;margin-top:8px;padding:16px" onclick="openReceiptScan()">📷 Bought materials? Scan the receipt</button>
       </div>
-      ${pausedCard()}
-      ${periodCard(totals)}`;
+      ${pausedCard()}`;
   }
   return `${ot}
     <div class="card center">
@@ -1422,7 +1473,7 @@ function clockView(){
       <button class="bigbtn in" onclick="openJobPicker(false)">Clock In</button>
     </div>
     ${pausedCard()}
-    ${periodCard(totals)}`;
+`;
 }
 async function doStartBreak(){
   if (!S.openEntry || onBreak()) return;
@@ -1551,6 +1602,7 @@ function adminView(){
       ${emps.filter(e=>e.active).map(empAdminRow).join('')||'<p class="muted small">No active employees.</p>'}
       ${inactiveToggle(emps.filter(e=>!e.active), empAdminRow)}
     </div>
+    ${allowAdminCard()}
     ${obStatusCard()}
     <div class="card">
       <h3>Materials</h3>
@@ -1590,21 +1642,36 @@ function tabBar(){
   const isAdmin = S.me && S.me.role==='admin';
   const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
   const t=(id,ic,label)=>`<button class="${S.tab===id?'active':''}" onclick="go('${id}')"><span class="ic">${ic}</span>${label}</button>`;
+  const moreTabs=['hours','jobs','team','admin'];
   return `<div class="tabbar">
     ${t('clock','⏱','Clock')}
     ${t('entries','📋','Entries')}
-    ${t('sched','📅','Schedule')}
+    ${t('sched',`<span class="calic"><span class="calic-top"></span><span class="calic-num">${new Date().getDate()}</span></span>`,'Schedule')}
     ${t('jha','🦺','JHA')}
-    ${canTeam?t('hours','📊','Hours'):''}
-    ${canTeam?t('jobs','🏗️','Jobs'):''}
-    ${canTeam?t('team','👥','Team'):''}
-    ${isAdmin?t('admin','⚙️','Admin'):''}
+    ${canTeam
+      ? `<button class="${moreTabs.includes(S.tab)?'active':''}" onclick="openMore()"><span class="ic">☰</span>More</button>`
+      : t('hours','📊','Hours')}
   </div>`;
 }
-function go(tab){
+/* Admin/bookkeeper overflow menu — keeps the crew-facing tab bar roomy (Charles, 2.3). */
+function openMore(){
+  const isAdmin = S.me && S.me.role==='admin';
+  const items=[['hours','📊','Hours'],['jobs','🏗️','Jobs'],['team','👥','Team']];
+  if(isAdmin) items.push(['admin','⚙️','Admin']);
+  sheet(`<h2>More</h2>
+    ${items.map(([id,ic,l])=>`<button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.05rem;padding:16px"
+      onclick="closeSheetDom();go('${id}','replace')">${ic}&nbsp;&nbsp;${l}${S.tab===id?' <span class="small" style="color:var(--accent2)">• current</span>':''}</button>`).join('')}
+    <button class="ghost" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+}
+function go(tab, nav){
+  if(nav==='replace'){ try{ history.replaceState({tab},''); }catch(e){} }             // from the More menu
+  else if(tab!==S.tab){ try{ history.pushState({tab},''); }catch(e){} }              // Back walks tab history (2.6)
   S.tab=tab; render();
-  if (tab==='admin' && S.online){ loadPending(); loadObStatus(); } // fetched on demand, not at boot
-  if (tab==='hours' && S.online) loadHours();            // refresh totals on every open
+  if (tab==='admin' && S.online){ loadPending(); loadObStatus(); loadAllowAdmin(); } // fetched on demand, not at boot
+  if (tab==='hours' && S.online){
+    const canTeam=S.me&&(S.me.role==='admin'||(S.me.permissions&&S.me.permissions.viewAllEmployees));
+    if(canTeam) loadHours(); else { refresh(true); loadMyAllow(); } // crew: own entries + allowance claims
+  }
   if (tab==='jobs' && S.online) loadJobs();              // refresh job costs on every open
   if (tab==='jha') { if(S.online) loadJha(); loadCustomers(); } // JHA needs the job picker warm too
   if (tab==='sched' && S.online) loadSched();            // schedule reads the admin calendar live
@@ -1618,7 +1685,11 @@ function go(tab){
 function jobsRowsHtml(){
   const d=S.jobsData; if(!d) return '';
   const q=(S.jobsQuery||'').trim().toLowerCase();
-  const list=d.jobs.filter(j=>!q || j.name.toLowerCase().includes(q) || (j.po||'').toLowerCase().includes(q));
+  let list=d.jobs.filter(j=>!q || j.name.toLowerCase().includes(q) || (j.po||'').toLowerCase().includes(q));
+  const arch=list.filter(j=>j.po&&poArchived(j.status));
+  if(!S.jobsShowArch) list=list.filter(j=>!(j.po&&poArchived(j.status)));
+  const archToggle = arch.length
+    ? `<button class="ghost" style="width:100%;margin-top:6px" onclick="S.jobsShowArch=!S.jobsShowArch;jobsFilter(S.jobsQuery||'')">${S.jobsShowArch?'▾ Hide':'▸ Show'} ${arch.length} archived job${arch.length===1?'':'s'} (invoiced/closed)</button>` : '';
   let h=list.map(j=>{ const k=reg(j); return `<div class="list-item row between" style="cursor:pointer" onclick="openJobDetail('${k}')">
       <div><b>${esc(j.name||j.po||'—')}</b>
         <div class="small muted">${j.po?('PO '+esc(j.po)+' · '):''}${esc(j.status||'')}</div></div>
@@ -1627,10 +1698,10 @@ function jobsRowsHtml(){
         <div class="small muted">≈ $${j.cost.toFixed(2)} labour</div></div>
     </div>`; }).join('');
   if (!h) h = `<p class="muted small">${q?'No jobs match your search.':'No hours logged against any job yet.'}</p>`;
-  return h;
+  return h + archToggle;
 }
 function jobsView(){
-  return `<div class="row between"><h2>Jobs</h2>${S.jobsLoading?'<span class="spin"></span>':''}</div>
+  return `<div class="row between"><h2>Jobs</h2>${S.jobsLoading&&!S.jobsData?'<span class="spin"></span>':''}</div>
     <input id="jobsSearch" placeholder="Search job or PO…" autocomplete="off" value="${esc(S.jobsQuery||'')}" oninput="jobsFilter(this.value)">
     <div class="card">
       <p class="small muted" style="margin-top:0">All-time approved hours and labour cost per job. Tap one for the per-person breakdown.</p>
@@ -1642,8 +1713,8 @@ async function loadJobs(){
   if (S.jobsLoading) return;
   if (!S.jobsData){ const c=await DB.getCache('jobsData'); if(c){ S.jobsData=c; if(S.tab==='jobs') render(); } }
   S.jobsLoading=true; if(S.tab==='jobs') render();
-  try{ const r=await api('jobCosts',{}); S.jobsData=r; DB.setCache('jobsData',r); }
-  catch(e){ toast(e.message); }
+  try{ const r=await apiBg('jobCosts',{}); S.jobsData=r; DB.setCache('jobsData',r); }
+  catch(e){ if(!S.jobsData) toast(e.message); }
   S.jobsLoading=false; if(S.tab==='jobs') render();
 }
 function openJobDetail(k){
@@ -1656,9 +1727,23 @@ function openJobDetail(k){
       <div><b>${esc(e.name)}</b></div>
       <div style="text-align:right"><b>${e.hours.toFixed(2)} hrs</b><div class="small muted">≈ $${e.cost.toFixed(2)}</div></div>
     </div>`).join('')||'<p class="muted small">No breakdown available.</p>'}
-    <button class="secondary" style="width:100%;margin-top:10px" onclick="openJobEntries('${pk}')">📆 Day-by-day breakdown</button>
+    ${S.me&&S.me.role==='admin'?`<button style="width:100%;margin-top:10px" onclick="reqInvoice('${pk}',this)">🧾 Build the invoice (sends the job to Claude)</button>`:''}
+    <button class="secondary" style="width:100%;margin-top:${S.me&&S.me.role==='admin'?'6':'10'}px" onclick="openJobEntries('${pk}')">📆 Day-by-day breakdown</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobPhotos('${pk}')">📷 View job photos</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+}
+
+/* 3.6: one tap → a structured request lands in admin@proes.ca's inbox, where Claude's
+   hourly sweep picks it up and runs the QuickBooks invoice build (POs + markup + hours). */
+async function reqInvoice(pk,btn){
+  const ref=dereg(pk); if(!ref) return;
+  if(!S.online) return toast('You need signal to send the request.');
+  btn.disabled=true; btn.textContent='Sending…';
+  try{
+    await api('invoiceRequest',{po:ref.po||'', jobSite:ref.jobSite});
+    btn.textContent='✓ Sent to Claude';
+    toast('Request sent — the invoice gets built within the hour and lands in QuickBooks as a draft.');
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='🧾 Build the invoice (sends the job to Claude)'; }
 }
 
 /* Day-by-day drill-down: every shift on the job — when, who, how long, status. */
@@ -1727,8 +1812,11 @@ async function loadSched(){
   if (S.schedLoading) return;
   if (!S.sched){ const c=await DB.getCache('sched'); if(c){ S.sched=c; if(S.tab==='sched') render(); } } // paint instantly
   S.schedLoading=true; if(S.tab==='sched') render();
-  try{ const r=await api('scheduleList',{}); S.sched=r; DB.setCache('sched',r); }
-  catch(e){ toast(e.message); }
+  try{ const r=await apiBg('scheduleList',{}); if(r&&Array.isArray(r.events)){ S.sched=r; S.schedErr=''; DB.setCache('sched',r); } }
+  catch(e){ S.schedErr=/permission/i.test(e.message)
+      ? 'The Schedule needs a one-time authorization from Paul: open script.google.com → the timesheet project → Run any function → approve the Calendar permission.'
+      : e.message;
+    if(!S.sched) { /* shown inline in the tab — no vanishing toast */ } else if(!/busy right now/.test(e.message)) toast(e.message); }
   S.schedLoading=false; if(S.tab==='sched') render();
 }
 function schedDayLabel(dstr){
@@ -1768,15 +1856,121 @@ function schedView(){
     if(!days.length) body = d.canAssign
       ? '<p class="muted small">Nothing on the calendar for the next 2 weeks.</p>'
       : '<p class="muted small">Nothing scheduled for you in the next 2 weeks. Check back — new jobs show up here when you\'re assigned.</p>';
-  } else body = S.schedLoading?'':'<p class="muted small">Open this tab while online to load the schedule.</p>';
-  return `<div class="row between"><h2>Schedule</h2>${S.schedLoading?'<span class="spin"></span>':''}</div>
-    <div class="card">
+  } else body = S.schedErr
+    ? `<div class="banner ot" style="white-space:pre-wrap">⚠ ${esc(S.schedErr)}</div>`
+    : (S.schedLoading?'':'<p class="muted small">Open this tab while online to load the schedule.</p>');
+  const mode=S.schedView||'list';
+  const head=`<div class="row between"><h2>Schedule</h2>${(S.schedLoading||S._smLoading)?'<span class="spin"></span>':''}</div>
+    <div class="seg" style="margin-bottom:10px">
+      <button class="${mode==='list'?'on':''}" onclick="schedToggle('list')">☰ Next 2 weeks</button>
+      <button class="${mode==='month'?'on':''}" onclick="schedToggle('month')">📅 Month</button>
+    </div>`;
+  if(mode==='month') return head + schedMonthHtml() + (d?timeOffSection():'');
+  return head + `<div class="card">
       <p class="small muted" style="margin:0">${(S.sched&&S.sched.canAssign)
         ? 'Your admin@proes.ca calendar, next 2 weeks. Tap a job to assign the crew — new assignees get an email.'
         : 'Your jobs for the next 2 weeks, with everything you need: time, address, details, and who\'s with you.'}</p>
     </div>
     ${body}
     ${d?timeOffSection():''}`;
+}
+function schedRefreshAll(){ // any schedule mutation: refresh the list AND drop stale month grids
+  S.schedMonths={};
+  loadSched();
+  if((S.schedView||'list')==='month') loadSchedMonth();
+}
+function schedToggle(m){
+  S.schedView=m; render();
+  if(m==='month') loadSchedMonth();
+  else if(S.online) loadSched();
+}
+/* ---- Month view: Google-Calendar-style grid; tap a day for that day's jobs ---- */
+function curSchedMonth(){ return S.schedMonth || curMonthStr(); }
+async function loadSchedMonth(){
+  const month=curSchedMonth();
+  if (S._smLoading===month) return;
+  S.schedMonths=S.schedMonths||{};
+  if (!S.schedMonths[month]){
+    const c=await DB.getCache('sched_'+month);
+    if(c){ S.schedMonths[month]=c; if(S.tab==='sched') render(); } // paint instantly
+  }
+  if (!S.online) return;
+  S._smLoading=month; if(S.tab==='sched') render();
+  try{
+    const p=month.split('-');
+    const start=`${p[0]}-${p[1]}-01`;
+    const end=localDateStr(new Date(Number(p[0]),Number(p[1]),1)); // first of next month
+    const r=await apiBg('scheduleList',{startDate:start,endDate:end});
+    if(r&&Array.isArray(r.events)){ S.schedMonths[month]=r; DB.setCache('sched_'+month,r); }
+  }catch(e){ if(!S.schedMonths[month]) toast(e.message); }
+  S._smLoading=null; if(S.tab==='sched') render();
+}
+function schedShiftMonth(dir){
+  const p=curSchedMonth().split('-');
+  const dt=new Date(Number(p[0]), Number(p[1])-1+dir, 1);
+  // keep within the backend's window: ~6 months ahead, 12 back
+  const lim=new Date(); const min=new Date(lim.getFullYear(),lim.getMonth()-12,1), max=new Date(lim.getFullYear(),lim.getMonth()+6,1);
+  if(dt<min||dt>max) return toast(dir>0?'That\'s as far ahead as the schedule goes.':'That\'s as far back as it goes.');
+  S.schedMonth=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0');
+  render(); loadSchedMonth();
+}
+function schedMonthHtml(){
+  const month=curSchedMonth(), data=(S.schedMonths||{})[month];
+  const p=month.split('-'), y=Number(p[0]), m=Number(p[1]);
+  const evByDay={}, unByDay={}, holByDay={}, offByDay={};
+  if(data){
+    data.events.forEach(ev=>{ const k=localDateStr(new Date(ev.start));
+      (evByDay[k]=evByDay[k]||[]).push(ev);
+      if(data.canAssign && !ev.assigned.length) unByDay[k]=true; });
+    (data.holidays||[]).forEach(h=>holByDay[h.date]=h.name);
+    (data.timeOff||[]).forEach(t=>{ if(t.status!=='approved') return;
+      for(let d=new Date(y,m-1,1); d.getMonth()===m-1; d.setDate(d.getDate()+1)){
+        const k=localDateStr(d); if(k>=t.start&&k<=t.end) offByDay[k]=true; } });
+  }
+  const first=new Date(y,m-1,1), dim=new Date(y,m,0).getDate(), tstr=localDateStr(new Date());
+  let cells=['S','M','T','W','T','F','S'].map(d=>`<div class="dow">${d}</div>`).join('');
+  for(let i=0;i<first.getDay();i++) cells+='<div class="day blank"></div>';
+  for(let dn=1;dn<=dim;dn++){
+    const k=`${y}-${String(m).padStart(2,'0')}-${String(dn).padStart(2,'0')}`;
+    const evs=evByDay[k]||[];
+    const dots=evs.slice(0,3).map(()=>`<span class="dot${unByDay[k]?' warn':''}"></span>`).join('');
+    cells+=`<div class="day${k===tstr?' today':''}${holByDay[k]?' hol':''}" onclick="openSchedDay('${k}')">
+      ${offByDay[k]?'<span class="off">🏖</span>':''}${dn}<span class="dots">${dots}</span></div>`;
+  }
+  const label=new Date(y,m-1,1).toLocaleDateString([],{month:'long',year:'numeric'});
+  return `<div class="card">
+    <div class="row between" style="margin-bottom:8px">
+      <button class="secondary" style="padding:8px 16px" onclick="schedShiftMonth(-1)">‹</button>
+      <b style="color:var(--navy)">${esc(label)}</b>
+      <button class="secondary" style="padding:8px 16px" onclick="schedShiftMonth(1)">›</button>
+    </div>
+    <div class="cal">${cells}</div>
+    <p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
+      ? '• dot = jobs that day (orange = nobody assigned yet) · 🏖 = someone off · yellow = stat holiday · tap a day'
+      : '• dot = you\'re scheduled that day · 🏖 = your time off · yellow = stat holiday · tap a day to see where you\'re heading'}</p>
+  </div>`;
+}
+function openSchedDay(day){
+  const data=(S.schedMonths||{})[curSchedMonth()];
+  if(!data){ toast('Still loading — try again in a second.'); return; }
+  const evs=data.events.filter(e=>localDateStr(new Date(e.start))===day);
+  const hols=(data.holidays||[]).filter(h=>h.date===day);
+  const offs=(data.timeOff||[]).filter(t=>t.status==='approved'&&day>=t.start&&day<=t.end);
+  const p=day.split('-');
+  const label=new Date(Number(p[0]),Number(p[1])-1,Number(p[2])).toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'});
+  sheet(`<h2>${esc(label)}</h2>
+    ${hols.map(h=>`<div class="banner" style="background:#fef9c3;color:#854d0e;border:1px solid #fde68a">🎉 ${esc(h.name)} — stat holiday</div>`).join('')}
+    ${(data.canAssign&&offs.length)?`<div class="small" style="color:var(--pending);margin:4px 0">🏖 Off: ${offs.map(t=>esc(t.name)).join(', ')}</div>`:''}
+    ${(!data.canAssign&&offs.length)?'<div class="small" style="color:var(--pending);margin:4px 0">🏖 Your approved time off</div>':''}
+    ${evs.length? evs.map(ev=>{ const k=reg(ev);
+      return `<div class="list-item" style="cursor:pointer" onclick="openSchedDetail('${k}')">
+        <div class="row between"><b>${esc(ev.title)}</b>
+          <span class="small muted">${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}</span></div>
+        ${ev.location?`<div class="small muted">📍 ${esc(ev.location)}</div>`:''}
+        <div class="small" style="margin-top:2px">${ev.assigned.map(a=>`<span class="chip" style="padding:3px 10px;font-size:.78rem">${esc(a.name)}</span>`).join(' ')||(data.canAssign?'<span style="color:var(--pending)">⚠ nobody assigned</span>':'')}</div>
+      </div>`; }).join('')
+      : `<p class="muted small">${data.canAssign?'Nothing on the calendar this day.':'Nothing scheduled for you this day.'}</p>`}
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
 }
 /* Time off: crew request + track; admins approve/deny right here. */
 function timeOffSection(){
@@ -1821,14 +2015,14 @@ async function toSubmit(btn){
   if(e<s) return toast('Last day is before the first day.');
   btn.disabled=true; btn.textContent='Sending…';
   try{ await api('timeOffRequest',{startDate:s,endDate:e,reason:val('toReason')});
-    closeSheet(); toast('Request sent — Paul has been emailed.'); loadSched();
+    closeSheet(); toast('Request sent — Paul has been emailed.'); schedRefreshAll();
   }catch(err){ toast(err.message); btn.disabled=false; btn.textContent='Send request'; }
 }
 async function toCancel(k,btn){
   const t=dereg(k); if(!t) return;
   if(!S.online) return toast('You need signal to cancel.');
   btn.disabled=true;
-  try{ await api('timeOffCancel',{reqId:t.id}); toast('Request cancelled'); loadSched(); }
+  try{ await api('timeOffCancel',{reqId:t.id}); toast('Request cancelled'); schedRefreshAll(); }
   catch(e){ toast(e.message); btn.disabled=false; }
 }
 async function toDecide(k,approve,btn){
@@ -1836,7 +2030,7 @@ async function toDecide(k,approve,btn){
   if(!S.online) return toast('You need signal.');
   btn.disabled=true;
   try{ const r=await api('timeOffDecide',{reqId:t.id,approve});
-    toast((approve?'Approved':'Denied')+' — '+t.name+' has been emailed.'); loadSched();
+    toast((approve?'Approved':'Denied')+' — '+t.name+' has been emailed.'); schedRefreshAll();
   }catch(e){ toast(e.message); btn.disabled=false; }
 }
 async function openSchedDetail(k){
@@ -1876,7 +2070,7 @@ async function schedSave(k,btn){
       appUrl: location.origin+location.pathname});
     closeSheet();
     toast(r.notified? `Saved — ${r.notified} ${r.notified===1?'person':'people'} emailed` : 'Saved');
-    loadSched();
+    schedRefreshAll();
   }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Save assignments'; }
 }
 
@@ -1926,7 +2120,7 @@ function jhaView(){
       <div><b>${esc(j.jobSite)}</b><div class="small muted">${esc(j.date)} · ${j.sigs.length} signature${j.sigs.length===1?'':'s'}</div></div>
       <div>${j.signedByMe?'<span class="small" style="color:#3fa46a">✓ signed</span>':'<span class="small" style="color:#d99a2b">sign ›</span>'}</div>
     </div>`; };
-  return `<div class="row between"><h2>Hazard Assessment</h2>${S.jhaLoading?'<span class="spin"></span>':''}</div>
+  return `<div class="row between"><h2>Hazard Assessment</h2>${S.jhaLoading&&!S.jhaList?'<span class="spin"></span>':''}</div>
     <div class="card">
       <p class="small muted" style="margin-top:0">For jobs that need the paper trail. One per job per day — whoever's leading starts it, everyone on site signs before work. Files itself as a PDF in the job's folder.</p>
       <button style="width:100%" onclick="openJhaCreate()">🦺 Start today's JHA</button>
@@ -1940,8 +2134,8 @@ async function loadJha(){
   if (S.jhaLoading) return;
   if (!S.jhaList){ const c=await DB.getCache('jhaList'); if(c){ S.jhaList=c; if(S.tab==='jha') render(); } }
   S.jhaLoading=true; if(S.tab==='jha') render();
-  try{ const r=await api('jhaList',{}); S.jhaList=r.jhas||[]; DB.setCache('jhaList',S.jhaList); }
-  catch(e){ toast(e.message); }
+  try{ const r=await apiBg('jhaList',{}); S.jhaList=r.jhas||[]; DB.setCache('jhaList',S.jhaList); }
+  catch(e){ if(!S.jhaList) toast(e.message); }
   S.jhaLoading=false; if(S.tab==='jha') render();
 }
 
@@ -2064,7 +2258,7 @@ async function loadOnboarding(){
   if (!S.onboard){ const c=await DB.getCache('onboard'); if(c){ S.onboard=c; if(S.tab==='clock') render(); } }
   if (!S.online) return;
   S._obLoading=true;
-  try{ S.onboard = await api('onboardingGet',{}); DB.setCache('onboard',S.onboard); if(S.tab==='clock') render(); }
+  try{ S.onboard = await apiBg('onboardingGet',{}); DB.setCache('onboard',S.onboard); if(S.tab==='clock') render(); }
   catch(e){ /* non-critical — banner just won't show */ }
   S._obLoading=false;
 }
@@ -2155,9 +2349,33 @@ async function loadObStatus(){
   if(S._obsLoading) return;
   if(!S.obStatus){ const c=await DB.getCache('obStatus'); if(c){ S.obStatus=c; if(S.tab==='admin') render(); } }
   S._obsLoading=true;
-  try{ const r=await api('onboardingStatus',{}); S.obStatus=r.employees||[]; DB.setCache('obStatus',S.obStatus); if(S.tab==='admin') render(); }
+  try{ const r=await apiBg('onboardingStatus',{}); S.obStatus=r.employees||[]; DB.setCache('obStatus',S.obStatus); if(S.tab==='admin') render(); }
   catch(e){}
   S._obsLoading=false;
+}
+async function loadAllowAdmin(){
+  if(S._alaLoading) return; S._alaLoading=true;
+  try{ S.allowAdmin=await apiBg('allowanceList',{}); if(S.tab==='admin') render(); }catch(e){}
+  S._alaLoading=false;
+}
+function allowAdminCard(){
+  const a=S.allowAdmin; const pend=(a&&a.claims||[]).filter(c=>c.status==='pending');
+  return `<div class="card">
+    <div class="row between"><h3>Allowance claims</h3><span class="pill pending">${pend.length}</span></div>
+    ${pend.length? pend.map(c=>{ const k=reg(c); return `<div class="list-item">
+        <div class="row between"><div><b>${esc(c.name)}</b> · ${esc(c.typeName)} · ${esc(c.date)}${c.km?` · ${c.km} km`:''}
+          ${c.note?`<div class="small muted">${esc(c.note)}</div>`:''}</div><b>$${c.amount.toFixed(2)}</b></div>
+        <div class="row" style="margin-top:6px">
+          <button class="grow" onclick="alDecide('${k}',true,this)">Approve</button>
+          <button class="secondary grow" onclick="alDecide('${k}',false,this)">Deny</button></div>
+      </div>`; }).join('') : '<p class="muted small">Nothing waiting.</p>'}
+    <p class="small muted" style="margin-bottom:0">Who can claim what is set per employee (tap a name above → Allowances). Approved claims land in the payroll CSV.</p>
+  </div>`;
+}
+async function alDecide(k,approve,btn){
+  const c=dereg(k); if(!c) return; btn.disabled=true;
+  try{ await api('allowanceDecide',{id:c.id,approve}); toast((approve?'Approved':'Denied')+' — $'+c.amount.toFixed(2)); loadAllowAdmin(); }
+  catch(e){ toast(e.message); btn.disabled=false; }
 }
 function obStatusCard(){
   const st=S.obStatus;
@@ -2179,7 +2397,100 @@ function obStatusCard(){
    the day-by-day breakdown. The CSV download in Admin still exists for reconciliation. */
 function curMonthStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
 function monthLabel(m){ const p=String(m).split('-'); return new Date(Number(p[0]),Number(p[1])-1,1).toLocaleDateString([],{month:'long',year:'numeric'}); }
+/* Employee's own hours: the period card that used to crowd the Clock tab, plus the
+   week-by-week breakdown of the month with dates and estimated amount (2.2). */
+function myWeekRows(mStart, mEnd){
+  const rate=Number(S.me&&S.me.hourlyRate)||0;
+  // Monday-start weeks overlapping the month, clipped to the month for sums/labels
+  const first=new Date(mStart); const dow=(first.getDay()+6)%7; first.setDate(first.getDate()-dow);
+  let rows='', monthAppr=0, monthPend=0;
+  for(let ws=new Date(first); ws<mEnd; ws.setDate(ws.getDate()+7)){
+    const we=new Date(ws); we.setDate(we.getDate()+7);
+    const s=new Date(Math.max(ws,mStart)), e=new Date(Math.min(we,mEnd));
+    let appr=0, pend=0;
+    (S.entries||[]).forEach(en=>{
+      const t=new Date(en.ClockIn||en.Date); if(isNaN(t)||t<s||t>=e) return;
+      const h=Number(en.Hours)||0; if(!h) return;
+      if(en.Status==='approved') appr+=h; else if(en.Status==='pending') pend+=h;
+    });
+    appr=roundQ(appr); if(pend) pend=roundQ(pend); // weekly totals round up to ¼ h (3.5)
+    monthAppr+=appr; monthPend+=pend;
+    const lbl=s.toLocaleDateString([],{month:'short',day:'numeric'})+' – '+new Date(e-86400000).toLocaleDateString([],{month:'short',day:'numeric'});
+    rows+=`<div class="row between list-item"><span>${esc(lbl)}</span>
+      <span style="text-align:right"><b>${appr.toFixed(1)} hrs</b>${pend?`<span class="small" style="color:var(--pending)"> +${pend.toFixed(1)} pend.</span>`:''}
+      ${rate?`<div class="small muted">≈ $${(appr*rate).toFixed(2)}</div>`:''}</span></div>`;
+  }
+  const total=`<div class="row between" style="margin-top:8px"><b>Month total</b>
+    <span style="text-align:right"><b>${monthAppr.toFixed(1)} hrs</b>${monthPend?`<span class="small" style="color:var(--pending)"> +${monthPend.toFixed(1)} pend.</span>`:''}
+    ${rate?`<div class="small muted">≈ $${(monthAppr*rate).toFixed(2)}</div>`:''}</span></div>`;
+  return rows+total;
+}
+/* Allowances (3.3): employee claims here; status pills track admin approval. */
+async function loadMyAllow(){
+  if(S._alLoading||!S.online) return; S._alLoading=true;
+  try{ S.myAllow=await apiBg('allowanceList',{}); if(S.tab==='hours') render(); }catch(e){}
+  S._alLoading=false;
+}
+function allowCard(){
+  const a=S.myAllow;
+  if(!a || (!a.eligible.length && !a.claims.length)) return ''; // not set up for allowances
+  const pill=s=>`<span class="pill ${s==='approved'?'approved':(s==='pending'?'pending':'rejected')}">${esc(s)}</span>`;
+  return `<div class="card"><h3>Allowances</h3>
+    ${a.claims.length? a.claims.map(c=>{ const k=reg(c); return `<div class="list-item row between">
+        <div>${esc(c.typeName)} · ${esc(c.date)}${c.km?` · ${c.km} km`:''}${c.note?`<div class="small muted">${esc(c.note)}</div>`:''}</div>
+        <div class="row"><b>$${c.amount.toFixed(2)}</b>${pill(c.status)}${c.status==='pending'?`<button class="ghost" onclick="alCancel('${k}',this)">✕</button>`:''}</div>
+      </div>`; }).join('') : '<p class="muted small">No claims yet.</p>'}
+    ${a.eligible.length?`<button class="secondary" style="width:100%;margin-top:8px;padding:14px" onclick="openAllowClaim()">＋ Claim an allowance</button>`:''}
+  </div>`;
+}
+const ALLOW_LABELS={phone:'Cellphone',food:'Food',km:'Mileage',other:'Other'};
+function openAllowClaim(){
+  const a=S.myAllow||{eligible:[]};
+  sheet(`<h2>Claim an allowance</h2>
+    <label>Type</label>
+    <select id="alType" onchange="document.getElementById('alKmRow').style.display=this.value==='km'?'':'none';document.getElementById('alAmtRow').style.display=this.value==='km'?'none':''">
+      ${a.eligible.map(t=>`<option value="${t}">${ALLOW_LABELS[t]||t}</option>`).join('')}</select>
+    <label>Date</label><input id="alDate" type="date" value="${todayStr()}" max="${todayStr()}">
+    <div id="alKmRow" style="display:${a.eligible[0]==='km'?'':'none'}"><label>Kilometres driven (paid at $${(a.mileageRate||0.72).toFixed(2)}/km)</label>
+      <input id="alKm" type="number" min="1" step="1" placeholder="km"></div>
+    <div id="alAmtRow" style="display:${a.eligible[0]==='km'?'none':''}"><label>Amount ($)</label>
+      <input id="alAmt" type="number" min="0.01" step="0.01" placeholder="0.00"></div>
+    <label>Note (optional)</label><input id="alNote" placeholder="e.g. September phone bill">
+    <button style="width:100%;margin-top:12px" onclick="alSubmit(this)">Send claim</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
+}
+async function alSubmit(btn){
+  if(!S.online) return toast('You need signal to send a claim.');
+  const type=val('alType');
+  const p={type, date:val('alDate'), note:val('alNote')};
+  if(type==='km'){ p.km=Number(val('alKm')); if(!p.km) return toast('Enter the kilometres.'); }
+  else { p.amount=Number(val('alAmt')); if(!p.amount) return toast('Enter the amount.'); }
+  btn.disabled=true; btn.textContent='Sending…';
+  try{ await api('allowanceClaim',p); closeSheet(); toast('Claim sent — Paul/Charles will approve it.'); loadMyAllow(); }
+  catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Send claim'; }
+}
+async function alCancel(k,btn){
+  const c=dereg(k); if(!c) return; btn.disabled=true;
+  try{ await api('allowanceCancel',{id:c.id}); toast('Cancelled'); loadMyAllow(); }
+  catch(e){ toast(e.message); btn.disabled=false; }
+}
+function myHoursView(){
+  const off=S.myHoursOff||0; // 0 = this month, -1 = last month
+  const now=new Date(); const mStart=new Date(now.getFullYear(),now.getMonth()+off,1), mEnd=new Date(now.getFullYear(),now.getMonth()+off+1,1);
+  const lbl=mStart.toLocaleDateString([],{month:'long',year:'numeric'});
+  return `<h2>My hours</h2>
+    ${periodCard(periodTotals())}
+    <div class="card">
+      <div class="row between"><h3>${esc(lbl)} — week by week</h3>
+        <button class="ghost" style="padding:4px 8px" onclick="S.myHoursOff=${off===0?-1:0};render()">${off===0?'‹ last month':'this month ›'}</button></div>
+      ${myWeekRows(mStart,mEnd)}
+      <p class="small muted" style="margin-bottom:0">Amounts are estimates (approved hours × your current rate; weekly totals rounded up to the ¼ hour). Official pay comes from the approved payroll.</p>
+    </div>
+    ${allowCard()}`;
+}
 function hoursView(){
+  const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
+  if(!canTeam) return myHoursView();
   const month=S.hoursMonth||curMonthStr();
   const d=(S.hoursData && S.hoursData.month===month)? S.hoursData : null;
   let rows='';
@@ -2212,8 +2523,8 @@ async function loadHours(){
     const c=await DB.getCache('hours_'+month); if(c){ S.hoursData=c; if(S.tab==='hours') render(); } // paint instantly
   }
   S.hoursLoading=true; if(S.tab==='hours') render();
-  try{ const r=await api('hoursOverview',{month}); S.hoursData=r; DB.setCache('hours_'+month,r); }
-  catch(e){ toast(e.message); }
+  try{ const r=await apiBg('hoursOverview',{month}); S.hoursData=r; DB.setCache('hours_'+month,r); }
+  catch(e){ if(!(S.hoursData&&S.hoursData.month===month)) toast(e.message); }
   S.hoursLoading=false; if(S.tab==='hours') render();
 }
 function setHoursMonth(m){ if(!m) return; S.hoursMonth=m; S.hoursData=null; loadHours(); }
@@ -2243,7 +2554,7 @@ async function openHoursDetail(k){
   }catch(e){ toast(e.message); if (S._sheet===mine) closeSheet(); }
 }
 async function loadPending(){
-  try{ const r=await api('pendingApprovals'); S.pending=r.pending||[]; if(S.tab==='admin') render(); }
+  try{ const r=await apiBg('pendingApprovals'); S.pending=r.pending||[]; if(S.tab==='admin') render(); }
   catch(e){ /* keep stale list */ }
 }
 
@@ -2304,23 +2615,89 @@ function periodTotals(){
   if (S.openEntry && S.openEntry._local){} // running time not counted until clock-out
   return {approved, pending};
 }
+function roundQ(h){ return Math.ceil(h*4 - 1e-9)/4; } // weekly totals round UP to the quarter hour (3.5)
 function weekHours(){
   const start=new Date(); const day=start.getDay(); const diff=(day===0?6:day-1);
   start.setHours(0,0,0,0); start.setDate(start.getDate()-diff);
   let total=0;
   (S.entries||[]).forEach(e=>{ const t=new Date(e.ClockIn||e.Date); if(t>=start && e.Status!=='rejected') total+=Number(e.Hours)||0; });
-  return total;
+  return roundQ(total);
 }
 
 /* ============================================================================
  * MODALS / SHEETS
  * ==========================================================================*/
+let _popIgnore=0;
+function closeSheetDom(){ if(S._sheet){ S._sheet.remove(); S._sheet=null; } } // no history side effects
 function sheet(inner){
-  closeSheet();
+  const had=!!S._sheet;
+  closeSheetDom(); // replacing sheet-to-sheet keeps the single history entry for the flow
   const s = el(`<div class="sheet" onclick="if(event.target===this)closeSheet()"><div class="panel">${inner}</div></div>`);
   document.body.appendChild(s); S._sheet=s;
+  // Phone Back support: ONE history entry per open sheet flow, so Back closes the popup
+  // instead of exiting the app (2.6).
+  if(!had){ try{ history.pushState({s:1},''); }catch(e){} }
 }
-function closeSheet(){ if(S._sheet){ S._sheet.remove(); S._sheet=null; } }
+function closeSheet(){
+  if(!S._sheet) return;
+  closeSheetDom();
+  if(history.state&&history.state.s){ _popIgnore++; try{ history.back(); }catch(e){} }
+}
+window.addEventListener('popstate', (ev)=>{
+  if(_popIgnore>0){ _popIgnore--; return; }              // our own programmatic back
+  if(S._sheet){ S._sheet.remove(); S._sheet=null; return; } // Back closes the open popup
+  const st=ev.state||{};
+  if(st.tab && st.tab!==S.tab){ S.tab=st.tab; render(); }   // Back = previous tab
+});
+
+/* Speech-to-text into any field: uses the browser's built-in recognition where available
+   (Chrome on Android), otherwise points at the keyboard's mic key. */
+function dictate(btnId, targetId){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  const btn=document.getElementById(btnId), el=document.getElementById(targetId);
+  if(!el) return;
+  if(!SR){ el.focus(); toast('Tap the microphone key on your keyboard to talk.'); return; }
+  try{
+    const r=new SR(); r.lang='en-CA'; r.interimResults=false; r.maxAlternatives=1;
+    if(btn) btn.textContent='🎙️ Listening…';
+    r.onresult=(ev)=>{ const t=ev.results[0][0].transcript;
+      el.value=(el.value?el.value.trim()+' ':'')+t; el.dispatchEvent(new Event('input')); };
+    r.onend=()=>{ if(btn) btn.textContent='🎤 Talk'; };
+    r.onerror=()=>{ if(btn) btn.textContent='🎤 Talk'; toast("Didn't catch that — try again or type."); };
+    r.start();
+  }catch(e){ el.focus(); toast('Tap the microphone key on your keyboard to talk.'); }
+}
+
+/* ---- Forgotten clock-out: guided fix ----
+   One tap: "when did you actually stop working that day?" → that entry closes there
+   (pending admin approval) and today starts clean. Prevents the two-days-merged-into-
+   one-20-hour-entry problem. */
+function openForgotFix(){
+  const e=S.openEntry; if(!e) return;
+  const inD=new Date(e.ClockIn);
+  sheet(`<h2>Forgot to clock out?</h2>
+    <p class="small muted">You clocked in <b>${fmtDay(e.ClockIn)} at ${fmtTime(e.ClockIn)}</b>${e['Customer/Job Site']?` on <b>${esc(e['Customer/Job Site'])}</b>`:''} and never clocked out.</p>
+    <label>When did you actually stop working that day?</label>
+    <input id="ffTime" type="time" value="17:00">
+    <p class="small muted">That day's entry will close at this time and go to Paul for approval. Then you can clock in fresh for today.</p>
+    <button style="width:100%;margin-top:12px" onclick="submitForgotFix(this)">Fix it</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel — I really am still working</button>`);
+}
+async function submitForgotFix(btn){
+  const e=S.openEntry; if(!e) return;
+  if(!S.online) return toast('You need signal to fix this — it updates the record right away.');
+  const tv=val('ffTime'); if(!tv) return toast('Pick the time you stopped.');
+  const inD=new Date(e.ClockIn);
+  let out=new Date(inD); const [hh,mm]=tv.split(':').map(Number); out.setHours(hh,mm,0,0);
+  if(out<=inD) out=new Date(out.getTime()+86400000); // stopped after midnight = next day
+  btn.disabled=true; btn.textContent='Fixing…';
+  try{
+    const r=await api('fixForgotClockout',{entryId:e.EntryID, outISO:out.toISOString()});
+    S.mutSeq++; S.openEntry=null; closeSheet(); render();
+    toast(`Fixed — ${r.hours} hrs sent for approval. You can clock in for today now.`);
+    refresh(true);
+  }catch(err){ toast(err.message); btn.disabled=false; btn.textContent='Fix it'; }
+}
 
 /* ---- Job / customer picker ---- */
 let pickerState = null;
@@ -2334,9 +2711,14 @@ function openJobPicker(isSwitch){
   loadCustomers(true).then(()=>{ if (S._sheet && pickerState) refreshPoList(); });
 }
 /* Open POs = rows in the PO Log whose Status is "In Progress". Done jobs are hidden. */
+/* Charles's status scheme (Sept 2026): a job is OPEN only when Status is "In progress" or
+   blank (new jobs whose status hasn't been set yet). Anything else — Invoice, Closed, legacy
+   Done, or an unexpected value — stays out of the picker. */
+function poOpen(status){ const st=String(status||'').trim(); return st==='' || /in.?progress/i.test(st); }
+function poArchived(status){ return /(done|closed|invoice)/i.test(String(status||'')); } // Jobs-tab archive bucket
 function openPOs(q){
   q=(q||'').trim().toLowerCase();
-  return (S.customers||[]).filter(c=>c.po && /in.?progress/i.test(c.status||''))
+  return (S.customers||[]).filter(c=>c.po && poOpen(c.status))
     .filter(c=>!q || c.name.toLowerCase().includes(q) || c.po.toLowerCase().includes(q));
 }
 function poListHtml(q){
@@ -2357,7 +2739,7 @@ function pickPO(i){
 }
 function renderPicker(){
   const liveNotes=document.getElementById('pnotes'); if(liveNotes) pickerState.notes=liveNotes.value; // survive re-renders
-  const comp = companyOptions().map((o,i)=>`<span class="chip ${pickerState.company===o.c?'sel':''}" onclick="pickCompany(companyOptions()[${i}].c)">${esc(o.label)}</span>`).join('');
+  const comp = companyOptions().map((o,i)=>`<span class="chip ${pickerState.company===o.c?'sel':''}" onclick="pickCompany(companyOptions()[${i}].c)">${o.noPO?esc(o.label):coFace(o.c)}</span>`).join('');
   sheet(`
     <h2>${pickerState.isSwitch?'Switch to…':'Clock in'}</h2>
     ${pickerState.poNumber?`<div class="banner sync">Selected: <b>${esc(pickerState.poNumber)}</b> · ${esc(pickerState.jobSite)}</div>`:''}
@@ -2394,7 +2776,7 @@ async function loadCustomers(force){
   if (!S.online) return;
   if (!force && cached && (Date.now()-cached.ts) < CUST_TTL) return;
   try{
-    const r = await api('customerList');
+    const r = await apiBg('customerList');
     S.customers = r.customers||[]; S.customersAt = Date.now();
     await DB.setCache('customers2', {list:S.customers, ts:S.customersAt});
   }catch(e){ /* keep whatever we had */ }
@@ -2557,7 +2939,7 @@ function renderClockOutReview(){
         <input id="coJobSearch" placeholder="Search open jobs…" autocomplete="off" oninput="coJobFilter(this.value)">
         <div id="coJobList" style="max-height:30vh;overflow:auto"></div>
         <label>Internal company time (no PO)</label>
-        <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="coPickCompany(companyOptions()[${i}].c)">${esc(o.label)}</span>`).join('')}</div>
+        <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="coPickCompany(companyOptions()[${i}].c)">${o.noPO?esc(o.label):coFace(o.c)}</span>`).join('')}</div>
       </div>
     </div>
     <div class="card" style="margin:10px 0">
@@ -2572,7 +2954,9 @@ function renderClockOutReview(){
       <div class="small muted" id="coWorked"></div>
     </div>
     <label>What did you work on today?</label>
-    <textarea id="coNotes" rows="2" placeholder="Notes for this entry" oninput="coState&&(coState.notes=this.value)">${esc(c.notes)}</textarea>
+    <div class="row between" style="margin-top:2px"><span class="small" style="color:var(--navy);font-weight:700">What did you work on? (required)</span>
+      <button class="secondary" id="coMicBtn" style="padding:6px 12px" onclick="dictate('coMicBtn','coNotes')">🎤 Talk</button></div>
+    <textarea id="coNotes" rows="2" placeholder="e.g. changed light fixtures, wired panel — talk or type" oninput="coState&&(coState.notes=this.value)">${esc(c.notes)}</textarea>
     <label>Materials used</label>
     <input id="coMatSearch" placeholder="Search… e.g. half inch EMT, wago" autocomplete="off" oninput="coMatSuggest(this.value)">
     <div id="coMatSug"></div>
@@ -2708,6 +3092,11 @@ function coUpdateMedia(){
 async function submitClockOut(){
   const c=coState; if(!c) return;
   coTimes(); // capture any input the change-event hasn't fired for yet
+  if(!String(c.notes||'').trim() || String(c.notes).trim().length<3){
+    toast('Describe what you worked on before clocking out — talk or type it.');
+    const el=document.getElementById('coNotes'); if(el){ el.focus(); el.style.borderColor='var(--bad)'; }
+    return;
+  }
   const gms=new Date(c.outAt)-new Date(c.inAt);
   if (!(gms>0)){ toast('Clock-out must be after clock-in — check the times.'); return; }
   if (new Date(c.outAt).getTime() > Date.now()+5*60000){ toast("Clock-out time can't be in the future."); return; }
@@ -2815,7 +3204,7 @@ function openEditEntry(k){
         <input id="edJobSearch" placeholder="Search open jobs…" autocomplete="off" oninput="edJobFilter(this.value)">
         <div id="edJobList" style="max-height:30vh;overflow:auto"></div>
         <label>Internal company time (no PO)</label>
-        <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="edPickCompany(companyOptions()[${i}].c)">${esc(o.label)}</span>`).join('')}</div>
+        <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="edPickCompany(companyOptions()[${i}].c)">${o.noPO?esc(o.label):coFace(o.c)}</span>`).join('')}</div>
       </div>
     </div>
     <label>Date (the day the shift started)</label><input id="eDate" type="date" value="${esc(date)}">
@@ -3019,19 +3408,56 @@ function openEmployee(email){
     <label>Active</label><select id="edActive"><option value="true" ${emp.active?'selected':''}>Active</option><option value="false" ${!emp.active?'selected':''}>Inactive</option></select>
     <label>Home company — which company they book when they can't choose</label>
     <select id="edHome">${(S.companies||[]).map(c=>`<option ${(perms.homeCompany||S.companies[0])===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
+    <label>Allowances they can claim</label>
+    <div>${[['phone','Cellphone'],['food','Food'],['km','Mileage'],['other','Other']].map(([k,lbl])=>`<div class="perm"><input type="checkbox" id="al_${k}" ${(perms.allowances&&perms.allowances[k])?'checked':''}><label for="al_${k}" style="margin:0">${lbl}</label></div>`).join('')}</div>
     <label>Permissions</label>
     <div>${pl.map(([k,lbl])=>`<div class="perm"><input type="checkbox" id="pm_${k}" ${perms[k]?'checked':''}><label for="pm_${k}" style="margin:0">${lbl}</label></div>`).join('')}</div>
     <div class="row" style="margin-top:14px"><button class="secondary grow" onclick="closeSheet()">Close</button>
     <button class="grow" onclick="saveEmployee('${esc(email)}')">Save</button></div>
-    <button class="ghost" style="color:#f87171;width:100%;margin-top:6px" onclick="removeEmp('${esc(email)}')">Deactivate employee</button>`);
+    <button class="ghost" style="color:#f87171;width:100%;margin-top:6px" onclick="removeEmp('${esc(email)}')">Deactivate — keeps all their history (recommended)</button>
+    <button class="ghost" style="color:#f87171;width:100%" onclick="confirmEmpDanger('${esc(email)}','reset')">Reset — wipe hours &amp; onboarding, keep the account</button>
+    <button class="ghost" style="color:#f87171;width:100%" onclick="confirmEmpDanger('${esc(email)}','delete')">Delete completely — remove them and everything</button>`);
+}
+/* Destructive actions get an explicit consequences screen + an "I understand" gate. */
+function confirmEmpDanger(email, mode){
+  const emp=(S.employees||[]).find(e=>e.email===email); if(!emp) return;
+  const del=mode==='delete';
+  sheet(`<h2>${del?'Delete':'Reset'} ${esc(emp.name)}?</h2>
+    <p class="small">${del
+      ? 'This removes them from the employee list and <b>permanently deletes their entire hours history</b> — their logged time disappears from job costs and payroll records. Use this only for accounts added by mistake. If they actually worked here, use <b>Deactivate</b> instead.'
+      : 'This keeps them as an employee but <b>permanently wipes their hours history and onboarding progress</b> — a clean slate, as if just hired. Their logged time disappears from job costs and payroll records.'}</p>
+    <div class="perm" style="margin-top:10px"><input type="checkbox" id="dangerOk">
+      <label for="dangerOk" style="margin:0">I understand this can't be undone</label></div>
+    <button class="danger" style="width:100%;margin-top:12px" onclick="empDanger('${esc(email)}','${mode}',this)">${del?'Delete':'Reset'} ${esc(emp.name)}</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
+}
+async function empDanger(email, mode, btn){
+  const ok=document.getElementById('dangerOk');
+  if(!ok||!ok.checked) return toast('Tick the box first — this one really can\'t be undone.');
+  if(!S.online) return toast('You need signal for this.');
+  btn.disabled=true; btn.textContent='Working…';
+  try{
+    await api('deleteEmployee',{email, mode});
+    closeSheet(); toast(mode==='delete'?'Deleted.':'Reset — they start fresh.');
+    await refresh(true);
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent=(mode==='delete'?'Delete':'Reset'); }
 }
 async function saveEmployee(email){
   const keys=['approveHours','editPastEntries','manageEmployees','setRates','viewAllCompanies','viewAllEmployees','exportPayroll'];
   const permissions={}; keys.forEach(k=>permissions[k]=document.getElementById('pm_'+k).checked);
   permissions.homeCompany=val('edHome')||'';
+  permissions.allowances={}; ['phone','food','km','other'].forEach(k=>{ const el=document.getElementById('al_'+k); if(el&&el.checked) permissions.allowances[k]=true; });
   const p={ email, role:val('edRole'), hourlyRate:Number(val('edRate'))||0, active: val('edActive')==='true', permissions };
   closeSheet();
-  try{ await api('updateEmployee',p); toast('Saved'); await refresh(true);}catch(e){toast(e.message);} // updateEmployee persists permissions too — one round-trip
+  try{
+    const r=await api('updateEmployee',p);
+    // Trust the server's confirmed record immediately — no waiting on a background refresh
+    // to "see" the change (the old flow made successful saves look failed).
+    if(r&&r.employee&&S.employees){ const i=S.employees.findIndex(x=>x.email===email); if(i>=0) S.employees[i]={...S.employees[i],...r.employee}; }
+    if(email===S.me.email&&r&&r.employee){ Object.assign(S.me,{role:r.employee.role,hourlyRate:r.employee.hourlyRate,permissions:r.employee.permissions}); }
+    render(); toast('Saved ✓');
+    refresh(true); // background re-sync, not blocking
+  }catch(e){toast(e.message);}
 }
 async function removeEmp(email){ closeSheet(); try{ await api('removeEmployee',{email}); toast('Deactivated'); await refresh(true);}catch(e){toast(e.message);} }
 
@@ -3066,7 +3492,7 @@ async function loadMaterials(force){
   if (!S.online) return;
   if (!force && cached && (Date.now()-cached.ts) < CUST_TTL) return;
   try{
-    const r = await api('materialsList');
+    const r = await apiBg('materialsList');
     S.materials = r.materials||[]; S.materialsAt = Date.now();
     await DB.setCache('materials', {list:S.materials, ts:S.materialsAt});
   }catch(e){ /* keep what we had */ }
@@ -3114,15 +3540,40 @@ function openReceiptScan(){
     </div>`);
   if (S._sheet) S._sheet.onclick=null; // don't lose a scan to a stray backdrop tap
 }
+/* Downscale on the phone before upload: a 12MP photo becomes ~400KB at 1600px — plenty for
+   the AI and the PDF, and dramatically faster on jobsite LTE. */
+async function shrinkPhoto(f, maxDim){
+  try{
+    const img=await new Promise((res,rej)=>{ const u=URL.createObjectURL(f); const i=new Image();
+      i.onload=()=>res(i); i.onerror=rej; i.src=u; });
+    const scale=Math.min(1, (maxDim||1600)/Math.max(img.width,img.height));
+    if(scale>=1 && f.size<1.5*1048576) return null; // already small — send as-is
+    const c=document.createElement('canvas');
+    c.width=Math.round(img.width*scale); c.height=Math.round(img.height*scale);
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+    return c.toDataURL('image/jpeg',0.85).split(',')[1]; // base64, no prefix
+  }catch(e){ return null; }
+}
 async function rcScan(input){
   const f=input.files && input.files[0]; if(!f) return;
   if (f.size > MAX_MEDIA_MB*1048576){ toast('Photo too large — lower the camera resolution'); return; }
   const st=document.getElementById('rcStatus');
   st.innerHTML='<span class="spin"></span> Reading the receipt… (10–20 seconds)';
   try{
-    const b64=await fileToB64(f);
-    const r=await api('scanReceipt',{dataBase64:b64, mimeType:f.type||'image/jpeg', filename:f.name});
-    rcState={items:r.items||[], receiptUrl:r.receiptUrl||''};
+    const shrunk=await shrinkPhoto(f,1600);
+    const b64=shrunk||await fileToB64(f);
+    const p={dataBase64:b64, mimeType:shrunk?'image/jpeg':(f.type||'image/jpeg'), filename:f.name};
+    if(S.openEntry){ p.jobSite=S.openEntry['Customer/Job Site']||''; p.poNumber=S.openEntry['PO#']||''; } // names the PDF after the job
+    const r=await api('scanReceipt',p);
+    rcState={items:r.items||[], receiptUrl:r.receiptUrl||'', vendor:r.vendor||'', rdate:r.date||'', total:r.total||0};
+    if(!r.receiptUrl){ // Drive filing failed — keep the photo ON THE PHONE and sync it later
+      try{
+        const q=(await DB.getCache('pendingReceipts'))||[];
+        q.push({dataBase64:p.dataBase64, mimeType:p.mimeType, jobSite:p.jobSite||'', poNumber:p.poNumber||'',
+          vendor:r.vendor||'', date:r.date||'', total:r.total||0, at:Date.now()});
+        await DB.setCache('pendingReceipts', q.slice(-5)); // keep the last 5 — ~2MB ceiling
+      }catch(e){}
+    }
     rcRender();
   }catch(e){ st.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; }
 }
@@ -3132,8 +3583,11 @@ function rcRender(){
   if(!rcState||!box) return;
   const items=rcState.items;
   const newOnes=items.filter(i=>!i.match).length;
-  st.innerHTML=`Found <b>${items.length}</b> line item(s) — ${items.length-newOnes} already in your list, <b>${newOnes} new</b>.`+
-    (rcState.receiptUrl?` <a href="${esc(rcState.receiptUrl)}" target="_blank" style="color:var(--accent2)">receipt saved ↗</a>`:'');
+  st.innerHTML=(rcState.vendor?`<b>${esc(rcState.vendor)}</b>${rcState.rdate?' · '+esc(rcState.rdate):''}${rcState.total?' · $'+Number(rcState.total).toFixed(2):''}<br>`:'')+
+    `Found <b>${items.length}</b> line item(s) — ${items.length-newOnes} already in your list, <b>${newOnes} new</b>.`+
+    (rcState.receiptUrl
+      ? ` <a href="${esc(rcState.receiptUrl)}" target="_blank" style="color:var(--accent2)">PDF saved ↗</a>`
+      : ` <span style="color:var(--warn);font-weight:700">⚠ receipt saved on the phone ONLY — will sync to Drive automatically</span>`);
   box.innerHTML = (items.map((it,i)=>`<div class="list-item">
       <div class="row between">
         <div class="grow">${it.match?'':`<input type="checkbox" id="rc_${i}" checked style="width:auto;margin:0 8px 0 0">`}<b>${esc(it.desc)}</b>
@@ -3235,7 +3689,21 @@ function toast(msg){
 /* ============================================================================
  * ONLINE/OFFLINE + STARTUP
  * ==========================================================================*/
-window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); if(!S.onboard) loadOnboarding(); });
+async function flushReceipts(){
+  if(!S.online||S._frBusy) return; S._frBusy=true;
+  try{
+    let q=(await DB.getCache('pendingReceipts'))||[];
+    while(q.length){
+      const it=q[0];
+      const r=await apiBg('fileReceipt', it);
+      if(!r||!r.receiptUrl) break;      // still failing — try again next time
+      q=q.slice(1); await DB.setCache('pendingReceipts', q);
+      toast('Receipt from earlier synced to Drive ✓');
+    }
+  }catch(e){ /* next reconnect retries */ }
+  S._frBusy=false;
+}
+window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); flushReceipts(); if(!S.onboard) loadOnboarding(); });
 window.addEventListener('offline', ()=>{ S.online=false; render(); });
 
 async function start(){
