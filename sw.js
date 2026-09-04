@@ -7,7 +7,7 @@
  * already cached. Now the app paints instantly from cache and the fetch that runs in the
  * background updates the cache, so a fresh deploy lands on the SECOND open after it ships.
  */
-const CACHE = 'pcw-pro-timesheet-v22'; // v22: emoji icons back, centered (+ v21-v16)
+const CACHE = 'pcw-pro-timesheet-v23'; // v22: emoji icons back, centered (+ v21-v16)
 const SHELL = ['./', './index.html', './manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
