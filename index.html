@@ -2528,7 +2528,7 @@ function hoursView(){
       <div class="row between"><h3>${esc(monthLabel(month))}</h3>${S.hoursLoading?'<span class="spin"></span>':''}</div>
       <p class="small muted" style="margin-top:-4px">Tap an employee for their day-by-day entries. Pay is estimated from approved hours × current rate.</p>
       ${rows || (S.hoursLoading?'<p class="muted small">Loading…</p>':'<p class="muted small">No data yet — pull up this tab while online.</p>')}
-    </div>`;
+      </div>${allowCard()}`;
 }
 async function loadHours(){
   if (S.hoursLoading) return;
