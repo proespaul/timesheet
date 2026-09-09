@@ -3647,6 +3647,9 @@ async function rcAdd(){
 }
 
 /* ---- Materials hub: supplier POs, per-job usage, price list (Sept 2026 round) ---- */
+// Dollar figures (supplier costs, the price list) are for admins + the bookkeeper only —
+// the server enforces it too; this just keeps the buttons honest.
+function canPrice(){ return S.me && (S.me.role==='admin'||S.me.role==='bookkeeper'); }
 function openMaterials(){
   const site = S.openEntry ? (S.openEntry['Customer/Job Site']||S.openEntry.Company||'') : '';
   sheet(`<h2>📦 Materials</h2>
@@ -3654,7 +3657,7 @@ function openMaterials(){
     <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openPoScan()">📷&nbsp;&nbsp;Picked up material — scan the supplier PO</button>
     <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openMatUse()">🔩&nbsp;&nbsp;Enter the materials you used</button>
     <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openReceiptScan()">🧾&nbsp;&nbsp;Scan a store receipt</button>
-    <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openPriceList()">💲&nbsp;&nbsp;Materials price list</button>
+    ${canPrice()?`<button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openPriceList()">💲&nbsp;&nbsp;Materials price list</button>`:''}
     <button class="ghost" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
 }
 
@@ -3691,7 +3694,7 @@ async function poScan(input){
     const box=document.getElementById('poResults');
     if(box) box.innerHTML=(r.items||[]).map(it=>`<div class="list-item row between">
         <div class="grow">${esc(it.desc)}</div>
-        <div class="small muted" style="white-space:nowrap">×${esc(it.qty)} · $${Number(it.price).toFixed(2)}</div>
+        <div class="small muted" style="white-space:nowrap">×${esc(it.qty)}${it.price!=null?' · $'+Number(it.price).toFixed(2):''}</div>
       </div>`).join('');
   }catch(e){
     if(/busy right now|Failed to fetch|NetworkError|timed out/i.test(e.message||'')){ await poQueue(p, st); }
@@ -3741,7 +3744,7 @@ function muRender(){
   const box=document.getElementById('muList'); if(!box) return;
   box.innerHTML = (S.muItems||[]).map((it,i)=>`<div class="list-item">
       <b>${esc(it.desc)}</b>
-      <div class="small muted">${esc(it.supplier)}${it.sku?' · '+esc(it.sku):''} · $${Number(it.price).toFixed(2)} ea</div>
+      <div class="small muted">${esc(it.supplier)}${it.sku?' · '+esc(it.sku):''}${it.price!=null?' · $'+Number(it.price).toFixed(2)+' ea':''}</div>
       <div class="small" style="margin-top:3px">bought ${it.bought} · used <b>${it.used}</b>${it.returned?` · returned ${it.returned}`:''} · <b style="color:var(--accent2)">${it.remaining} left</b></div>
       <div class="row" style="margin-top:6px">
         <input id="muq_${i}" type="number" step="any" min="0" placeholder="qty" style="width:84px;margin:0;text-align:center">
