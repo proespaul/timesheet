@@ -45,7 +45,7 @@
   .pill.pending{background:rgba(202,138,4,.14); color:#a16207}
   .pill.rejected{background:rgba(220,38,38,.12); color:#b91c1c}
   .pill.live{background:rgba(46,117,182,.12); color:var(--accent2)}
-  .bigbtn{width:100%; padding:20px; font-size:1.35rem; border-radius:24px; box-shadow:0 8px 24px rgba(31,56,100,.18)}
+  .bigbtn{width:100%; padding:22px; font-size:1.35rem; border-radius:24px; box-shadow:0 8px 24px rgba(31,56,100,.18)}
   .bigbtn.in{background:linear-gradient(135deg,#15803d,#22c55e)}       /* green = Clock In */
   .bigbtn.out{background:linear-gradient(135deg,#dc2626,#f97316)}      /* red-orange = Clock Out */
   .btn-break{background:linear-gradient(135deg,#d97706,#f59e0b)}       /* amber = Start Break */
@@ -117,7 +117,7 @@
   .seg button.on{background:var(--panel); color:var(--navy); box-shadow:0 1px 3px rgba(31,56,100,.15)}
   .co-logo{height:20px; max-width:64px; object-fit:contain; display:inline-block; vertical-align:middle}
   .clock-logo{height:44px; max-width:180px; object-fit:contain; display:block; margin:10px auto 0}
-  .clock-logo-hd{height:56px; max-width:220px; object-fit:contain; display:block; margin:0 auto; vertical-align:middle}
+  .clock-logo-hd{height:56px; max-width:260px; object-fit:contain; display:block; margin:0 auto; vertical-align:middle}
   .actbtn{display:flex; align-items:center; justify-content:center; gap:9px}
   .bic{font-size:1.7em; line-height:1; transform:translateY(-0.05em)}
   /* Tab-bar calendar icon that shows TODAY'S date (emoji calendars are stuck on a printed date) */
@@ -982,7 +982,7 @@ async function apiRaw_(action, payload){
 let mutsInFlight = 0;
 let inflightQids = new Set(); // queued copies currently being delivered — flushQueue must skip them
 let tempIdMap = {};           // tmp_ id -> real EntryID, learned from punch responses/replays
-const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry|addManualEntry)$/;
+const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry|addManualEntry|useMaterial|returnMaterial)$/;
 async function apiMutate(action, payload, optimistic){
   // If we've since learned the real id for a tmp_ entry, swap it in before sending.
   if (payload && typeof payload.entryId==='string' && tempIdMap[payload.entryId])
@@ -1476,7 +1476,7 @@ function clockView(){
             : `<button class="btn-break grow actbtn" style="padding:16px 12px" onclick="doStartBreak()"><span class="bic">☕</span><span>Start Break</span></button>`}
           <button class="btn-switch grow actbtn" style="padding:16px 12px" onclick="openJobPicker(true)"><span class="bic">⏸️</span><span>Pause &amp; Switch</span></button>
         </div>
-        <button class="actbtn" style="width:100%;margin-top:8px;padding:10px 12px" onclick="openReceiptScan()"><span class="bic">📷</span><span>Bought materials? Scan the receipt</span></button>
+        <button class="actbtn" style="width:100%;margin-top:8px;padding:10px 12px" onclick="openMaterials()"><span class="bic">📦</span><span>Materials — POs, usage &amp; prices</span></button>
       </div>
       ${pausedCard()}`;
   }
@@ -1485,6 +1485,7 @@ function clockView(){
       <p class="muted">Not clocked in</p>
       ${clockLogo()}
       <button class="bigbtn in" onclick="openJobPicker(false)">Clock In</button>
+      <button class="ghost" style="width:100%;margin-top:8px" onclick="openMaterials()">📦 Materials &amp; prices</button>
     </div>
     ${pausedCard()}
 `;
@@ -1675,6 +1676,7 @@ function openMore(){
   sheet(`<h2>More</h2>
     ${items.map(([id,ic,l])=>`<button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.05rem;padding:16px"
       onclick="closeSheetDom();go('${id}','replace')">${ic}&nbsp;&nbsp;${l}${S.tab===id?' <span class="small" style="color:var(--accent2)">• current</span>':''}</button>`).join('')}
+    <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.05rem;padding:16px" onclick="openPriceList()">💲&nbsp;&nbsp;Price list</button>
     <button class="ghost" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
 }
 function go(tab, nav){
@@ -1684,7 +1686,7 @@ function go(tab, nav){
   if (tab==='admin' && S.online){ loadPending(); loadObStatus(); loadAllowAdmin(); } // fetched on demand, not at boot
   if (tab==='hours' && S.online){
     const canTeam=S.me&&(S.me.role==='admin'||(S.me.permissions&&S.me.permissions.viewAllEmployees));
-    if(canTeam) loadHours(); else { refresh(true); loadMyAllow(); } // crew: own entries + allowance claims
+    if(canTeam){ loadHours(); loadMyAllow(); } else { refresh(true); loadMyAllow(); } // everyone: allowance claims
   }
   if (tab==='jobs' && S.online) loadJobs();              // refresh job costs on every open
   if (tab==='jha') { if(S.online) loadJha(); loadCustomers(); } // JHA needs the job picker warm too
@@ -2528,7 +2530,7 @@ function hoursView(){
       <div class="row between"><h3>${esc(monthLabel(month))}</h3>${S.hoursLoading?'<span class="spin"></span>':''}</div>
       <p class="small muted" style="margin-top:-4px">Tap an employee for their day-by-day entries. Pay is estimated from approved hours × current rate.</p>
       ${rows || (S.hoursLoading?'<p class="muted small">Loading…</p>':'<p class="muted small">No data yet — pull up this tab while online.</p>')}
-      </div>${allowCard()}`;
+    </div>${allowCard()}`;
 }
 async function loadHours(){
   if (S.hoursLoading) return;
@@ -3418,7 +3420,8 @@ function openEmployee(email){
     ['setRates','Set hourly rates'],['viewAllCompanies','Can choose company (PCW/GNG/…)'],['viewAllEmployees','View all employees'],['exportPayroll','Export payroll']];
   sheet(`<h2>${esc(emp.name)}</h2><div class="small muted">${esc(emp.email)}</div>
     <label>Role</label><select id="edRole">${['employee','admin','bookkeeper'].map(r=>`<option ${emp.role===r?'selected':''}>${r}</option>`).join('')}</select>
-    <label>Hourly rate</label><input id="edRate" type="number" step="0.01" value="${emp.hourlyRate||0}">
+    <label>Hourly rate (what they're paid)</label><input id="edRate" type="number" step="0.01" value="${emp.hourlyRate||0}">
+    <label>Charged rate (what customers are billed for their hours, e.g. 105 journeyman / 50 apprentice)</label><input id="edCharge" type="number" step="0.01" value="${(perms.chargeRate||0)}">
     <label>Active</label><select id="edActive"><option value="true" ${emp.active?'selected':''}>Active</option><option value="false" ${!emp.active?'selected':''}>Inactive</option></select>
     <label>Home company — which company they book when they can't choose</label>
     <select id="edHome">${(S.companies||[]).map(c=>`<option ${(perms.homeCompany||S.companies[0])===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
@@ -3460,6 +3463,7 @@ async function saveEmployee(email){
   const keys=['approveHours','editPastEntries','manageEmployees','setRates','viewAllCompanies','viewAllEmployees','exportPayroll'];
   const permissions={}; keys.forEach(k=>permissions[k]=document.getElementById('pm_'+k).checked);
   permissions.homeCompany=val('edHome')||'';
+  permissions.chargeRate=Number(val('edCharge'))||0; // customer billing rate — invoices read this
   permissions.allowances={}; ['phone','food','km','other'].forEach(k=>{ const el=document.getElementById('al_'+k); if(el&&el.checked) permissions.allowances[k]=true; });
   const p={ email, role:val('edRole'), hourlyRate:Number(val('edRate'))||0, active: val('edActive')==='true', permissions };
   closeSheet();
@@ -3642,6 +3646,157 @@ async function rcAdd(){
   }catch(e){ toast(e.message); if(btn) btn.disabled=false; }
 }
 
+/* ---- Materials hub: supplier POs, per-job usage, price list (Sept 2026 round) ---- */
+function openMaterials(){
+  const site = S.openEntry ? (S.openEntry['Customer/Job Site']||S.openEntry.Company||'') : '';
+  sheet(`<h2>📦 Materials</h2>
+    ${site?`<p class="small muted">Working on: <b>${esc(site)}</b></p>`:'<p class="small muted">Not clocked in — scans file under Stock until they\'re tied to a job.</p>'}
+    <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openPoScan()">📷&nbsp;&nbsp;Picked up material — scan the supplier PO</button>
+    <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openMatUse()">🔩&nbsp;&nbsp;Enter the materials you used</button>
+    <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openReceiptScan()">🧾&nbsp;&nbsp;Scan a store receipt</button>
+    <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openPriceList()">💲&nbsp;&nbsp;Materials price list</button>
+    <button class="ghost" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+}
+
+/* Supplier-PO scan: the crew photographs the itemized PO page at pickup. Online, it's parsed
+   immediately (items → this job's inventory, prices → the Price List sheet, PDF → Drive).
+   Offline, the photo waits on the phone and flushPOs() sends it when signal returns. */
+function openPoScan(){
+  const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
+  sheet(`<h2>Scan the supplier PO</h2>
+    <p class="small muted">Photograph the itemized page (EECOL, Bartle &amp; Gibson, Home Hardware, Northern Metallic…). The items land under ${site?`<b>${esc(site)}</b>`:'<b>Stock</b>'} and the price list updates itself — newest price wins.</p>
+    <label>Photo of the PO</label>
+    <input type="file" accept="image/*" capture="environment" onchange="poScan(this)">
+    <div id="poStatus" class="small muted"></div>
+    <div id="poResults"></div>
+    <button class="secondary" style="width:100%;margin-top:14px" onclick="closeSheet()">Close</button>`);
+  if (S._sheet) S._sheet.onclick=null; // don't lose a scan to a stray backdrop tap
+}
+async function poScan(input){
+  const f=input.files&&input.files[0]; if(!f) return;
+  if (f.size > MAX_MEDIA_MB*1048576){ toast('Photo too large — lower the camera resolution'); return; }
+  const st=document.getElementById('poStatus');
+  const shrunk=await shrinkPhoto(f,1800); // POs have small print — a touch more resolution than receipts
+  const b64=shrunk||await fileToB64(f);
+  const p={dataBase64:b64, mimeType:shrunk?'image/jpeg':(f.type||'image/jpeg'), filename:f.name};
+  if(S.openEntry){ p.jobSite=S.openEntry['Customer/Job Site']||S.openEntry.Company||''; p.poNumber=S.openEntry['PO#']||''; }
+  if(!S.online){ await poQueue(p, st); return; }
+  st.innerHTML='<span class="spin"></span> Reading the PO… (10–20 seconds)';
+  try{
+    const r=await api('scanSupplierPO',p);
+    st.innerHTML = r.duplicate
+      ? `<b>${esc(r.supplier)} ${esc(r.invoiceNo)}</b> — this one was already filed earlier, so nothing was doubled.`
+      : `<b>${esc(r.supplier)} ${esc(r.invoiceNo)}</b>${r.date?' · '+esc(r.date):''} — <b>${r.added}</b> item(s) added${p.jobSite?' to '+esc(p.jobSite):' to Stock'}.`+
+        (r.poUrl?` <a href="${esc(r.poUrl)}" target="_blank" style="color:var(--accent2)">PDF ↗</a>`:'');
+    const box=document.getElementById('poResults');
+    if(box) box.innerHTML=(r.items||[]).map(it=>`<div class="list-item row between">
+        <div class="grow">${esc(it.desc)}</div>
+        <div class="small muted" style="white-space:nowrap">×${esc(it.qty)} · $${Number(it.price).toFixed(2)}</div>
+      </div>`).join('');
+  }catch(e){
+    if(/busy right now|Failed to fetch|NetworkError|timed out/i.test(e.message||'')){ await poQueue(p, st); }
+    else st.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>';
+  }
+}
+async function poQueue(p, st){
+  try{
+    const q=(await DB.getCache('pendingPOs'))||[];
+    q.push({dataBase64:p.dataBase64, mimeType:p.mimeType, jobSite:p.jobSite||'', poNumber:p.poNumber||'', at:Date.now()});
+    await DB.setCache('pendingPOs', q.slice(-5)); // last 5 — same ~2MB ceiling as receipts
+    if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ No signal — the PO photo is saved on the phone and will be read &amp; filed automatically when you\'re back online.</span>';
+  }catch(e){ if(st) st.innerHTML='<span style="color:var(--bad)">Could not save the photo on the phone — try again with signal.</span>'; }
+}
+async function flushPOs(){
+  if(!S.online||S._fpBusy) return; S._fpBusy=true;
+  try{
+    let q=(await DB.getCache('pendingPOs'))||[];
+    while(q.length){
+      try{
+        await apiBg('scanSupplierPO', q[0]);
+        toast('Supplier PO from earlier was read & filed ✓');
+      }catch(e){
+        if(/does not look like|Could not read|clearer photo/i.test(e.message||'')){
+          toast('⚠ A queued PO photo was unreadable — scan it again'); // permanent: drop it
+        } else break; // transient (server busy) — retry on the next reconnect
+      }
+      q=q.slice(1); await DB.setCache('pendingPOs', q);
+    }
+  }catch(e){ /* next reconnect retries */ }
+  S._fpBusy=false;
+}
+
+/* Per-job usage: pick from what was bought for this job, type how many went in. */
+async function openMatUse(){
+  const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
+  sheet(`<h2>🔩 Materials used</h2>
+    <p class="small muted">${site?`Bought for <b>${esc(site)}</b>. `:'Stock items. '}Enter a quantity and tap <b>Used</b> — what's left stays “remaining” until it's used or returned to the store.</p>
+    <div id="muList"><span class="spin"></span></div>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  try{
+    const r=await apiBg('jobInventory',{jobSite:site||'Stock', poNumber:S.openEntry?(S.openEntry['PO#']||''):''});
+    S.muItems=r.items||[]; muRender();
+  }catch(e){ const b=document.getElementById('muList'); if(b) b.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+}
+function muRender(){
+  const box=document.getElementById('muList'); if(!box) return;
+  box.innerHTML = (S.muItems||[]).map((it,i)=>`<div class="list-item">
+      <b>${esc(it.desc)}</b>
+      <div class="small muted">${esc(it.supplier)}${it.sku?' · '+esc(it.sku):''} · $${Number(it.price).toFixed(2)} ea</div>
+      <div class="small" style="margin-top:3px">bought ${it.bought} · used <b>${it.used}</b>${it.returned?` · returned ${it.returned}`:''} · <b style="color:var(--accent2)">${it.remaining} left</b></div>
+      <div class="row" style="margin-top:6px">
+        <input id="muq_${i}" type="number" step="any" min="0" placeholder="qty" style="width:84px;margin:0;text-align:center">
+        <button class="grow" onclick="muApply(${i},1)">Used</button>
+        <button class="ghost" onclick="muApply(${i},-1)" title="Took some back out of 'used'">Undo</button>
+        <button class="ghost" onclick="muReturn(${i})">Return</button>
+      </div>
+    </div>`).join('') || '<p class="muted small">No materials on this job yet — scan the supplier PO first (📦 Materials → scan the PO).</p>';
+}
+async function muApply(i,sign){
+  const it=(S.muItems||[])[i]; if(!it) return;
+  const q=Number(val('muq_'+i)); if(!q||q<=0){ toast('Enter the quantity first'); return; }
+  it.used=Math.max(0,Math.min(it.bought-it.returned, it.used+sign*q));
+  it.remaining=Math.max(0,it.bought-it.used-it.returned);
+  muRender(); // optimistic — works offline, syncs through the queue
+  try{ await apiMutate('useMaterial',{id:it.id, qty:sign*q}); toast(sign>0?'Marked as used ✓':'Undone ✓'); }
+  catch(e){ toast(e.message); }
+}
+async function muReturn(i){
+  const it=(S.muItems||[])[i]; if(!it) return;
+  const q=Number(val('muq_'+i)); if(!q||q<=0){ toast('Enter the quantity first'); return; }
+  it.returned=Math.max(0,Math.min(it.bought-it.used, it.returned+q));
+  it.remaining=Math.max(0,it.bought-it.used-it.returned);
+  muRender();
+  try{ await apiMutate('returnMaterial',{id:it.id, qty:q}); toast('Marked for return to the store ✓'); }
+  catch(e){ toast(e.message); }
+}
+
+/* Read-only price list search — everyone can consult it (Paul's call, Sept 2026). */
+let plT=null;
+function openPriceList(){
+  sheet(`<h2>💲 Price list</h2>
+    <p class="small muted">Live supplier prices — updated by every scanned PO and the daily invoice-email sweep. Newest price wins.</p>
+    <input id="plQ" placeholder="Search: e.g. breaker 15a, NMD90, EMT 1/2" oninput="plSearch()">
+    <div id="plList" class="small muted" style="margin-top:8px"><span class="spin"></span></div>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  plSearch();
+}
+function plSearch(){
+  clearTimeout(plT);
+  plT=setTimeout(async ()=>{
+    const box=document.getElementById('plList'); if(!box) return;
+    box.innerHTML='<span class="spin"></span>';
+    try{
+      const r=await apiBg('priceList',{q:val('plQ'),limit:40});
+      const b2=document.getElementById('plList'); if(!b2) return;
+      b2.innerHTML=(r.items||[]).map(it=>`<div class="list-item row between">
+          <div class="grow"><b>${esc(it.d)}</b><div class="small muted">${esc(it.s)}${it.k?' · '+esc(it.k):''}${it.dt?' · '+esc(it.dt):''}</div></div>
+          <div style="font-weight:800;white-space:nowrap">$${Number(it.p).toFixed(2)}</div>
+        </div>`).join('') || '<p class="muted small">No match — try fewer words.</p>';
+      if((r.total||0)>40) b2.innerHTML+=`<p class="small muted">Showing 40 of ${r.total} — refine the search.</p>`;
+    }catch(e){ const b3=document.getElementById('plList'); if(b3) b3.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+  },350);
+}
+
 /* ---- Admin: materials review ---- */
 async function openMatReview(){
   try{
@@ -3717,7 +3872,7 @@ async function flushReceipts(){
   }catch(e){ /* next reconnect retries */ }
   S._frBusy=false;
 }
-window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); flushReceipts(); if(!S.onboard) loadOnboarding(); });
+window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); flushReceipts(); flushPOs(); if(!S.onboard) loadOnboarding(); });
 window.addEventListener('offline', ()=>{ S.online=false; render(); });
 
 async function start(){
