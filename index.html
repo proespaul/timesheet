@@ -1745,8 +1745,46 @@ function openJobDetail(k){
     </div>`).join('')||'<p class="muted small">No breakdown available.</p>'}
     ${S.me&&S.me.role==='admin'?`<button style="width:100%;margin-top:10px" onclick="reqInvoice('${pk}',this)">🧾 Build the invoice (sends the job to Claude)</button>`:''}
     <button class="secondary" style="width:100%;margin-top:${S.me&&S.me.role==='admin'?'6':'10'}px" onclick="openJobEntries('${pk}')">📆 Day-by-day breakdown</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobPOs('${pk}')">📦 Materials &amp; supplier POs</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobPhotos('${pk}')">📷 View job photos</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+}
+
+/* Everything bought for the job, grouped by supplier PO — with costs and the Drive link
+   to the PDFs. Data comes from the Job Inventory tab (app scans + the daily email sweep). */
+async function openJobPOs(pk){
+  const ref=dereg(pk); if(!ref) return;
+  if(!S.online) return toast('You need signal to load the POs.');
+  sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center"><span class="spin"></span> Loading materials…</p>`);
+  const mine=S._sheet;
+  try{
+    const r=await apiBg('jobInventory',{jobSite:ref.jobSite, poNumber:ref.po||'', withFolder:1});
+    if(S._sheet!==mine) return;
+    const items=r.items||[];
+    const byInv={};
+    items.forEach(it=>{ const k=(it.supplier||'Supplier')+' · '+(it.invoice||'—');
+      (byInv[k]=byInv[k]||{date:'',list:[]}).list.push(it); if(it.date) byInv[k].date=it.date; });
+    const keys=Object.keys(byInv);
+    const showP=items.some(it=>it.price!=null);
+    let jobCost=0;
+    const html=keys.map(k=>{
+      const g=byInv[k];
+      const cost=g.list.reduce((s,it)=>s+(it.price!=null?it.price*it.bought:0),0);
+      jobCost+=cost;
+      return `<div class="list-item">
+        <div class="row between"><b>${esc(k)}</b><span class="small muted">${esc(g.date||'')}</span></div>
+        ${g.list.map(it=>`<div class="row between small" style="margin-top:2px">
+            <span>${esc(it.desc)}</span>
+            <span style="white-space:nowrap">×${it.bought}${it.price!=null?' · $'+(it.price*it.bought).toFixed(2):''}</span>
+          </div>${(it.used||it.returned)?`<div class="small muted" style="margin-left:2px">↳ used ${it.used||0}${it.returned?` · returned ${it.returned}`:''} · ${it.remaining} left</div>`:''}`).join('')}
+        ${showP?`<div class="row between small" style="margin-top:4px;border-top:1px solid var(--line);padding-top:4px"><b>PO total (cost)</b><b>$${cost.toFixed(2)}</b></div>`:''}
+      </div>`; }).join('');
+    sheet(`<h2>${esc(ref.jobSite)} — materials</h2>
+      <p class="small muted" style="margin-top:-4px">${items.length} item${items.length===1?'':'s'} across ${keys.length} PO${keys.length===1?'':'s'}${showP?` · <b>$${jobCost.toFixed(2)}</b> at cost before markup`:''}</p>
+      ${html||'<p class="muted small">No supplier POs on this job yet — they appear when someone scans a PO in the app, or when the daily email sweep files one.</p>'}
+      ${r.folderUrl?`<a href="${esc(r.folderUrl)}" target="_blank" style="text-decoration:none"><button class="secondary" style="width:100%;margin-top:8px">📁 Open the PO PDFs in Drive</button></a>`:''}
+      <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+  }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
 }
 
 /* 3.6: one tap → a structured request lands in admin@proes.ca's inbox, where Claude's
