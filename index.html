@@ -1329,6 +1329,7 @@ function render(loading){
   else if (S.tab==='hours') body = hoursView();
   else if (S.tab==='jobs') body = jobsView();
   else if (S.tab==='jha') body = jhaView();
+  else if (S.tab==='requests') body = requestsView();
   else if (S.tab==='sched') body = schedView();
   app.innerHTML = `<div class="wrap tab-${S.tab}">${topBar()}${offlineBanner()}${body}</div>${tabBar()}`; // tab-* class drives the desktop layout
   wire();
@@ -1677,16 +1678,19 @@ function tabBar(){
   const isAdmin = S.me && S.me.role==='admin';
   const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
   const t=(id,ic,label)=>`<button class="${S.tab===id?'active':''}" onclick="go('${id}')"><span class="ic">${ic}</span>${label}</button>`;
-  const moreTabs=['hours','jobs','team','admin','jha','requests'];
   const cal=`<span class="calic"><span class="calic-top"></span><span class="calic-num">${new Date().getDate()}</span></span>`;
   const pend=(S.pendingRequests||0);
+  const canReq=canApprove();
+  // Paul's own bar (Sept 2026): the four things he actually works from, then More.
+  // Crew get Entries in its place — they have no Requests or Jobs to look at.
+  const moreTabs = canReq ? ['hours','team','admin','jha','entries'] : ['hours','jha'];
   const more=`<button class="${moreTabs.includes(S.tab)?'active':''}" onclick="openMore()"><span class="ic">☰${pend?'<span class="dot"></span>':''}</span>More</button>`;
-  // Order per Paul, Sept 2026. Crew don't get Jobs — it shows labour costs and dollar totals.
   return `<div class="tabbar">
     ${t('clock','⏱','Clock')}
+    ${canReq?t('requests',`📨${pend?'<span class="dot"></span>':''}`,'Requests'):''}
     ${t('sched',cal,'Schedule')}
     ${canTeam?t('jobs','🏗️','Jobs'):''}
-    ${t('entries','📋','Entries')}
+    ${canReq?'':t('entries','📋','Entries')}
     ${more}
   </div>`;
 }
@@ -1695,13 +1699,13 @@ function openMore(){
   const isAdmin = S.me && S.me.role==='admin';
   const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
   const items=[['jha','🦺','JHA'],['hours','📊','Hours']];
+  if(canApprove()) items.push(['entries','📋','Entries']);   // off the main bar to make room for Requests
   if(canTeam) items.push(['jobs','🏗️','Jobs']);
   if(canTeam) items.push(['team','👥','Team']);
   if(isAdmin) items.push(['admin','⚙️','Admin']);
   sheet(`<h2>More</h2>
     ${items.map(([id,ic,l])=>`<button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.05rem;padding:16px"
       onclick="closeSheetDom();go('${id}','replace')">${ic}&nbsp;&nbsp;${l}${S.tab===id?' <span class="small" style="color:var(--accent2)">• current</span>':''}</button>`).join('')}
-    ${canApprove()?`<button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.05rem;padding:16px" onclick="closeSheetDom();openRequests()">📨&nbsp;&nbsp;Requests${S.pendingRequests?` <span class="pill pending">${S.pendingRequests}</span>`:''}</button>`:''}
     ${canPrice()?`<button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.05rem;padding:16px" onclick="closeSheetDom();openPriceList()">💲&nbsp;&nbsp;Price list</button>`:''}
     <button class="ghost" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
 }
@@ -1716,6 +1720,7 @@ function go(tab, nav){
   }
   if (tab==='jobs' && S.online) loadJobs();              // refresh job costs on every open
   if (tab==='jha') { if(S.online) loadJha(); loadCustomers(); } // JHA needs the job picker warm too
+  if (tab==='requests' && S.online) loadRequests();
   if (tab==='sched' && S.online) loadSched();            // schedule reads the admin calendar live
   if (tab==='clock' || tab==='entries') loadCustomers(); // keep autocomplete warm
 }
@@ -2362,13 +2367,16 @@ async function loadOnboarding(){
   S._obLoading=false;
 }
 function obReqProgress(){
-  const ob=S.onboard; if(!ob) return null;
-  const req=ob.items.filter(i=>i.required);
-  return { done:req.filter(i=>ob.done[i.id]).length, total:req.length };
+  // Defensive: a half-formed response from the server must never white-screen the Clock tab.
+  const ob=S.onboard; if(!ob || !Array.isArray(ob.items)) return null;
+  const done=ob.done||{};
+  const req=ob.items.filter(i=>i && i.required);
+  return { done:req.filter(i=>done[i.id]).length, total:req.length };
 }
 function obBanner(){
   const ob=S.onboard;
-  if(!ob || ob.completedAt || !ob.items.length) return '';
+  if(!ob || ob.completedAt || !Array.isArray(ob.items) || !ob.items.length) return '';
+  if(!obReqProgress()) return '';
   const p=obReqProgress();
   return `<div class="banner" style="background:#dbeafe;color:var(--accent2);border:1px solid #b6d4f5;cursor:pointer" onclick="openOnboarding()">
     🎓 <b>Finish your onboarding</b> — ${p.done} of ${p.total} done · tap to continue</div>`;
@@ -4029,18 +4037,17 @@ async function runStatPay(btn){
 /* ============================ WEBSITE REQUESTS ===============================================
  * The ball-park sequence files leads here instead of booking Paul's calendar itself. He checks
  * the AI's hours, picks the slot, assigns the crew — and only then does it hit the calendar. */
-async function openRequests(){
-  if(!S.online) return toast('Requests need a connection.');
-  sheet(`<h2>📨 Requests</h2><p class="center" style="margin:22px 0"><span class="spin"></span></p>`);
-  const mine=S._sheet;
+async function loadRequests(){
+  if(S._reqLoading||!S.online) return; S._reqLoading=true;
   try{
     const r=await apiBg('requestList',{});
-    if(S._sheet!==mine) return;
     S.requests=r.requests||[]; S.pendingRequests=S.requests.length;
-    reqRender();
-  }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
+    if(S.tab==='requests') render();
+  }catch(e){ S.reqErr=e.message; if(S.tab==='requests') render(); }
+  S._reqLoading=false;
 }
-function reqRender(){
+function openRequests(){ go('requests'); }   // from the pop-up and older call sites
+function requestsView(){
   const list=(S.requests||[]).map((q,i)=>{
     const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
     return `<div class="list-item">
@@ -4051,16 +4058,18 @@ function reqRender(){
       ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
       <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> estimated${price?` · ${price} provisional`:''}</div>
+      ${q.detail?`<details style="margin-top:4px"><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary><pre class="small" style="white-space:pre-wrap;margin:6px 0 0">${esc(q.detail)}</pre></details>`:''}
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="openReqSchedule(${i})">📅 Schedule it</button>
         <button class="ghost" onclick="reqDismiss(${i})">Dismiss</button>
       </div>
     </div>`; }).join('');
-  sheet(`<h2>📨 Requests</h2>
+  return `<h2>📨 Requests</h2>
     <p class="small muted" style="margin-top:-4px">Website leads waiting to go on the calendar. Nothing is booked until you say so.</p>
-    ${list||'<p class="muted small">Nothing waiting. 🎉</p>'}
-    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+    ${S.reqErr?`<div class="banner ot">${esc(S.reqErr)}</div>`:''}
+    <div class="card">${list||(S._reqLoading?'<p class="center"><span class="spin"></span></p>':'<p class="muted small">Nothing waiting. 🎉</p>')}</div>`;
 }
+function reqRender(){ if(S.tab==='requests') render(); else go('requests'); }
 function openReqSchedule(i){
   const q=(S.requests||[])[i]; if(!q) return;
   const sug=q.suggested&&!isNaN(new Date(q.suggested))?new Date(q.suggested):new Date(Date.now()+86400000);
@@ -4080,7 +4089,7 @@ function openReqSchedule(i){
     <div>${crew.map(e=>`<div class="perm"><input type="checkbox" id="rq_${esc(e.email)}"><label for="rq_${esc(e.email)}" style="margin:0">${esc(e.name||e.email)}</label></div>`).join('')||'<p class="small muted">No active crew.</p>'}</div>
     <div class="perm"><input type="checkbox" id="rqNotify" checked><label for="rqNotify" style="margin:0">Email the crew their assignment</label></div>
     <div class="row" style="margin-top:14px">
-      <button class="secondary grow" onclick="reqRender()">Back</button>
+      <button class="secondary grow" onclick="closeSheetDom();render()">Back</button>
       <button class="grow" id="rqGo" onclick="reqSchedule(${i},this)">📅 Put it on the calendar</button>
     </div>`);
 }
@@ -4097,7 +4106,7 @@ async function reqSchedule(i,btn){
     const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify});
     S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
     toast('On the calendar ✓'+(assign.length?' — crew notified':''));
-    reqRender(); render();
+    closeSheetDom(); render();
   }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='📅 Put it on the calendar'; }
 }
 async function reqDismiss(i){
@@ -4105,7 +4114,7 @@ async function reqDismiss(i){
   try{
     await api('requestDismiss',{id:q.id});
     S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
-    toast('Dismissed'); reqRender(); render();
+    toast('Dismissed'); render();
   }catch(e){ toast(e.message); }
 }
 /* Pop-up nudge on open when leads are waiting (Charles, item 1 of the request round). */
@@ -4117,7 +4126,7 @@ function reqNudge(){
       <div style="font-size:2.4rem">📨</div>
       <h2>${n} new ${n===1?'request':'requests'} from the website</h2>
       <p class="small muted">${n===1?'A customer has':'Customers have'} asked for an estimate or an appointment. Nothing is on the calendar yet.</p>
-      <button style="width:100%;margin-top:10px" onclick="closeSheetDom();openRequests()">Look at ${n===1?'it':'them'} now</button>
+      <button style="width:100%;margin-top:10px" onclick="closeSheetDom();go('requests')">Look at ${n===1?'it':'them'} now</button>
       <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">Later</button>
     </div>`);
 }
