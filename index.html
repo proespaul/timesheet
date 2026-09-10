@@ -58,6 +58,7 @@
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .tabbar button.active{color:var(--accent2); font-weight:800; background:rgba(46,117,182,.10);
     box-shadow:inset 0 3px 0 var(--accent2)}
+  .tabbar .ic .dot{position:absolute;margin:-14px 0 0 16px;width:9px;height:9px;border-radius:50%;background:var(--bad)}
   .tabbar .ic{display:flex; align-items:center; justify-content:center; height:27px; font-size:1.55rem; line-height:1}
   .banner{padding:10px 14px; border-radius:12px; margin:8px 0; font-size:.9rem}
   .banner.offline{background:#fef3c7; color:#92400e; border:1px solid #fcd34d}
@@ -83,6 +84,8 @@
   .avatar{width:34px; height:34px; border-radius:50%; background:var(--panel2); object-fit:cover}
   .perm{display:flex; align-items:center; gap:8px; padding:6px 0}
   .perm input{width:auto; margin:0}
+  .hourglass{display:inline-block;animation:hg 1.6s ease-in-out infinite}
+  @keyframes hg{0%,45%{transform:rotate(0)}55%,100%{transform:rotate(180deg)}}
   .spin{width:22px;height:22px;border:3px solid var(--line);border-top-color:var(--accent2);border-radius:50%;animation:sp 1s linear infinite;display:inline-block;vertical-align:middle}
   @keyframes sp{to{transform:rotate(360deg)}}
   /* ---- Branded header: navy band, greeting top-left, the logo's silver→blue→black
@@ -931,9 +934,10 @@ const DB = (() => {
    nobody taps twice. Background refreshes pass {bg:true} and never trigger it. */
 let _slowN=0,_slowTimer=null;
 function busyShow(){ if(document.getElementById('busyNote')) return;
+  // Centred on screen, icon only — a banner at the top read as an error to the crew (item 6).
   const el=document.createElement('div'); el.id='busyNote';
-  el.style.cssText='position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:70;background:var(--navy);color:#fff;padding:10px 18px;border-radius:12px;font-size:.9rem;box-shadow:0 6px 20px rgba(31,56,100,.35);max-width:92%;text-align:center';
-  el.textContent='⏳ Working — one moment, no need to tap again…';
+  el.style.cssText='position:fixed;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;pointer-events:none';
+  el.innerHTML='<div style="background:rgba(31,56,100,.92);border-radius:22px;width:84px;height:84px;display:flex;align-items:center;justify-content:center;box-shadow:0 10px 30px rgba(31,56,100,.4)"><span class="hourglass" style="font-size:2.4rem;line-height:1">⏳</span></div>';
   document.body.appendChild(el); }
 function busyHide(){ const el=document.getElementById('busyNote'); if(el) el.remove(); }
 function busyStart(){ _slowN++; if(!_slowTimer) _slowTimer=setTimeout(()=>{ if(_slowN>0) busyShow(); },700); }
@@ -1186,6 +1190,8 @@ function applyBootstrap(d){
   S.me = d.me; S.companies = d.companies; S.config = d.config;
   S.entries = d.entries||[]; S.openEntry = d.openEntry||null;
   S.employees = d.employees||[];
+  if (d.pendingRequests !== undefined) S.pendingRequests = d.pendingRequests;
+  setTimeout(()=>{ forgotNudge(); reqNudge(); }, 900);   // after the first paint, one at a time
   if (d.pending !== undefined) S.pending = d.pending; // pending now loads on demand (Admin tab)
 }
 /* Write-through: keep the cached bootstrap in step with optimistic local state, so
@@ -1476,7 +1482,11 @@ function clockView(){
             : `<button class="btn-break grow actbtn" style="padding:16px 12px" onclick="doStartBreak()"><span class="bic">☕</span><span>Start Break</span></button>`}
           <button class="btn-switch grow actbtn" style="padding:16px 12px" onclick="openJobPicker(true)"><span class="bic">⏸️</span><span>Pause &amp; Switch</span></button>
         </div>
-        <button class="actbtn" style="width:100%;margin-top:8px;padding:10px 12px" onclick="openMaterials()"><span class="bic">📦</span><span>Materials — POs, usage &amp; prices</span></button>
+        <div class="row" style="margin-top:8px">
+          <button class="actbtn grow" style="padding:12px 8px" onclick="openPoScan()"><span class="bic">📷</span><span>Scan a PO</span></button>
+          <button class="actbtn grow" style="padding:12px 8px" onclick="openMatUse()"><span class="bic">🔩</span><span>Materials used</span></button>
+        </div>
+        ${allowBtn()}
       </div>
       ${pausedCard()}`;
   }
@@ -1485,7 +1495,11 @@ function clockView(){
       <p class="muted">Not clocked in</p>
       ${clockLogo()}
       <button class="bigbtn in" onclick="openJobPicker(false)">Clock In</button>
-      <button class="ghost" style="width:100%;margin-top:8px" onclick="openMaterials()">📦 Materials &amp; prices</button>
+      <div class="row" style="margin-top:8px">
+        <button class="secondary grow" style="padding:11px 8px" onclick="openPoScan()">📷 Scan a PO</button>
+        <button class="secondary grow" style="padding:11px 8px" onclick="openMatUse()">🔩 Materials used</button>
+      </div>
+      ${allowBtn()}
     </div>
     ${pausedCard()}
 `;
@@ -1620,6 +1634,12 @@ function adminView(){
     ${allowAdminCard()}
     ${obStatusCard()}
     <div class="card">
+      <h3>Allowances &amp; stat pay</h3>
+      <p class="small muted">Amounts, rates and the meal cap live here — no code changes needed.</p>
+      <button class="secondary" onclick="openAllowCfg()">💳 Allowance settings</button>
+      <button class="secondary" style="margin-left:8px" onclick="runStatPay(this)">🍁 Post stat holiday pay</button>
+    </div>
+    <div class="card">
       <h3>Materials</h3>
       <p class="small muted">Free-typed field entries waiting to be matched against supplier receipts.</p>
       <button class="secondary" onclick="openMatReview()">Review flagged materials</button>
@@ -1657,26 +1677,32 @@ function tabBar(){
   const isAdmin = S.me && S.me.role==='admin';
   const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
   const t=(id,ic,label)=>`<button class="${S.tab===id?'active':''}" onclick="go('${id}')"><span class="ic">${ic}</span>${label}</button>`;
-  const moreTabs=['hours','jobs','team','admin'];
+  const moreTabs=['hours','jobs','team','admin','jha','requests'];
+  const cal=`<span class="calic"><span class="calic-top"></span><span class="calic-num">${new Date().getDate()}</span></span>`;
+  const pend=(S.pendingRequests||0);
+  const more=`<button class="${moreTabs.includes(S.tab)?'active':''}" onclick="openMore()"><span class="ic">☰${pend?'<span class="dot"></span>':''}</span>More</button>`;
+  // Order per Paul, Sept 2026. Crew don't get Jobs — it shows labour costs and dollar totals.
   return `<div class="tabbar">
     ${t('clock','⏱','Clock')}
+    ${t('sched',cal,'Schedule')}
+    ${canTeam?t('jobs','🏗️','Jobs'):''}
     ${t('entries','📋','Entries')}
-    ${t('sched',`<span class="calic"><span class="calic-top"></span><span class="calic-num">${new Date().getDate()}</span></span>`,'Schedule')}
-    ${t('jha','🦺','JHA')}
-    ${canTeam
-      ? `<button class="${moreTabs.includes(S.tab)?'active':''}" onclick="openMore()"><span class="ic">☰</span>More</button>`
-      : t('hours','📊','Hours')}
+    ${more}
   </div>`;
 }
 /* Admin/bookkeeper overflow menu — keeps the crew-facing tab bar roomy (Charles, 2.3). */
 function openMore(){
   const isAdmin = S.me && S.me.role==='admin';
-  const items=[['hours','📊','Hours'],['jobs','🏗️','Jobs'],['team','👥','Team']];
+  const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
+  const items=[['jha','🦺','JHA'],['hours','📊','Hours']];
+  if(canTeam) items.push(['jobs','🏗️','Jobs']);
+  if(canTeam) items.push(['team','👥','Team']);
   if(isAdmin) items.push(['admin','⚙️','Admin']);
   sheet(`<h2>More</h2>
     ${items.map(([id,ic,l])=>`<button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.05rem;padding:16px"
       onclick="closeSheetDom();go('${id}','replace')">${ic}&nbsp;&nbsp;${l}${S.tab===id?' <span class="small" style="color:var(--accent2)">• current</span>':''}</button>`).join('')}
-    <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.05rem;padding:16px" onclick="openPriceList()">💲&nbsp;&nbsp;Price list</button>
+    ${canApprove()?`<button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.05rem;padding:16px" onclick="closeSheetDom();openRequests()">📨&nbsp;&nbsp;Requests${S.pendingRequests?` <span class="pill pending">${S.pendingRequests}</span>`:''}</button>`:''}
+    ${canPrice()?`<button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.05rem;padding:16px" onclick="closeSheetDom();openPriceList()">💲&nbsp;&nbsp;Price list</button>`:''}
     <button class="ghost" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
 }
 function go(tab, nav){
@@ -1754,34 +1780,53 @@ function openJobDetail(k){
    to the PDFs. Data comes from the Job Inventory tab (app scans + the daily email sweep). */
 async function openJobPOs(pk){
   const ref=dereg(pk); if(!ref) return;
-  if(!S.online) return toast('You need signal to load the POs.');
-  sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center"><span class="spin"></span> Loading materials…</p>`);
+  if(!S.online) return toast('You need signal to load the materials.');
+  sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center" style="margin:22px 0"><span class="spin"></span></p>`);
   const mine=S._sheet;
   try{
-    const r=await apiBg('jobInventory',{jobSite:ref.jobSite, poNumber:ref.po||'', withFolder:1});
+    const r=await apiBg('jobMaterials',{jobSite:ref.jobSite, poNumber:ref.po||'', withFolder:1});
     if(S._sheet!==mine) return;
-    const items=r.items||[];
+    const bought=r.bought||[], used=r.used||[];
+    const showP=bought.some(b=>b.price!=null)||used.some(u=>u.price!=null);
+    // Bought, grouped by the supplier PO it came on
     const byInv={};
-    items.forEach(it=>{ const k=(it.supplier||'Supplier')+' · '+(it.invoice||'—');
-      (byInv[k]=byInv[k]||{date:'',list:[]}).list.push(it); if(it.date) byInv[k].date=it.date; });
-    const keys=Object.keys(byInv);
-    const showP=items.some(it=>it.price!=null);
-    let jobCost=0;
-    const html=keys.map(k=>{
+    bought.forEach(it=>{ const k=(it.supplier||'Supplier')+' · '+(it.invoice||'—');
+      (byInv[k]=byInv[k]||{date:'',doc:'',list:[]}); byInv[k].list.push(it);
+      if(it.date) byInv[k].date=it.date; if(it.doc) byInv[k].doc=it.doc; });
+    let boughtCost=0;
+    const boughtHtml=Object.keys(byInv).map(k=>{
       const g=byInv[k];
-      const cost=g.list.reduce((s,it)=>s+(it.price!=null?it.price*it.bought:0),0);
-      jobCost+=cost;
+      const cost=g.list.reduce((sum,it)=>sum+(it.price!=null?it.price*it.qty:0),0);
+      boughtCost+=cost;
       return `<div class="list-item">
         <div class="row between"><b>${esc(k)}</b><span class="small muted">${esc(g.date||'')}</span></div>
         ${g.list.map(it=>`<div class="row between small" style="margin-top:2px">
-            <span>${esc(it.desc)}</span>
-            <span style="white-space:nowrap">×${it.bought}${it.price!=null?' · $'+(it.price*it.bought).toFixed(2):''}</span>
-          </div>${(it.used||it.returned)?`<div class="small muted" style="margin-left:2px">↳ used ${it.used||0}${it.returned?` · returned ${it.returned}`:''} · ${it.remaining} left</div>`:''}`).join('')}
+            <span>${esc(it.desc)} <span class="muted">${esc(it.sku||'')}</span></span>
+            <span style="white-space:nowrap">×${it.qty}${it.price!=null?' · $'+(it.price*it.qty).toFixed(2):''}</span>
+          </div>`).join('')}
         ${showP?`<div class="row between small" style="margin-top:4px;border-top:1px solid var(--line);padding-top:4px"><b>PO total (cost)</b><b>$${cost.toFixed(2)}</b></div>`:''}
+        ${g.doc?`<a class="small" href="${esc(g.doc)}" target="_blank" style="color:var(--accent2)">📄 open this PO</a>`:''}
       </div>`; }).join('');
+    // Used — this is what the customer actually gets charged for
+    const realUsed=used.filter(u=>u.status!=='to return — awaiting credit note');
+    const bySku={};
+    realUsed.forEach(u=>{ const k=u.sku||u.desc;
+      (bySku[k]=bySku[k]||{desc:u.desc,sku:u.sku,qty:0,price:u.price}); bySku[k].qty+=u.qty; });
+    let usedCost=0;
+    const usedHtml=Object.keys(bySku).map(k=>{
+      const u=bySku[k]; if(u.price!=null) usedCost+=u.price*u.qty;
+      return `<div class="row between small" style="margin-top:3px">
+        <span>${esc(u.desc)} <span class="muted">${esc(u.sku||'')}</span></span>
+        <span style="white-space:nowrap">×${u.qty}${u.price!=null?' · $'+(u.price*u.qty).toFixed(2):''}</span>
+      </div>`; }).join('');
+    const pendingReturns=used.filter(u=>u.status==='to return — awaiting credit note');
     sheet(`<h2>${esc(ref.jobSite)} — materials</h2>
-      <p class="small muted" style="margin-top:-4px">${items.length} item${items.length===1?'':'s'} across ${keys.length} PO${keys.length===1?'':'s'}${showP?` · <b>$${jobCost.toFixed(2)}</b> at cost before markup`:''}</p>
-      ${html||'<p class="muted small">No supplier POs on this job yet — they appear when someone scans a PO in the app, or when the daily email sweep files one.</p>'}
+      <p class="small muted" style="margin-top:-4px">The invoice charges what was <b>used</b>. Anything bought and not used stays in inventory.</p>
+      <div class="card" style="margin:8px 0"><h3>Used on this job${showP?` — $${usedCost.toFixed(2)} at cost`:''}</h3>
+        ${usedHtml||'<p class="muted small">Nothing recorded yet. Crew add this from the Clock tab → Materials used.</p>'}</div>
+      <div class="card" style="margin:8px 0"><h3>Bought for this job${showP?` — $${boughtCost.toFixed(2)} at cost`:''}</h3>
+        ${boughtHtml||'<p class="muted small">No supplier POs filed against this job yet.</p>'}</div>
+      ${pendingReturns.length?`<div class="banner" style="background:#fef3c7;color:#92400e">↩ ${pendingReturns.length} item(s) flagged to go back to the supplier — they leave inventory when the credit note arrives.</div>`:''}
       ${r.folderUrl?`<a href="${esc(r.folderUrl)}" target="_blank" style="text-decoration:none"><button class="secondary" style="width:100%;margin-top:8px">📁 Open the PO PDFs in Drive</button></a>`:''}
       <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
   }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
@@ -2496,32 +2541,6 @@ function allowCard(){
       </div>`; }).join('') : '<p class="muted small">No claims yet.</p>'}
     ${a.eligible.length?`<button class="secondary" style="width:100%;margin-top:8px;padding:14px" onclick="openAllowClaim()">＋ Claim an allowance</button>`:''}
   </div>`;
-}
-const ALLOW_LABELS={phone:'Cellphone',food:'Food',km:'Mileage',other:'Other'};
-function openAllowClaim(){
-  const a=S.myAllow||{eligible:[]};
-  sheet(`<h2>Claim an allowance</h2>
-    <label>Type</label>
-    <select id="alType" onchange="document.getElementById('alKmRow').style.display=this.value==='km'?'':'none';document.getElementById('alAmtRow').style.display=this.value==='km'?'none':''">
-      ${a.eligible.map(t=>`<option value="${t}">${ALLOW_LABELS[t]||t}</option>`).join('')}</select>
-    <label>Date</label><input id="alDate" type="date" value="${todayStr()}" max="${todayStr()}">
-    <div id="alKmRow" style="display:${a.eligible[0]==='km'?'':'none'}"><label>Kilometres driven (paid at $${(a.mileageRate||0.72).toFixed(2)}/km)</label>
-      <input id="alKm" type="number" min="1" step="1" placeholder="km"></div>
-    <div id="alAmtRow" style="display:${a.eligible[0]==='km'?'none':''}"><label>Amount ($)</label>
-      <input id="alAmt" type="number" min="0.01" step="0.01" placeholder="0.00"></div>
-    <label>Note (optional)</label><input id="alNote" placeholder="e.g. September phone bill">
-    <button style="width:100%;margin-top:12px" onclick="alSubmit(this)">Send claim</button>
-    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
-}
-async function alSubmit(btn){
-  if(!S.online) return toast('You need signal to send a claim.');
-  const type=val('alType');
-  const p={type, date:val('alDate'), note:val('alNote')};
-  if(type==='km'){ p.km=Number(val('alKm')); if(!p.km) return toast('Enter the kilometres.'); }
-  else { p.amount=Number(val('alAmt')); if(!p.amount) return toast('Enter the amount.'); }
-  btn.disabled=true; btn.textContent='Sending…';
-  try{ await api('allowanceClaim',p); closeSheet(); toast('Claim sent — Paul/Charles will approve it.'); loadMyAllow(); }
-  catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Send claim'; }
 }
 async function alCancel(k,btn){
   const c=dereg(k); if(!c) return; btn.disabled=true;
@@ -3457,6 +3476,10 @@ function openEmployee(email){
   const pl=[['approveHours','Approve hours'],['editPastEntries','Edit past entries'],['manageEmployees','Add/remove employees'],
     ['setRates','Set hourly rates'],['viewAllCompanies','Can choose company (PCW/GNG/…)'],['viewAllEmployees','View all employees'],['exportPayroll','Export payroll']];
   sheet(`<h2>${esc(emp.name)}</h2><div class="small muted">${esc(emp.email)}</div>
+    <label>Name — what everyone sees in the app</label><input id="edName" value="${esc(emp.name||'')}" placeholder="e.g. Paul Olivares">
+    <label>Employment</label>
+    <select id="edFT"><option value="full" ${(perms.employment||'full')==='full'?'selected':''}>Full time</option>
+      <option value="part" ${perms.employment==='part'?'selected':''}>Part time</option></select>
     <label>Role</label><select id="edRole">${['employee','admin','bookkeeper'].map(r=>`<option ${emp.role===r?'selected':''}>${r}</option>`).join('')}</select>
     <label>Hourly rate (what they're paid)</label><input id="edRate" type="number" step="0.01" value="${emp.hourlyRate||0}">
     <label>Charged rate (what customers are billed for their hours, e.g. 105 journeyman / 50 apprentice)</label><input id="edCharge" type="number" step="0.01" value="${(perms.chargeRate||0)}">
@@ -3503,7 +3526,9 @@ async function saveEmployee(email){
   permissions.homeCompany=val('edHome')||'';
   permissions.chargeRate=Number(val('edCharge'))||0; // customer billing rate — invoices read this
   permissions.allowances={}; ['phone','food','km','other'].forEach(k=>{ const el=document.getElementById('al_'+k); if(el&&el.checked) permissions.allowances[k]=true; });
-  const p={ email, role:val('edRole'), hourlyRate:Number(val('edRate'))||0, active: val('edActive')==='true', permissions };
+  permissions.employment = val('edFT')||'full';
+  const p={ email, name:val('edName')||undefined, role:val('edRole'), hourlyRate:Number(val('edRate'))||0,
+    active: val('edActive')==='true', permissions };
   closeSheet();
   try{
     const r=await api('updateEmployee',p);
@@ -3684,138 +3709,424 @@ async function rcAdd(){
   }catch(e){ toast(e.message); if(btn) btn.disabled=false; }
 }
 
-/* ---- Materials hub: supplier POs, per-job usage, price list (Sept 2026 round) ---- */
+/* ---- Materials: supplier POs, company inventory, price list (Sept 2026 round) ---- */
 // Dollar figures (supplier costs, the price list) are for admins + the bookkeeper only —
 // the server enforces it too; this just keeps the buttons honest.
 function canPrice(){ return S.me && (S.me.role==='admin'||S.me.role==='bookkeeper'); }
-function openMaterials(){
-  const site = S.openEntry ? (S.openEntry['Customer/Job Site']||S.openEntry.Company||'') : '';
-  sheet(`<h2>📦 Materials</h2>
-    ${site?`<p class="small muted">Working on: <b>${esc(site)}</b></p>`:'<p class="small muted">Not clocked in — scans file under Stock until they\'re tied to a job.</p>'}
-    <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openPoScan()">📷&nbsp;&nbsp;Picked up material — scan the supplier PO</button>
-    <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openMatUse()">🔩&nbsp;&nbsp;Enter the materials you used</button>
-    <button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openReceiptScan()">🧾&nbsp;&nbsp;Scan a store receipt</button>
-    ${canPrice()?`<button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.02rem;padding:15px" onclick="openPriceList()">💲&nbsp;&nbsp;Materials price list</button>`:''}
-    <button class="ghost" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
-}
+function canApprove(){ return S.me && (S.me.role==='admin'||(S.me.permissions&&S.me.permissions.approveHours)); }
 
-/* Supplier-PO scan: the crew photographs the itemized PO page at pickup. Online, it's parsed
-   immediately (items → this job's inventory, prices → the Price List sheet, PDF → Drive).
-   Offline, the photo waits on the phone and flushPOs() sends it when signal returns. */
+/* ============================ IN-APP CAMERA ==================================================
+ * iOS always interposes its own Take Photo / Photo Library sheet on a file input, whatever the
+ * capture attribute says. So we run our own viewfinder: one tap, live preview, one shutter.
+ * Falls back to the file input wherever getUserMedia is unavailable or refused. ============ */
+let camStream=null, camOnShot=null;
+async function openCamera(onShot, label){
+  camOnShot=onShot;
+  sheet(`<div id="camWrap" style="margin:-18px -18px 0">
+      <div style="position:relative;background:#000;border-radius:24px 24px 0 0;overflow:hidden">
+        <video id="camVid" playsinline autoplay muted style="width:100%;max-height:62vh;display:block;object-fit:cover"></video>
+        <div id="camMsg" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:.95rem;text-align:center;padding:20px"><span class="spin"></span></div>
+      </div>
+    </div>
+    <p class="small muted center" style="margin:10px 0 6px">${esc(label||'Fill the frame with the itemized part of the page.')}</p>
+    <button id="camShot" style="width:100%;padding:20px;font-size:1.15rem" onclick="camShoot()" disabled>📸 Take the picture</button>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="camClose()">Cancel</button>
+    <input id="camFallback" type="file" accept="image/*" capture="environment" class="hidden" onchange="camFromFile(this)">`);
+  if (S._sheet) S._sheet.onclick=null;   // a stray backdrop tap must not kill the camera
+  try{
+    camStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'},
+      width:{ideal:1920}, height:{ideal:1920} }, audio:false });
+    const v=document.getElementById('camVid'); if(!v){ camStop(); return; }
+    v.srcObject=camStream; await v.play().catch(()=>{});
+    const m=document.getElementById('camMsg'); if(m) m.remove();
+    const b=document.getElementById('camShot'); if(b) b.disabled=false;
+  }catch(e){
+    // No camera permission, or a browser that won't give one — hand over to the file picker.
+    const m=document.getElementById('camMsg');
+    if(m) m.innerHTML='<div>Camera not available on this phone.<br><span class="small">Using the photo picker instead…</span></div>';
+    setTimeout(()=>{ const f=document.getElementById('camFallback'); if(f) f.click(); }, 600);
+  }
+}
+function camStop(){ try{ if(camStream) camStream.getTracks().forEach(t=>t.stop()); }catch(e){} camStream=null; }
+function camClose(){ camStop(); camOnShot=null; closeSheet(); }
+function camShoot(){
+  const v=document.getElementById('camVid'); if(!v||!v.videoWidth) return;
+  const max=1800, scale=Math.min(1, max/Math.max(v.videoWidth,v.videoHeight));
+  const c=document.createElement('canvas');
+  c.width=Math.round(v.videoWidth*scale); c.height=Math.round(v.videoHeight*scale);
+  c.getContext('2d').drawImage(v,0,0,c.width,c.height);
+  const b64=c.toDataURL('image/jpeg',0.88).split(',')[1];
+  camStop();
+  const fn=camOnShot; camOnShot=null;
+  if(fn) fn(b64,'image/jpeg');
+}
+async function camFromFile(input){
+  const f=input.files&&input.files[0]; if(!f) return;
+  const shrunk=await shrinkPhoto(f,1800);
+  const b64=shrunk||await fileToB64(f);
+  const fn=camOnShot; camOnShot=null;
+  if(fn) fn(b64, shrunk?'image/jpeg':(f.type||'image/jpeg'));
+}
+/* Clock tab: two plain buttons, no menu in between (item 1). */
 function openPoScan(){
   const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
-  sheet(`<h2>Scan the supplier PO</h2>
-    <p class="small muted">Photograph the itemized page (EECOL, Bartle &amp; Gibson, Home Hardware, Northern Metallic…). The items land under ${site?`<b>${esc(site)}</b>`:'<b>Stock</b>'} and the price list updates itself — newest price wins.</p>
-    <label>Photo of the PO</label>
-    <input type="file" accept="image/*" capture="environment" onchange="poScan(this)">
-    <div id="poStatus" class="small muted"></div>
-    <div id="poResults"></div>
-    <button class="secondary" style="width:100%;margin-top:14px" onclick="closeSheet()">Close</button>`);
-  if (S._sheet) S._sheet.onclick=null; // don't lose a scan to a stray backdrop tap
+  if(!S.online) return toast('Scanning a PO needs a connection — or take it again when you have signal.');
+  openCamera((b64,mime)=>poScanSend(b64,mime,site),
+    site?`Supplier PO for ${site}. Fill the frame with the itemized page.`
+        :'Supplier PO. Fill the frame with the itemized page.');
 }
-async function poScan(input){
-  const f=input.files&&input.files[0]; if(!f) return;
-  if (f.size > MAX_MEDIA_MB*1048576){ toast('Photo too large — lower the camera resolution'); return; }
-  const st=document.getElementById('poStatus');
-  const shrunk=await shrinkPhoto(f,1800); // POs have small print — a touch more resolution than receipts
-  const b64=shrunk||await fileToB64(f);
-  const p={dataBase64:b64, mimeType:shrunk?'image/jpeg':(f.type||'image/jpeg'), filename:f.name};
+async function poScanSend(b64, mime, site){
+  const p={dataBase64:b64, mimeType:mime||'image/jpeg'};
   if(S.openEntry){ p.jobSite=S.openEntry['Customer/Job Site']||S.openEntry.Company||''; p.poNumber=S.openEntry['PO#']||''; }
-  if(!S.online){ await poQueue(p, st); return; }
-  st.innerHTML='<span class="spin"></span> Reading the PO… (10–20 seconds)';
+  sheet(`<h2>Reading the PO…</h2>
+    <p class="center" style="margin:22px 0"><span class="spin"></span></p>
+    <p class="small muted center">10–20 seconds. The items go into inventory and the price list updates itself.</p>
+    <div id="poStatus" class="small muted"></div><div id="poResults"></div>
+    <button class="secondary" style="width:100%;margin-top:14px" onclick="closeSheet()">Close</button>`);
+  if(!S.online){ await poQueue(p); return; }
   try{
     const r=await api('scanSupplierPO',p);
+    const st=document.getElementById('poStatus'); if(!st) return;
+    document.querySelectorAll('#poStatus').forEach(()=>{});
+    const head=document.querySelector('.sheet h2'); if(head) head.textContent=r.duplicate?'Already filed':'Added to inventory';
+    const sp=document.querySelector('.sheet .center .spin'); if(sp&&sp.parentElement) sp.parentElement.remove();
     st.innerHTML = r.duplicate
-      ? `<b>${esc(r.supplier)} ${esc(r.invoiceNo)}</b> — this one was already filed earlier, so nothing was doubled.`
-      : `<b>${esc(r.supplier)} ${esc(r.invoiceNo)}</b>${r.date?' · '+esc(r.date):''} — <b>${r.added}</b> item(s) added${p.jobSite?' to '+esc(p.jobSite):' to Stock'}.`+
+      ? `<b>${esc(r.supplier)} ${esc(r.invoiceNo)}</b> was already filed earlier — nothing was doubled.`
+      : `<b>${esc(r.supplier)} ${esc(r.invoiceNo)}</b>${r.date?' · '+esc(r.date):''} — <b>${r.added}</b> item(s) ${r.credit?'taken back out of':'added to'} inventory${p.jobSite?', recorded against '+esc(p.jobSite):''}.`+
         (r.poUrl?` <a href="${esc(r.poUrl)}" target="_blank" style="color:var(--accent2)">PDF ↗</a>`:'');
     const box=document.getElementById('poResults');
     if(box) box.innerHTML=(r.items||[]).map(it=>`<div class="list-item row between">
-        <div class="grow">${esc(it.desc)}</div>
+        <div class="grow">${esc(it.desc)}<div class="small muted">${esc(it.sku)}</div></div>
         <div class="small muted" style="white-space:nowrap">×${esc(it.qty)}${it.price!=null?' · $'+Number(it.price).toFixed(2):''}</div>
       </div>`).join('');
   }catch(e){
-    if(/busy right now|Failed to fetch|NetworkError|timed out/i.test(e.message||'')){ await poQueue(p, st); }
-    else st.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>';
+    if(/busy right now|Failed to fetch|NetworkError|timed out/i.test(e.message||'')){ await poQueue(p); }
+    else{ const st=document.getElementById('poStatus'); if(st) st.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; }
   }
 }
-async function poQueue(p, st){
+async function poQueue(p){
   try{
     const q=(await DB.getCache('pendingPOs'))||[];
     q.push({dataBase64:p.dataBase64, mimeType:p.mimeType, jobSite:p.jobSite||'', poNumber:p.poNumber||'', at:Date.now()});
-    await DB.setCache('pendingPOs', q.slice(-5)); // last 5 — same ~2MB ceiling as receipts
-    if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ No signal — the PO photo is saved on the phone and will be read &amp; filed automatically when you\'re back online.</span>';
-  }catch(e){ if(st) st.innerHTML='<span style="color:var(--bad)">Could not save the photo on the phone — try again with signal.</span>'; }
+    await DB.setCache('pendingPOs', q.slice(-5));
+    const st=document.getElementById('poStatus');
+    if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ No signal — the photo is saved on the phone and will be read and filed automatically once you\'re back online.</span>';
+    else toast('Saved on the phone — it will file itself when you have signal');
+  }catch(e){ toast('Could not save the photo on the phone — try again with signal.'); }
 }
 async function flushPOs(){
   if(!S.online||S._fpBusy) return; S._fpBusy=true;
   try{
     let q=(await DB.getCache('pendingPOs'))||[];
     while(q.length){
-      try{
-        await apiBg('scanSupplierPO', q[0]);
-        toast('Supplier PO from earlier was read & filed ✓');
-      }catch(e){
-        if(/does not look like|Could not read|clearer photo/i.test(e.message||'')){
-          toast('⚠ A queued PO photo was unreadable — scan it again'); // permanent: drop it
-        } else break; // transient (server busy) — retry on the next reconnect
+      try{ await apiBg('scanSupplierPO', q[0]); toast('Supplier PO from earlier was read and filed ✓'); }
+      catch(e){
+        if(/does not look like|Could not read|clearer photo/i.test(e.message||'')) toast('⚠ A queued PO photo was unreadable — scan it again');
+        else break;                                  // transient — retry on the next reconnect
       }
       q=q.slice(1); await DB.setCache('pendingPOs', q);
     }
-  }catch(e){ /* next reconnect retries */ }
+  }catch(e){}
   S._fpBusy=false;
 }
 
-/* Per-job usage: pick from what was bought for this job, type how many went in. */
-async function openMatUse(){
+/* Materials used: search the whole company inventory (Paul buys per job, but common parts come
+   off the shelf), type the quantity, and it comes out of stock onto this job. */
+let muT=null;
+function openMatUse(){
   const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
   sheet(`<h2>🔩 Materials used</h2>
-    <p class="small muted">${site?`Bought for <b>${esc(site)}</b>. `:'Stock items. '}Enter a quantity and tap <b>Used</b> — what's left stays “remaining” until it's used or returned to the store.</p>
-    <div id="muList"><span class="spin"></span></div>
+    <p class="small muted">${site?`Going onto <b>${esc(site)}</b>. `:'Not clocked in — this will be recorded against Stock. '}Search what you used, type how many, tap Used.</p>
+    <input id="muQ" placeholder="Search: breaker 15a, NMD90 14/2, EMT 1/2" oninput="muSearch()">
+    <div class="perm" style="margin-top:4px"><input type="checkbox" id="muStock" checked onchange="muSearch()">
+      <label for="muStock" style="margin:0" class="small">Only show what we have on hand</label></div>
+    <div id="muList" style="margin-top:6px"><span class="spin"></span></div>
     <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
-  try{
-    const r=await apiBg('jobInventory',{jobSite:site||'Stock', poNumber:S.openEntry?(S.openEntry['PO#']||''):''});
-    S.muItems=r.items||[]; muRender();
-  }catch(e){ const b=document.getElementById('muList'); if(b) b.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+  muSearch();
 }
-function muRender(){
+function muSearch(){
+  clearTimeout(muT);
+  muT=setTimeout(async ()=>{
+    const box=document.getElementById('muList'); if(!box) return;
+    box.innerHTML='<span class="spin"></span>';
+    try{
+      const el=document.getElementById('muStock');
+      const r=await apiBg('inventoryList',{q:val('muQ'), inStock: el?el.checked:true, limit:40});
+      S.muItems=r.items||[]; muRender(r.total||0);
+    }catch(e){ const b=document.getElementById('muList'); if(b) b.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+  },300);
+}
+function muRender(total){
   const box=document.getElementById('muList'); if(!box) return;
-  box.innerHTML = (S.muItems||[]).map((it,i)=>`<div class="list-item">
+  box.innerHTML=(S.muItems||[]).map((it,i)=>`<div class="list-item">
       <b>${esc(it.desc)}</b>
-      <div class="small muted">${esc(it.supplier)}${it.sku?' · '+esc(it.sku):''}${it.price!=null?' · $'+Number(it.price).toFixed(2)+' ea':''}</div>
-      <div class="small" style="margin-top:3px">bought ${it.bought} · used <b>${it.used}</b>${it.returned?` · returned ${it.returned}`:''} · <b style="color:var(--accent2)">${it.remaining} left</b></div>
+      <div class="small muted">${esc(it.sku)} · <b style="color:${it.onHand>0?'var(--accent2)':'var(--warn)'}">${it.onHand} ${esc(it.unit)}</b> on hand${it.price!=null?' · $'+Number(it.price).toFixed(2)+' ea':''}</div>
       <div class="row" style="margin-top:6px">
-        <input id="muq_${i}" type="number" step="any" min="0" placeholder="qty" style="width:84px;margin:0;text-align:center">
-        <button class="grow" onclick="muApply(${i},1)">Used</button>
-        <button class="ghost" onclick="muApply(${i},-1)" title="Took some back out of 'used'">Undo</button>
-        <button class="ghost" onclick="muReturn(${i})">Return</button>
+        <input id="muq_${i}" type="number" step="any" min="0" placeholder="how many" style="width:104px;margin:0;text-align:center">
+        <button class="grow" onclick="muUse(${i},1)">Used</button>
+        <button class="ghost" onclick="muUse(${i},-1)" title="Put some back">Undo</button>
+        ${canPrice()?`<button class="ghost" onclick="muReturn(${i})" title="Going back to the supplier">Return</button>`:''}
       </div>
-    </div>`).join('') || '<p class="muted small">No materials on this job yet — scan the supplier PO first (📦 Materials → scan the PO).</p>';
+    </div>`).join('') || '<p class="muted small">Nothing matches. Untick “only what we have on hand” to search everything, or scan the supplier PO first.</p>'
+    + (total>40?`<p class="small muted">Showing 40 of ${total} — refine the search.</p>`:'');
 }
-async function muApply(i,sign){
+async function muUse(i,sign){
   const it=(S.muItems||[])[i]; if(!it) return;
-  const q=Number(val('muq_'+i)); if(!q||q<=0){ toast('Enter the quantity first'); return; }
-  it.used=Math.max(0,Math.min(it.bought-it.returned, it.used+sign*q));
-  it.remaining=Math.max(0,it.bought-it.used-it.returned);
-  muRender(); // optimistic — works offline, syncs through the queue
-  try{ await apiMutate('useMaterial',{id:it.id, qty:sign*q}); toast(sign>0?'Marked as used ✓':'Undone ✓'); }
-  catch(e){ toast(e.message); }
+  const q=Number(val('muq_'+i)); if(!q||q<=0){ toast('Enter how many first'); return; }
+  it.onHand = it.onHand - sign*q;
+  muRender();
+  const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
+  try{
+    await apiMutate('takeMaterial',{sku:it.sku, qty:sign*q, jobSite:site,
+      poNumber:S.openEntry?(S.openEntry['PO#']||''):'', at:new Date().toISOString()});
+    toast(sign>0?`${q} ${it.unit} used ✓`:'Put back ✓');
+  }catch(e){ toast(e.message); }
 }
 async function muReturn(i){
   const it=(S.muItems||[])[i]; if(!it) return;
-  const q=Number(val('muq_'+i)); if(!q||q<=0){ toast('Enter the quantity first'); return; }
-  it.returned=Math.max(0,Math.min(it.bought-it.used, it.returned+q));
-  it.remaining=Math.max(0,it.bought-it.used-it.returned);
-  muRender();
-  try{ await apiMutate('returnMaterial',{id:it.id, qty:q}); toast('Marked for return to the store ✓'); }
-  catch(e){ toast(e.message); }
+  const q=Number(val('muq_'+i)); if(!q||q<=0){ toast('Enter how many first'); return; }
+  try{
+    await api('returnToSupplier',{sku:it.sku, qty:q,
+      jobSite:S.openEntry?(S.openEntry['Customer/Job Site']||''):''});
+    toast('Noted — it leaves inventory when the credit note arrives');
+  }catch(e){ toast(e.message); }
 }
 
-/* Read-only price list search — everyone can consult it (Paul's call, Sept 2026). */
+/* ============================ ALLOWANCES ====================================================
+ * The small button only appears once an admin has ticked what this person may claim. Cellphone
+ * is posted automatically each month, so it is deliberately NOT offered here. =============== */
+const ALLOW_LABELS={phone:'Cellphone',food:'Meals',km:'Mileage',other:'Other'};
+function allowElig(){
+  const a=(S.me&&S.me.permissions&&S.me.permissions.allowances)||{};
+  return ['food','km','other'].filter(k=>a[k]);   // phone posts itself — nothing to claim
+}
+function allowBtn(){
+  if(!allowElig().length) return '';
+  return `<button class="ghost" style="width:100%;margin-top:8px;font-size:.92rem;padding:9px"
+    onclick="openAllowClaim()">💳 Claim an allowance</button>`;
+}
+function openAllowClaim(){
+  const elig=allowElig();
+  if(!elig.length) return toast('No allowances are set up on your account yet.');
+  const cfg=(S.config&&S.config.allowances)||{km:0.60,meal:23};
+  sheet(`<h2>💳 Claim an allowance</h2>
+    <label>What kind</label>
+    <select id="alType" onchange="alSwitch()">${elig.map(t=>`<option value="${t}">${ALLOW_LABELS[t]}</option>`).join('')}</select>
+    <label>Date</label><input id="alDate" type="date" value="${todayStr()}" max="${todayStr()}">
+    <div id="alKmRow" class="hidden">
+      <label>Kilometres driven</label><input id="alKm" type="number" step="any" min="0" inputmode="decimal">
+      <label>Where did you go?</label><input id="alDest" placeholder="e.g. Peace River → Manning, EECOL run">
+      <p class="small muted" style="margin:2px 0 0">Paid at $${Number(cfg.km||0.60).toFixed(2)}/km.</p>
+    </div>
+    <div id="alAmtRow">
+      <label>Amount ($)</label><input id="alAmt" type="number" step="0.01" min="0" inputmode="decimal">
+      <label>Note (optional)</label><input id="alNote" placeholder="e.g. supper, Manning callout">
+      <p class="small muted" id="alCapNote" style="margin:2px 0 0"></p>
+    </div>
+    <div id="alPhotoRow" class="hidden">
+      <div id="alPhotoState" class="small muted" style="margin:8px 0">📷 A photo of the receipt is required.</div>
+      <button class="secondary" style="width:100%" onclick="alPhoto()">📷 Photograph the receipt</button>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Cancel</button>
+      <button class="grow" id="alSend" onclick="alSubmit(this)">Send the claim</button>
+    </div>`);
+  alSwitch();
+}
+let alPhotoB64=null, alPhotoMime=null;
+function alSwitch(){
+  const t=val('alType'), cfg=(S.config&&S.config.allowances)||{meal:23,mealNeedsPhoto:true};
+  const km=document.getElementById('alKmRow'), amt=document.getElementById('alAmtRow'),
+        ph=document.getElementById('alPhotoRow'), cap=document.getElementById('alCapNote');
+  if(km) km.classList.toggle('hidden', t!=='km');
+  if(amt) amt.classList.toggle('hidden', t==='km');
+  if(ph) ph.classList.toggle('hidden', !(t==='food'&&cfg.mealNeedsPhoto!==false));
+  if(cap) cap.textContent = t==='food' ? `Up to $${Number(cfg.meal||23).toFixed(2)} per meal goes through without question; more than that just needs Paul's nod.` : '';
+}
+function alPhoto(){
+  const back=S._sheetHtml;
+  openCamera((b64,mime)=>{
+    alPhotoB64=b64; alPhotoMime=mime;
+    openAllowClaim();
+    setTimeout(()=>{ const st=document.getElementById('alPhotoState');
+      if(st){ st.innerHTML='✓ Receipt photographed'; st.style.color='var(--good)'; } }, 60);
+  }, 'Photograph the whole receipt.');
+}
+async function alSubmit(btn){
+  const t=val('alType');
+  const p={ type:t, date:val('alDate') };
+  if(t==='km'){
+    p.km=Number(val('alKm'))||0; p.note=val('alDest');
+    if(!p.km) return toast('Enter the kilometres.');
+    if(!p.note.trim()) return toast('Where did you drive to?');
+  }else{
+    p.amount=Number(val('alAmt'))||0; p.note=val('alNote');
+    if(!p.amount) return toast('Enter the amount.');
+    if(t==='food'&&alPhotoB64){ p.dataBase64=alPhotoB64; p.mimeType=alPhotoMime||'image/jpeg'; }
+    const cfg=(S.config&&S.config.allowances)||{};
+    if(t==='food'&&cfg.mealNeedsPhoto!==false&&!alPhotoB64) return toast('Photograph the receipt first.');
+  }
+  btn.disabled=true; btn.textContent='Sending…';
+  try{
+    await api('allowanceClaim',p);
+    alPhotoB64=null; alPhotoMime=null;
+    closeSheet(); toast('Claim sent — Paul will approve it.'); loadMyAllow();
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Send the claim'; }
+}
+
+/* Admin: one place for every allowance amount (Charles, item 4). */
+async function openAllowCfg(){
+  if(!S.online) return toast('Needs a connection.');
+  try{
+    const r=await api('allowCfgGet',{});
+    const c=r.cfg||{};
+    sheet(`<h2>💳 Allowance settings</h2>
+      <p class="small muted">These apply to everyone who has the matching allowance ticked on their Team card.</p>
+      <label>Cellphone — $ per month, posted automatically, no approval needed</label>
+      <input id="acPhone" type="number" step="0.01" min="0" value="${Number(c.phone||0)}">
+      <label>Meals — reasonable amount per meal ($). Above this still goes through, but flagged for you.</label>
+      <input id="acMeal" type="number" step="0.01" min="0" value="${Number(c.meal||0)}">
+      <div class="perm"><input type="checkbox" id="acMealPhoto" ${c.mealNeedsPhoto!==false?'checked':''}>
+        <label for="acMealPhoto" style="margin:0">A photo of the receipt is required for meals</label></div>
+      <label>Mileage — $ per km</label>
+      <input id="acKm" type="number" step="0.01" min="0" value="${Number(c.km||0)}">
+      <label>Other — default $ (0 means they type the amount)</label>
+      <input id="acOther" type="number" step="0.01" min="0" value="${Number(c.other||0)}">
+      <div class="row" style="margin-top:14px">
+        <button class="secondary grow" onclick="closeSheet()">Cancel</button>
+        <button class="grow" onclick="saveAllowCfg(this)">Save</button>
+      </div>`);
+  }catch(e){ toast(e.message); }
+}
+async function saveAllowCfg(btn){
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const r=await api('allowCfgSet',{ phone:val('acPhone'), meal:val('acMeal'), km:val('acKm'),
+      other:val('acOther'), mealNeedsPhoto:(document.getElementById('acMealPhoto')||{}).checked });
+    if(S.config) S.config.allowances=r.cfg;
+    closeSheet(); toast('Saved ✓');
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Save'; }
+}
+/* Alberta general holiday pay: average daily wage, 5-of-9 eligibility, posted as approved
+   entries on the holiday itself. Safe to run twice — it skips anyone already posted. */
+async function runStatPay(btn){
+  if(!S.online) return toast('Needs a connection.');
+  btn.disabled=true; btn.textContent='Working…';
+  try{
+    const r=await api('statPayRun',{year:new Date().getFullYear()});
+    const paid=(r.posted||[]).map(x=>`<div class="list-item small"><b>${esc(x.who)}</b> · ${esc(x.holiday)} · ${x.hours} hrs ≈ $${Number(x.amount).toFixed(2)}</div>`).join('');
+    const skip=(r.skipped||[]).slice(0,40).map(x=>`<div class="list-item small muted">${esc(x.who)} · ${esc(x.holiday)} — ${esc(x.why)}</div>`).join('');
+    sheet(`<h2>🍁 Stat holiday pay ${r.year}</h2>
+      <p class="small muted">Alberta average daily wage: what they earned in the 4 weeks before, divided by days worked. Only on days that are a regular workday for them (the 5-of-9 rule).</p>
+      <h3>Posted (${(r.posted||[]).length})</h3>${paid||'<p class="muted small">Nothing new to post.</p>'}
+      <h3>Not posted (${(r.skipped||[]).length})</h3>${skip||'<p class="muted small">—</p>'}
+      <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+    refresh(true);
+  }catch(e){ toast(e.message); }
+  btn.disabled=false; btn.textContent='🍁 Post stat holiday pay';
+}
+
+/* ============================ WEBSITE REQUESTS ===============================================
+ * The ball-park sequence files leads here instead of booking Paul's calendar itself. He checks
+ * the AI's hours, picks the slot, assigns the crew — and only then does it hit the calendar. */
+async function openRequests(){
+  if(!S.online) return toast('Requests need a connection.');
+  sheet(`<h2>📨 Requests</h2><p class="center" style="margin:22px 0"><span class="spin"></span></p>`);
+  const mine=S._sheet;
+  try{
+    const r=await apiBg('requestList',{});
+    if(S._sheet!==mine) return;
+    S.requests=r.requests||[]; S.pendingRequests=S.requests.length;
+    reqRender();
+  }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
+}
+function reqRender(){
+  const list=(S.requests||[]).map((q,i)=>{
+    const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
+    return `<div class="list-item">
+      <div class="row between">
+        <div><b>${esc(q.customer||'—')}</b> <span class="pill ${q.type==='APPOINTMENT'?'approved':'live'}">${esc(q.type||'')}</span></div>
+        <span class="small muted">${q.entryNo?('#'+esc(q.entryNo)):''}</span>
+      </div>
+      ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
+      <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
+      <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> estimated${price?` · ${price} provisional`:''}</div>
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="openReqSchedule(${i})">📅 Schedule it</button>
+        <button class="ghost" onclick="reqDismiss(${i})">Dismiss</button>
+      </div>
+    </div>`; }).join('');
+  sheet(`<h2>📨 Requests</h2>
+    <p class="small muted" style="margin-top:-4px">Website leads waiting to go on the calendar. Nothing is booked until you say so.</p>
+    ${list||'<p class="muted small">Nothing waiting. 🎉</p>'}
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+}
+function openReqSchedule(i){
+  const q=(S.requests||[])[i]; if(!q) return;
+  const sug=q.suggested&&!isNaN(new Date(q.suggested))?new Date(q.suggested):new Date(Date.now()+86400000);
+  const pad=n=>String(n).padStart(2,'0');
+  const d=`${sug.getFullYear()}-${pad(sug.getMonth()+1)}-${pad(sug.getDate())}`;
+  const t=`${pad(sug.getHours()||9)}:${pad(sug.getMinutes())}`;
+  const crew=(S.employees||[]).filter(e=>e.active);
+  sheet(`<h2>${esc(q.customer||'Schedule')}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(q.type)}${q.entryNo?(' · #'+esc(q.entryNo)):''}${q.address?(' · '+esc(q.address)):''}</p>
+    ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
+    ${q.materials?`<div class="small muted">Materials: ${esc(q.materials)}</div>`:''}
+    <label>How long will it take? (hours — the AI guessed ${q.hours})</label>
+    <input id="rqHours" type="number" step="0.25" min="0.25" value="${q.hours||1}">
+    <div class="row"><div class="grow"><label>Date</label><input id="rqDate" type="date" value="${d}"></div>
+      <div class="grow"><label>Start</label><input id="rqTime" type="time" value="${t}"></div></div>
+    <label>Who's going?</label>
+    <div>${crew.map(e=>`<div class="perm"><input type="checkbox" id="rq_${esc(e.email)}"><label for="rq_${esc(e.email)}" style="margin:0">${esc(e.name||e.email)}</label></div>`).join('')||'<p class="small muted">No active crew.</p>'}</div>
+    <div class="perm"><input type="checkbox" id="rqNotify" checked><label for="rqNotify" style="margin:0">Email the crew their assignment</label></div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="reqRender()">Back</button>
+      <button class="grow" id="rqGo" onclick="reqSchedule(${i},this)">📅 Put it on the calendar</button>
+    </div>`);
+}
+async function reqSchedule(i,btn){
+  const q=(S.requests||[])[i]; if(!q) return;
+  const date=val('rqDate'), time=val('rqTime'), hours=Number(val('rqHours'))||q.hours||1;
+  if(!date||!time) return toast('Pick the date and time.');
+  const start=new Date(date+'T'+time);
+  if(isNaN(start)) return toast('That date/time did not read properly.');
+  const assign=(S.employees||[]).filter(e=>e.active&&(document.getElementById('rq_'+e.email)||{}).checked).map(e=>e.email);
+  const notify=(document.getElementById('rqNotify')||{}).checked!==false;
+  btn.disabled=true; btn.textContent='Booking…';
+  try{
+    const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify});
+    S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
+    toast('On the calendar ✓'+(assign.length?' — crew notified':''));
+    reqRender(); render();
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='📅 Put it on the calendar'; }
+}
+async function reqDismiss(i){
+  const q=(S.requests||[])[i]; if(!q) return;
+  try{
+    await api('requestDismiss',{id:q.id});
+    S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
+    toast('Dismissed'); reqRender(); render();
+  }catch(e){ toast(e.message); }
+}
+/* Pop-up nudge on open when leads are waiting (Charles, item 1 of the request round). */
+function reqNudge(){
+  if(!canApprove() || !S.pendingRequests || S._reqNudged) return;
+  S._reqNudged=true;
+  const n=S.pendingRequests;
+  sheet(`<div class="center">
+      <div style="font-size:2.4rem">📨</div>
+      <h2>${n} new ${n===1?'request':'requests'} from the website</h2>
+      <p class="small muted">${n===1?'A customer has':'Customers have'} asked for an estimate or an appointment. Nothing is on the calendar yet.</p>
+      <button style="width:100%;margin-top:10px" onclick="closeSheetDom();openRequests()">Look at ${n===1?'it':'them'} now</button>
+      <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">Later</button>
+    </div>`);
+}
+
+/* Read-only price list — admins and the bookkeeper (server enforces it too). */
 let plT=null;
 function openPriceList(){
   sheet(`<h2>💲 Price list</h2>
-    <p class="small muted">Live supplier prices — updated by every scanned PO and the daily invoice-email sweep. Newest price wins.</p>
+    <p class="small muted">Live supplier prices and what we have on hand. Updated by every scanned PO and the daily invoice sweep — newest price wins.</p>
     <input id="plQ" placeholder="Search: e.g. breaker 15a, NMD90, EMT 1/2" oninput="plSearch()">
     <div id="plList" class="small muted" style="margin-top:8px"><span class="spin"></span></div>
     <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
@@ -3830,8 +4141,8 @@ function plSearch(){
       const r=await apiBg('priceList',{q:val('plQ'),limit:40});
       const b2=document.getElementById('plList'); if(!b2) return;
       b2.innerHTML=(r.items||[]).map(it=>`<div class="list-item row between">
-          <div class="grow"><b>${esc(it.d)}</b><div class="small muted">${esc(it.s)}${it.k?' · '+esc(it.k):''}${it.dt?' · '+esc(it.dt):''}</div></div>
-          <div style="font-weight:800;white-space:nowrap">$${Number(it.p).toFixed(2)}</div>
+          <div class="grow"><b>${esc(it.desc)}</b><div class="small muted">${esc(it.sku)} · ${it.onHand} ${esc(it.unit)} on hand${it.supplier?' · last from '+esc(it.supplier):''}${(it.lo&&it.loSup&&it.lo<it.price)?` · <span style="color:var(--good)">cheapest ${esc(it.loSup)} $${Number(it.lo).toFixed(2)}</span>`:''}</div></div>
+          <div style="font-weight:800;white-space:nowrap">$${Number(it.price).toFixed(2)}</div>
         </div>`).join('') || '<p class="muted small">No match — try fewer words.</p>';
       if((r.total||0)>40) b2.innerHTML+=`<p class="small muted">Showing 40 of ${r.total} — refine the search.</p>`;
     }catch(e){ const b3=document.getElementById('plList'); if(b3) b3.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
@@ -3912,6 +4223,22 @@ async function flushReceipts(){
     }
   }catch(e){ /* next reconnect retries */ }
   S._frBusy=false;
+}
+/* A forgotten punch-out costs somebody a day's pay to unpick, so past 16 hours we say so out
+   loud instead of hoping the banner gets noticed. Dismissible — it returns on the next open. */
+function forgotNudge(){
+  if(!S.openEntry || S._forgotNudged) return;
+  const ageH=(Date.now()-new Date(S.openEntry.ClockIn))/3600000;
+  if(ageH < 16) return;
+  S._forgotNudged=true;
+  sheet(`<div class="center">
+      <div style="font-size:2.4rem">⏰</div>
+      <h2>Still clocked in after ${Math.floor(ageH)} hours</h2>
+      <p>You clocked in on <b>${esc(fmtDay(S.openEntry.ClockIn))} at ${esc(fmtTime(S.openEntry.ClockIn))}</b> and haven't clocked out.</p>
+      <p class="small muted">If you forgot, fix the time now and your hours stay right. If you really are still working, carry on.</p>
+      <button style="width:100%;margin-top:10px" onclick="closeSheetDom();openForgotFix()">Fix my clock-out time</button>
+      <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">I'm still working</button>
+    </div>`);
 }
 window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); flushReceipts(); flushPOs(); if(!S.onboard) loadOnboarding(); });
 window.addEventListener('offline', ()=>{ S.online=false; render(); });
