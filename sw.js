@@ -7,7 +7,7 @@
  * already cached. Now the app paints instantly from cache and the fetch that runs in the
  * background updates the cache, so a fresh deploy lands on the SECOND open after it ships.
  */
-const CACHE = 'pcw-pro-timesheet-v32'; // v32: Requests as a main tab, hardened onboarding banner (+ v31 camera, allowances, inventory)
+const CACHE = 'pcw-pro-timesheet-v37'; // v37: no app change — version bump alongside Code.gs v25
 const SHELL = ['./', './index.html', './manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
