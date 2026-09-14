@@ -1042,9 +1042,30 @@ async function apiRaw_(action, payload){
    snapshot that was read from the sheet BEFORE the mutation's write landed (the flicker bug:
    optimistic "Clock Out" state briefly overwritten by a pre-write snapshot). */
 let mutsInFlight = 0;
+/* True while a punch is still being delivered. The big Clock In / Clock Out button reads this
+   and disables itself, so the eleven-second double punch cannot happen even on a dead network. */
+function punchBusy(){ return mutsInFlight > 0; }
 let inflightQids = new Set(); // queued copies currently being delivered — flushQueue must skip them
 let tempIdMap = {};           // tmp_ id -> real EntryID, learned from punch responses/replays
 const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry|addManualEntry|useMaterial|returnMaterial)$/;
+/* v38 — the hourglass no longer sits on top of work that is already done.
+ *
+ * Every call below goes through apiMutate, and every one of them updates the screen FIRST and
+ * talks to the server after: doClockIn paints the running clock at the tap, doSwitchSite closes
+ * the old segment at the tap, the break buttons flip at the tap. The Apps Script round trip then
+ * takes 4-6 seconds. With a 0.7s threshold that meant the overlay appeared AFTER the button had
+ * already changed and stayed for another four seconds — so the app looked stuck at the exact
+ * moment it had finished.
+ *
+ * That is not cosmetic. On 2026-09-10 Paul clocked out and clocked back in eleven seconds later
+ * on the same job, and stayed clocked in for four days. A person who cannot tell whether the tap
+ * registered taps again.
+ *
+ * So: a mutation is silent (bg), because the screen IS the feedback. The overlay is kept for the
+ * calls where the user is genuinely staring at an unchanged screen waiting for data. Double-tap
+ * protection moves to where it belongs — the button disables itself while the punch is in
+ * flight (see punchBusy()).
+ */
 async function apiMutate(action, payload, optimistic){
   // If we've since learned the real id for a tmp_ entry, swap it in before sending.
   if (payload && typeof payload.entryId==='string' && tempIdMap[payload.entryId])
@@ -1054,7 +1075,12 @@ async function apiMutate(action, payload, optimistic){
   // flushQueue delivers in order (the pending clock-in first) and remaps the id.
   const tempRef = payload && typeof payload.entryId==='string' && payload.entryId.indexOf('tmp_')===0;
   const tracked = MUTATING.test(action);
-  if (tracked) mutsInFlight++;
+  // Paint the busy state NOW. doClockIn/doSwitchSite render optimistically BEFORE calling this,
+  // so without a second render the big button never learns a punch is in flight — and the big
+  // button is the one that has to refuse a second tap, because it sits in the same place and
+  // only changes its label. That is how a Clock Out tap became a Clock In tap eleven seconds
+  // later on 2026-09-10.
+  if (tracked){ mutsInFlight++; if (S.tab==='clock' && !S._sheet) render(); }
   const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
   const item = { qid, action, payload, ts: Date.now(), tempId: optimistic && optimistic.tempId };
   try {
@@ -1065,7 +1091,7 @@ async function apiMutate(action, payload, optimistic){
     if (tracked){ inflightQids.add(qid); await DB.enqueue(item); }
     if (S.online && !tempRef){
       try {
-        const data = await api(action, payload);
+        const data = await api(action, payload, { bg: true }); // silent: the UI already moved
         if (tracked) await DB.del(qid); // delivered — clear the write-ahead copy
         return data;
       } catch(e){
@@ -1083,7 +1109,7 @@ async function apiMutate(action, payload, optimistic){
     if (tempRef && S.online) setTimeout(flushQueue, 50); // deliver the chain now, in order
     return { queued:true, qid };
   } finally {
-    if (tracked) mutsInFlight--;
+    if (tracked){ mutsInFlight--; if (!mutsInFlight && S.tab==='clock' && !S._sheet) render(); }
     inflightQids.delete(qid);
   }
 }
@@ -1545,7 +1571,8 @@ function clockView(){
         <div class="small muted" id="timerSub"></div>
         <div class="small muted">since ${fmtTime(S.openEntry.ClockIn)}</div>
         ${isInternal?'':clockLogo()}
-        <button class="bigbtn out" style="margin-top:16px" onclick="openClockOut()">Clock Out</button>
+        <button class="bigbtn out" style="margin-top:16px" onclick="openClockOut()"
+          ${punchBusy()?'disabled':''}>${punchBusy()?'Working…':'Clock Out'}</button>
         <div class="row" style="margin-top:10px">
           ${breaking
             ? `<button class="btn-resume grow" onclick="doEndBreak()">▶ Resume Work</button>`
@@ -1564,7 +1591,8 @@ function clockView(){
     <div class="card center">
       <p class="muted">Not clocked in</p>
       ${clockLogo()}
-      <button class="bigbtn in" onclick="openJobPicker(false)">Clock In</button>
+      <button class="bigbtn in" onclick="openJobPicker(false)"
+        ${punchBusy()?'disabled':''}>${punchBusy()?'Working…':'Clock In'}</button>
       <div class="row" style="margin-top:8px">
         <button class="secondary grow" style="padding:11px 8px" onclick="openPoScan()">📷 Scan a PO</button>
         <button class="secondary grow" style="padding:11px 8px" onclick="openMatUse()">🔩 Materials used</button>
@@ -2899,7 +2927,19 @@ async function submitForgotFix(btn){
 /* ---- Job / customer picker ---- */
 let pickerState = null;
 let poResults=[]; // index-referenced by tap (apostrophe-safe)
+/* THE double-punch guard (v38). It lives in the click handler, not in the rendered markup,
+   because the markup cannot be trusted to be current: doClockIn opens the greeting popup, so the
+   re-render that would have disabled the button is skipped, and the button sits there looking
+   tappable for the whole 4-6s round trip. On 2026-09-10 that produced a Clock Out at 19:25:31
+   and a Clock In at 19:25:42 on the same job, and Paul stayed clocked in for four days.
+   Checked here, no render timing can defeat it. */
+function punchGuard_(){
+  if (!punchBusy()) return false;
+  toast('Still saving your last punch — one moment.');
+  return true;
+}
 function openJobPicker(isSwitch){
+  if (punchGuard_()) return;
   pickerState = { isSwitch, mode:null, company:'', jobSite:'', poNumber:'', isNew:false, newType:'', notes:'' };
   renderPicker(); // paints instantly from the cached list — nobody waits on the network
   // Stale-while-revalidate: ALWAYS re-fetch in the background (force=true skips the 10-min
@@ -3073,6 +3113,7 @@ async function submitPicker(){
 let coState=null, coSubmittedId=null, coJobResults=[], coMatResults=[];
 
 function openClockOut(){
+  if (punchGuard_()) return;
   const site = S.openEntry && (S.openEntry['Customer/Job Site']||S.openEntry.Company) || '';
   sheet(`<div class="center">
     <h2>Clock out?</h2>
@@ -3747,15 +3788,31 @@ function openReceiptScan(){
 }
 /* Downscale on the phone before upload: a 12MP photo becomes ~400KB at 1600px — plenty for
    the AI and the PDF, and dramatically faster on jobsite LTE. */
+/* v39 — EXIF ORIENTATION. A phone held sideways does not rotate the pixels; it writes a
+   rotation flag into the file and leaves them as they were. Redrawing to a canvas throws that
+   flag away, so a photo taken in landscape reached the AI on its side and came back unreadable.
+   createImageBitmap with imageOrientation:'from-image' bakes the rotation into the pixels
+   before we touch them. The old <img> path stays as a fallback for anything that lacks it. */
+async function decodePhoto_(f){
+  if (window.createImageBitmap){
+    try { return await createImageBitmap(f, { imageOrientation:'from-image' }); }
+    catch(e){ /* older Safari: no options bag — fall through */ }
+    try { return await createImageBitmap(f); } catch(e){}
+  }
+  return await new Promise((res,rej)=>{ const u=URL.createObjectURL(f); const i=new Image();
+    i.onload=()=>res(i); i.onerror=rej; i.src=u; });
+}
 async function shrinkPhoto(f, maxDim){
   try{
-    const img=await new Promise((res,rej)=>{ const u=URL.createObjectURL(f); const i=new Image();
-      i.onload=()=>res(i); i.onerror=rej; i.src=u; });
-    const scale=Math.min(1, (maxDim||1600)/Math.max(img.width,img.height));
-    if(scale>=1 && f.size<1.5*1048576) return null; // already small — send as-is
+    const img=await decodePhoto_(f);
+    const w=img.width, h=img.height;
+    const scale=Math.min(1, (maxDim||1600)/Math.max(w,h));
+    // Always re-encode: even a small photo may still carry an unapplied rotation flag, and a
+    // sideways page is worthless to the reader however few bytes it is.
     const c=document.createElement('canvas');
-    c.width=Math.round(img.width*scale); c.height=Math.round(img.height*scale);
+    c.width=Math.round(w*scale); c.height=Math.round(h*scale);
     c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+    try{ if(img.close) img.close(); }catch(e){}
     return c.toDataURL('image/jpeg',0.85).split(',')[1]; // base64, no prefix
   }catch(e){ return null; }
 }
@@ -3857,30 +3914,86 @@ async function openCamera(onShot, label){
         <div id="camMsg" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:.95rem;text-align:center;padding:20px"><span class="spin"></span></div>
       </div>
     </div>
-    <p class="small muted center" style="margin:10px 0 6px">${esc(label||'Line the page up inside the dashed box. Hold the phone upright.')}</p>
+    <p class="small muted center" style="margin:10px 0 6px">${esc(label||'Fill the dashed box with the page — upright or sideways, whichever fits it better.')}</p>
     <button id="camShot" style="width:100%;padding:20px;font-size:1.15rem" onclick="camShoot()" disabled>📸 Take the picture</button>
     <button class="secondary" style="width:100%;margin-top:8px" onclick="camClose()">Cancel</button>
     <input id="camFallback" type="file" accept="image/*" capture="environment" class="hidden" onchange="camFromFile(this)">`);
   if (S._sheet) S._sheet.onclick=null;   // a stray backdrop tap must not kill the camera
   try{
-    // Ask for a tall frame at real resolution — small print on an 8.5x11 page needs the pixels.
-    camStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'},
-      width:{ideal:1536}, height:{ideal:2048}, aspectRatio:{ideal:0.75} }, audio:false });
+    // v39 — ASK FOR AS LITTLE AS POSSIBLE FIRST. The old request pinned 1536x2048 AND a portrait
+    // aspectRatio; iPhone sensors are landscape-native and iOS Safari rejects that combination
+    // outright. Start with the back camera and nothing else, then ASK for more pixels once the
+    // stream exists — a refused upgrade costs nothing, a refused stream costs the whole feature.
+    camStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'} }, audio:false });
+    try{
+      const tr=camStream.getVideoTracks()[0];
+      if (tr && tr.applyConstraints) await tr.applyConstraints({ width:{ideal:2048}, height:{ideal:2048} });
+    }catch(e){ /* stays at the default resolution — still readable */ }
     const v=document.getElementById('camVid'); if(!v){ camStop(); return; }
     v.srcObject=camStream; await v.play().catch(()=>{});
     // Match the box to whatever the camera actually gave us, so 'contain' shows no black bars
     // and the dashed guide sits over the real picture.
-    const fit=()=>{ const box=document.getElementById('camBox');
-      if(box && v.videoWidth && v.videoHeight) box.style.aspectRatio = v.videoWidth+'/'+v.videoHeight; };
+    // Box AND guide follow the real frame, so a page shot sideways is framed sideways instead
+    // of being squeezed into a portrait cut-out that no longer matches what the camera sees.
+    const fit=()=>{ const box=document.getElementById('camBox'), g=document.getElementById('camGuide');
+      if(box && v.videoWidth && v.videoHeight){
+        box.style.aspectRatio = v.videoWidth+'/'+v.videoHeight;
+        const landscape = v.videoWidth > v.videoHeight;
+        const inner = g && g.firstElementChild;
+        if (inner){                       // letter page, the way round the camera is being held
+          inner.style.aspectRatio = landscape ? '22/17' : '17/22';
+          inner.style.height = landscape ? 'auto' : '92%';
+          inner.style.width  = landscape ? '92%'  : 'auto';
+        }
+      } };
     fit(); v.addEventListener('loadedmetadata', fit, {once:true});
+    v.addEventListener('resize', fit);
     const m=document.getElementById('camMsg'); if(m) m.remove();
     const b=document.getElementById('camShot'); if(b) b.disabled=false;
   }catch(e){
-    // No camera permission, or a browser that won't give one — hand over to the file picker.
+    // v39 — SAY WHY. This used to slide silently to the photo picker, so someone who had once
+    // tapped "Don't Allow" got the library every time and never learned the camera was blocked
+    // (and the library path is the one that loses the page's rotation). Name the cause, give
+    // the fix, and let them CHOOSE the photo picker instead of being pushed into it.
+    const denied = e && /NotAllowed|Permission|SecurityError/i.test(e.name + ' ' + e.message);
     const m=document.getElementById('camMsg');
-    if(m) m.innerHTML='<div>Camera not available on this phone.<br><span class="small">Using the photo picker instead…</span></div>';
-    setTimeout(()=>{ const f=document.getElementById('camFallback'); if(f) f.click(); }, 600);
+    if(m) m.innerHTML = denied
+      ? '<div style="line-height:1.5"><b>The camera is blocked for this app.</b><br>' +
+        '<span class="small">' + camUnblockSteps_() + '</span></div>'
+      : '<div style="line-height:1.5"><b>The camera would not start.</b><br>' +
+        '<span class="small">' + esc(String((e && e.name) || 'Unknown')) + '</span></div>';
+    const b=document.getElementById('camShot');
+    if(b){ b.textContent='🖼️ Use a photo instead'; b.disabled=false;
+      b.onclick=()=>{ const f=document.getElementById('camFallback'); if(f) f.click(); }; }
   }
+}
+// v40 — the un-block steps depend on the phone, and Paul's is a Pixel. Telling an Android
+// user to open Safari settings is worse than saying nothing: he follows it, finds no such
+// menu, and concludes the app is broken. Detect the platform; when unsure, show both.
+function camPlatform_(){
+  const ua = navigator.userAgent || '';
+  if (/Android/i.test(ua)) return 'android';
+  // iPadOS 13+ reports as Macintosh, so the touch check is what catches an iPad.
+  if (/iPhone|iPad|iPod/i.test(ua)) return 'ios';
+  if (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1) return 'ios';
+  return 'other';
+}
+function camUnblockSteps_(){
+  const installed = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+  const android =
+    'Chrome remembers a "Block" and will not ask again.<br><br>' +
+    (installed
+      ? 'On your phone: <b>press and hold the ProES icon &rsaquo; App info &rsaquo; Permissions &rsaquo; Camera</b> &rarr; <b>Allow</b>, '
+      : 'In Chrome: tap the <b>&#9881;</b> (or lock) icon at the left of the address bar &rsaquo; <b>Permissions</b> &rsaquo; <b>Camera</b> &rarr; <b>Allow</b>, ') +
+    'then close and reopen this app.';
+  const ios =
+    'Safari remembers a "Don\'t Allow" and will not ask again.<br><br>' +
+    'On iPhone: <b>Settings &rsaquo; Apps &rsaquo; Safari &rsaquo; Camera</b> &rarr; set to <b>Ask</b>, ' +
+    'then close and reopen this app.';
+  const p = camPlatform_();
+  if (p === 'android') return android;
+  if (p === 'ios')     return ios;
+  return '<b>Android:</b> ' + android + '<br><br><b>iPhone:</b> ' + ios;
 }
 function camStop(){ try{ if(camStream) camStream.getTracks().forEach(t=>t.stop()); }catch(e){} camStream=null; }
 function camClose(){ camStop(); camOnShot=null; closeSheet(); }
