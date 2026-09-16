@@ -7,11 +7,14 @@
  * already cached. Now the app paints instantly from cache and the fetch that runs in the
  * background updates the cache, so a fresh deploy lands on the SECOND open after it ships.
  */
-const CACHE = 'pcw-pro-timesheet-v40'; // v40: camera — EXIF rotation, loose constraints, and a blocked-camera message that matches the phone (Android/iOS)
+const CACHE = 'pcw-pro-timesheet-v41'; // v41: one "Scan receipt / estimate" button; quotes update prices; old → new price on the results screen; confirm step when the AI disagrees or the date looks wrong
 const SHELL = ['./', './index.html', './manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache:'reload' — fetch the shell from the network, not the browser's HTTP cache (GitHub Pages
+  // serves index.html with max-age=600, so a phone opened just before a deploy could otherwise
+  // cache the OLD page under the NEW version name).
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {

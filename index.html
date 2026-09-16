@@ -903,6 +903,7 @@ const S = {
   online: navigator.onLine,
   booted: false,
   mutSeq: 0,   // bumped on every optimistic local change — see refresh() staleness guard
+  scanWaiting: 0, // queued receipt/estimate scans waiting for a person's OK (home-screen banner)
 };
 
 /* ============================================================================
@@ -988,11 +989,11 @@ function busyEnd(id){ if(id!=null) _slowLive.delete(id);
 async function api(action, payload, opts){
   const bg = opts && opts.bg;
   const id = bg ? null : busyStart();   // the token this call must hand back
-  try{ return await apiRaw_(action, payload); }
+  try{ return await apiRaw_(action, payload, opts && opts.timeout); }
   finally{ if(!bg) busyEnd(id); }
 }
 function apiBg(action, payload){ return api(action, payload, {bg:true}); } // background refreshes — silent
-async function apiRaw_(action, payload){
+async function apiRaw_(action, payload, timeoutMs){
   // 24h session token (issued by the backend at login) — Google's own ID tokens die after
   // ~1h, which used to strand people mid-shift.
   if (!S.session){
@@ -1009,7 +1010,7 @@ async function apiRaw_(action, payload){
   // safe: apiMutate write-aheads to IndexedDB before the network attempt, so an aborted
   // request is replayed by flushQueue rather than lost.
   const ctl = new AbortController();
-  const killer = setTimeout(()=>ctl.abort(), API_TIMEOUT);
+  const killer = setTimeout(()=>ctl.abort(), timeoutMs || API_TIMEOUT);
   let res;
   try {
     res = await fetch(CONFIG.APPS_SCRIPT_URL, {
@@ -1269,7 +1270,7 @@ async function boot(){
         render();
       } else scheduleRefresh();
     }
-    loadCustomers(); loadMaterials(); loadOnboarding(); flushReceipts(); // warm caches + push any phone-only receipts up
+    loadCustomers(); loadMaterials(); loadOnboarding(); flushReceipts(); flushScans(); // warm caches + push any phone-only receipts/scans up
   } catch(e){
     if (cached) toast('Showing last synced data — will retry');
     else { toast(e.message); render(); }
@@ -1550,7 +1551,7 @@ function clockLogo(){
 function clockView(){
   let ot = weekHours() > (S.config.otThreshold||44)
     ? `<div class="banner ot">⚠ Overtime: ${weekHours().toFixed(1)} hrs this week (over ${S.config.otThreshold||44}).</div>` : '';
-  ot = obBanner() + ot; // onboarding nag sits above everything until it's done
+  ot = obBanner() + scanBanner() + ot; // onboarding nag sits above everything until it's done
   if (S.openEntry){
     const ageH=(Date.now()-new Date(S.openEntry.ClockIn))/3600000;
     if (ageH>14) ot = `<div class="banner ot" style="cursor:pointer" onclick="openForgotFix()">⚠ <b>Still clocked in since ${fmtDay(S.openEntry.ClockIn)} ${fmtTime(S.openEntry.ClockIn)}</b> — forgot to clock out? Tap here to fix it.</div>` + ot;
@@ -1580,7 +1581,7 @@ function clockView(){
           <button class="btn-switch grow actbtn" style="padding:16px 12px" onclick="openJobPicker(true)"><span class="bic">⏸️</span><span>Pause &amp; Switch</span></button>
         </div>
         <div class="row" style="margin-top:8px">
-          <button class="actbtn grow" style="padding:12px 8px" onclick="openPoScan()"><span class="bic">📷</span><span>Scan a PO</span></button>
+          <button class="actbtn grow" style="padding:12px 8px" onclick="openDocScan()"><span class="bic">📷</span><span>Scan receipt / estimate</span></button>
           <button class="actbtn grow" style="padding:12px 8px" onclick="openMatUse()"><span class="bic">🔩</span><span>Materials used</span></button>
         </div>
         ${allowBtn()}
@@ -1594,7 +1595,7 @@ function clockView(){
       <button class="bigbtn in" onclick="openJobPicker(false)"
         ${punchBusy()?'disabled':''}>${punchBusy()?'Working…':'Clock In'}</button>
       <div class="row" style="margin-top:8px">
-        <button class="secondary grow" style="padding:11px 8px" onclick="openPoScan()">📷 Scan a PO</button>
+        <button class="secondary grow" style="padding:11px 8px" onclick="openDocScan()">📷 Scan receipt / estimate</button>
         <button class="secondary grow" style="padding:11px 8px" onclick="openMatUse()">🔩 Materials used</button>
       </div>
       ${allowBtn()}
@@ -1644,9 +1645,9 @@ function periodCard(t){
 function entriesView(){
   const items = (S.entries||[]);
   const rows = items.length ? items.map(e=>entryRow(e)).join('') : '<p class="muted center">No entries yet.</p>';
+  // v41 — the Receipt button moved to the home screen as "Scan receipt / estimate".
   return `<div class="row between"><h2>My entries</h2>
-      <div class="row"><button class="secondary" onclick="openReceiptScan()">📷 Receipt</button>
-      <button class="secondary" onclick="openManual()">+ Manual</button></div></div>
+      <div class="row"><button class="secondary" onclick="openManual()">+ Manual</button></div></div>
     <div class="card">${rows}</div>`;
 }
 /* GPS visibility: absence is explicit ("no GPS"), presence is a tappable map link for
@@ -2870,7 +2871,7 @@ function closeSheet(){
 }
 window.addEventListener('popstate', (ev)=>{
   if(_popIgnore>0){ _popIgnore--; return; }              // our own programmatic back
-  if(S._sheet){ S._sheet.remove(); S._sheet=null; return; } // Back closes the open popup
+  if(S._sheet){ S._sheet.remove(); S._sheet=null; if(camStream) camStop(); return; } // Back closes the open popup (and the camera with it)
   const st=ev.state||{};
   if(st.tab && st.tab!==S.tab){ S.tab=st.tab; render(); }   // Back = previous tab
 });
@@ -4018,67 +4019,259 @@ async function camFromFile(input){
   const fn=camOnShot; camOnShot=null;
   if(fn) fn(b64, shrunk?'image/jpeg':(f.type||'image/jpeg'));
 }
-/* Clock tab: two plain buttons, no menu in between (item 1). */
-function openPoScan(){
+/* ---- Scan receipt / estimate (v41) --------------------------------------------------------
+ * ONE button on the home screen, clocked in or not. Photo first, then one question: was this
+ * something we bought (receipt / invoice / credit note) or an estimate / quote?
+ *   Receipt  → inventory + price list update, recorded against the current job (Stock if
+ *              clocked out), PDF filed — the old "Scan a PO" behaviour.
+ *   Estimate → price list only (newest price wins), nothing bought, nothing on the job.
+ * The results screen shows every line as old price → new price. When the AI's read of the
+ * document disagrees with the button pressed, or the printed date cannot be trusted, nothing
+ * is saved until the person confirms. Offline: the photo + answer wait on the phone and are
+ * sent when there is signal; a queued scan that then needs a decision shows a banner. */
+const SCAN_TIMEOUT = 75000;   // AI read 10–20 s + sheet/Drive writes; the general 30 s limit is too short for a long invoice
+function openDocScan(){
   const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
-  if(!S.online) return toast('Scanning a PO needs a connection — or take it again when you have signal.');
-  openCamera((b64,mime)=>poScanSend(b64,mime,site),
-    site?`Supplier PO for ${site}. Fill the frame with the itemized page.`
-        :'Supplier PO. Fill the frame with the itemized page.');
+  openCamera((b64,mime)=>docScanAsk(b64,mime),
+    site?`On the clock at ${site}. Fill the frame with the itemized page.`
+        :'Fill the frame with the itemized page.');
 }
-async function poScanSend(b64, mime, site){
-  const p={dataBase64:b64, mimeType:mime||'image/jpeg'};
+function keepSheet_(){ if(S._sheet) S._sheet.onclick=null; }   // a stray tap outside the panel must not lose the photo
+function docScanAsk(b64, mime){
+  const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
+  S._docShot={b64,mime};
+  sheet(`<h2>What is this?</h2>
+    <p class="small muted">${site?`On the clock at <b>${esc(site)}</b> — a receipt is recorded against that job.`:'Not clocked in — a receipt is recorded against Stock.'} An estimate only updates prices.</p>
+    <button style="width:100%;padding:18px;font-size:1.05rem;margin-top:6px" onclick="docScanSend('receipt')">🧾 Receipt (we bought it)</button>
+    <button style="width:100%;padding:18px;font-size:1.05rem;margin-top:10px" onclick="docScanSend('quote')">📄 Estimate / quote</button>
+    <button class="secondary" style="width:100%;margin-top:14px" onclick="S._docShot=null;closeSheet()">Cancel</button>`);
+  keepSheet_();
+}
+function docScanPayload(kind, shot){
+  const p={kind, dataBase64:shot.b64, mimeType:shot.mime||'image/jpeg'};
   if(S.openEntry){ p.jobSite=S.openEntry['Customer/Job Site']||S.openEntry.Company||''; p.poNumber=S.openEntry['PO#']||''; }
-  sheet(`<h2>Reading the PO…</h2>
-    <p class="center" style="margin:22px 0"><span class="spin"></span></p>
-    <p class="small muted center">10–20 seconds. The items go into inventory and the price list updates itself.</p>
-    <div id="poStatus" class="small muted"></div><div id="poResults"></div>
+  return p;
+}
+async function docScanSend(kind){
+  const shot=S._docShot; S._docShot=null; if(!shot) return closeSheet();
+  const p=docScanPayload(kind, shot);
+  docScanWait(kind);
+  if(!S.online){ await docQueue(p); return; }
+  await docScanCall(p, null);
+}
+let docWaitSeq=0;   // which "Reading…" sheet is current — a result for an older one must not paint over a newer sheet
+function docScanWait(kind){
+  const seq=++docWaitSeq;
+  sheet(`<h2 id="dsHead">Reading the ${kind==='quote'?'estimate':'receipt'}…</h2>
+    <p class="center" id="dsSpin" style="margin:22px 0"><span class="spin"></span></p>
+    <p id="dsHint" class="small muted center">10–20 seconds. ${kind==='quote'?'Prices update from the quote — nothing goes into inventory.':'The items go into inventory and the price list updates itself.'}</p>
+    <div id="dsStatus" class="small muted" data-seq="${seq}"></div><div id="dsResults"></div>
     <button class="secondary" style="width:100%;margin-top:14px" onclick="closeSheet()">Close</button>`);
-  if(!S.online){ await poQueue(p); return; }
+  keepSheet_();
+  return seq;
+}
+function docWaitOpen(seq){ const st=document.getElementById('dsStatus'); return !!st && Number(st.dataset.seq)===seq; }
+/* Sends a scan (first round or confirm round). qid = the offline-queue id when this is a queued
+ * item being resolved, so a successful save also removes it from the queue. */
+async function docScanCall(p, qid){
+  const seq=docWaitSeq;
   try{
-    const r=await api('scanSupplierPO',p);
-    const st=document.getElementById('poStatus'); if(!st) return;
-    document.querySelectorAll('#poStatus').forEach(()=>{});
-    const head=document.querySelector('.sheet h2'); if(head) head.textContent=r.duplicate?'Already filed':'Added to inventory';
-    const sp=document.querySelector('.sheet .center .spin'); if(sp&&sp.parentElement) sp.parentElement.remove();
-    st.innerHTML = r.duplicate
-      ? `<b>${esc(r.supplier)} ${esc(r.invoiceNo)}</b> was already filed earlier — nothing was doubled.`
-      : `<b>${esc(r.supplier)} ${esc(r.invoiceNo)}</b>${r.date?' · '+esc(r.date):''} — <b>${r.added}</b> item(s) ${r.credit?'taken back out of':'added to'} inventory${p.jobSite?', recorded against '+esc(p.jobSite):''}.`+
-        (r.poUrl?` <a href="${esc(r.poUrl)}" target="_blank" style="color:var(--accent2)">PDF ↗</a>`:'');
-    const box=document.getElementById('poResults');
-    if(box) box.innerHTML=(r.items||[]).map(it=>`<div class="list-item row between">
-        <div class="grow">${esc(it.desc)}<div class="small muted">${esc(it.sku)}</div></div>
-        <div class="small muted" style="white-space:nowrap">×${esc(it.qty)}${it.price!=null?' · $'+Number(it.price).toFixed(2):''}</div>
-      </div>`).join('');
+    const r=await api('scanSupplierDoc',p,{timeout:SCAN_TIMEOUT});
+    if(r&&r.needsConfirm){
+      if(docWaitOpen(seq)) docConfirm(p, r, qid);
+      else await docPark(p, r, qid);                   // the person has moved on — the banner will ask
+      return;
+    }
+    if(qid) await docQueueDel(qid);
+    if(docWaitOpen(seq)) docShowResult(p, r);
+    else toast((r.kind==='quote'?'Estimate':'Receipt')+' filed ✓'+(r.warn?' — '+r.warn:''));
   }catch(e){
-    if(/busy right now|Failed to fetch|NetworkError|timed out/i.test(e.message||'')){ await poQueue(p); }
-    else{ const st=document.getElementById('poStatus'); if(st) st.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; }
+    if(/busy right now|Failed to fetch|NetworkError|timed out|No answer from the server/i.test(e.message||'')){
+      if(qid) await docQueueUpdate(qid, {kind:p.kind, confirmed:!!p.confirmed, extract:p.extract||null, dateOverride:p.dateOverride||'', needsConfirm:false, server:null}); // keep the answers with the photo
+      else await docQueue(p);
+      if(qid){ const st=docWaitOpen(seq)?document.getElementById('dsStatus'):null;
+        if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ No signal — your answer is saved on the phone and will be sent when you\'re back online.</span>';
+        else toast('No signal — your answer is saved and will be sent later'); }
+    } else {
+      const st=docWaitOpen(seq)?document.getElementById('dsStatus'):null;
+      if(st) st.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; else toast(e.message);
+    }
   }
 }
-async function poQueue(p){
+/* A first-round reply that needs a decision but whose sheet is gone: keep it on the phone with
+ * the server's reply so the home-screen banner can ask later. */
+async function docPark(p, r, qid){
+  if(qid) await docQueueUpdate(qid, {needsConfirm:true, server:r});
+  else await docQueue(p, {needsConfirm:true, server:r});
+  toast('That scan needs your OK — see the banner on the home screen');
+}
+/* The AI disagrees with the button, or the date is not to be trusted: show what it read, what
+ * would change, and let the person decide before anything is saved. */
+function docConfirm(p, r, qid){
+  const typeW=(r.warnings||[]).find(w=>w.code==='type'), dateW=(r.warnings||[]).find(w=>w.code==='date');
+  const kind=r.kind||p.kind;
+  const lines=(r.items||[]).map(it=>`<div class="list-item row between">
+      <div class="grow">${esc(it.desc)}<div class="small muted">${esc(it.sku||'')}</div></div>
+      <div class="small muted" style="white-space:nowrap;text-align:right">×${esc(it.qty)}${it.price!=null?'<br>'+priceDelta(it.oldPrice,it.price):''}</div>
+    </div>`).join('');
+  sheet(`<h2>⚠ Check before saving</h2>
+    <p class="small"><b>${esc(r.supplier||'Supplier')} ${esc(r.invoiceNo||'')}</b>${r.date?' · '+esc(r.date):(r.datePrinted?' · date printed "'+esc(r.datePrinted)+'"':'')}</p>
+    ${typeW?`<div class="banner ot" style="text-align:left">${esc(typeW.text)}</div>`:''}
+    ${dateW?`<div class="banner ot" style="text-align:left">${esc(dateW.text)}</div>
+      <label>Document date</label><input id="dsDate" type="date" value="${esc(r.date||dateW.suggested||'')}">`:''}
+    <div style="margin:8px 0 4px" class="small muted">${(r.items||[]).length} line(s) read — nothing has been saved yet.</div>
+    <div style="max-height:34vh;overflow:auto">${lines}</div>
+    ${typeW
+      ? `<button style="width:100%;margin-top:12px" onclick="docConfirmSend('receipt')">🧾 Save as a receipt — we bought it</button>
+         <button style="width:100%;margin-top:8px" onclick="docConfirmSend('quote')">📄 Save as an estimate / quote</button>`
+      : `<button style="width:100%;margin-top:12px" onclick="docConfirmSend('${kind}')">Save${dateW?' with this date':''}</button>`}
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="docConfirmCancel()">Don't save</button>`);
+  keepSheet_();
+  S._docPending={p, r, qid};
+}
+async function docConfirmSend(kind){
+  const pend=S._docPending; if(!pend) return;
+  const d=document.getElementById('dsDate');
+  if(d && !d.value){ toast('Enter the document date first'); return; }   // the server refuses an unconfirmed date; ask here instead
+  S._docPending=null;
+  const ext=(pend.r.extract&&pend.r.extract.items&&pend.r.extract.items.length)?pend.r.extract:null;   // no usable extraction → the server reads the photo again
+  const p=Object.assign({}, pend.p, {kind, confirmed:true, extract:ext});
+  if(d&&d.value) p.dateOverride=d.value;
+  docScanWait(kind);
+  if(!S.online){                                   // keep the answers with the photo; send later
+    if(pend.qid){ await docQueueUpdate(pend.qid, {kind, confirmed:true, extract:ext, dateOverride:p.dateOverride||'', needsConfirm:false, server:null}); }
+    else await docQueue(p);
+    const st=document.getElementById('dsStatus');
+    if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ No signal — your answer is saved on the phone and will be sent when you\'re back online.</span>';
+    return;
+  }
+  await docScanCall(p, pend.qid);
+}
+async function docConfirmCancel(){
+  const pend=S._docPending; S._docPending=null;
+  if(pend&&pend.qid){ await docQueueDel(pend.qid); toast('Scan discarded'); }
+  closeSheet();
+}
+/* "$5.52 → $5.60" in the colour of the direction; "$9.99 (new)"; "$4.90 (no change)". */
+function priceDelta(oldP, newP){
+  const f=v=>'$'+Number(v).toFixed(2);
+  if(oldP==null||oldP===0) return `<b>${f(newP)}</b> <span class="small muted">(new)</span>`;
+  if(Math.abs(oldP-newP)<0.00001) return `<b>${f(newP)}</b> <span class="small muted">(no change)</span>`;
+  const up=newP>oldP;
+  return `<span class="small muted">${f(oldP)}</span> → <b style="color:${up?'var(--bad)':'var(--good)'}">${f(newP)}</b>`;
+}
+function canSeePrices(){ return !!(S.me && (S.me.role==='admin' || S.me.role==='bookkeeper')); }
+function docShowResult(p, r){
+  const st=document.getElementById('dsStatus'); if(!st) return;      // only paint the wait sheet that is actually open
+  const isQ=r.kind==='quote';
+  const head=document.getElementById('dsHead');
+  if(head) head.textContent=r.duplicate?'Already on file':(isQ?(r.replaced?'Quote revised — prices updated':'Prices updated from the estimate'):(r.credit?'Credit note filed':'Added to inventory'));
+  const sp=document.getElementById('dsSpin'); if(sp) sp.remove();
+  const hint=document.getElementById('dsHint'); if(hint) hint.remove();
+  const doc=`<b>${esc(r.supplier||'')} ${esc(r.invoiceNo||'')}</b>${r.date?' · '+esc(r.date):''}`;
+  st.innerHTML = r.duplicate
+    ? `${doc} was already filed earlier — nothing was doubled.`
+    : isQ
+      ? `${doc} — <b>${r.added}</b> price(s) read. Nothing was added to inventory and nothing was recorded against a job.`+(r.poUrl?` <a href="${esc(r.poUrl)}" target="_blank" style="color:var(--accent2)">PDF ↗</a>`:'')
+      : `${doc} — <b>${r.added}</b> item(s) ${r.credit?'taken back out of':'added to'} inventory${r.jobSite&&r.jobSite!=='Stock'?', recorded against '+esc(r.jobSite):''}.`+
+        (r.poUrl?` <a href="${esc(r.poUrl)}" target="_blank" style="color:var(--accent2)">PDF ↗</a>`:'');
+  if(!r.duplicate && !r.poUrl) st.innerHTML+=' <span style="color:var(--warn)">The PDF could not be saved to Drive — the photo is only on this phone.</span>';
+  if(r.warn) st.innerHTML+=` <span style="color:var(--warn)">${esc(r.warn)}</span>`;
+  const box=document.getElementById('dsResults');
+  const canSee=canSeePrices();
+  if(box) box.innerHTML=(r.items||[]).map(it=>{
+    let right=`×${esc(it.qty)}`, note='';
+    if(it.price!=null){
+      const cur = it.newPrice!=null ? it.newPrice : it.price;
+      if(it.isNew) right+= '<br>'+priceDelta(null, it.price);
+      else if(it.kept){ right+= `<br><span class="muted">$${Number(it.price).toFixed(2)}</span> · kept <b>$${Number(cur).toFixed(2)}</b>`;
+        note=`<div class="small muted">${r.credit?'A credit note does not change the price.':'Not replaced — a newer price is on file'+(it.oldSrc?' ('+esc(it.oldSrc)+')':'')+'.'}</div>`; }
+      else right+= '<br>'+priceDelta(it.oldPrice, it.newPrice);
+    }
+    return `<div class="list-item row between">
+        <div class="grow">${esc(it.desc)}<div class="small muted">${esc(it.sku)}${it.isNew?' · new item':''}</div>${note}</div>
+        <div class="small" style="white-space:nowrap;text-align:right">${right}</div>
+      </div>`; }).join('') + ((!canSee && (r.items||[]).length)?'<p class="small muted" style="margin-top:6px">Prices are shown to admins and the bookkeeper.</p>':'');
+}
+/* ---- offline queue for scans (IndexedDB 'pendingScans'; the older 'pendingPOs' key is folded
+ * in on first use). Each item: {qid, kind, dataBase64, mimeType, jobSite, poNumber, at,
+ * needsConfirm, server (the first-round reply), confirmed, extract, dateOverride}.
+ * Every write re-reads the queue first and changes ONE item by qid — a flush that takes 20 s per
+ * photo must never overwrite a scan that was queued, answered or discarded while it ran. */
+const SCAN_QUEUE_MAX = 5;   // ~1–1.5 MB per photo — a ceiling for IndexedDB, not a target
+async function docQueueAll(){
+  let q=(await DB.getCache('pendingScans'))||[];
   try{
-    const q=(await DB.getCache('pendingPOs'))||[];
-    q.push({dataBase64:p.dataBase64, mimeType:p.mimeType, jobSite:p.jobSite||'', poNumber:p.poNumber||'', at:Date.now()});
-    await DB.setCache('pendingPOs', q.slice(-5));
-    const st=document.getElementById('poStatus');
-    if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ No signal — the photo is saved on the phone and will be read and filed automatically once you\'re back online.</span>';
-    else toast('Saved on the phone — it will file itself when you have signal');
+    const old=(await DB.getCache('pendingPOs'))||[];
+    if(old.length){ old.forEach(o=>q.push(Object.assign({qid:'q'+(o.at||Date.now())+Math.random().toString(36).slice(2,6), kind:'receipt'}, o))); await DB.setCache('pendingPOs', []); await DB.setCache('pendingScans', q); }
+  }catch(e){}
+  return q;
+}
+function docQueueTrim(q){
+  // Drop the oldest scans that are NOT waiting on a person first; a pending decision is only
+  // sacrificed when the queue is entirely decisions.
+  while(q.length>SCAN_QUEUE_MAX){
+    const i=q.findIndex(x=>!x.needsConfirm);
+    q.splice(i>=0?i:0, 1);
+  }
+  return q;
+}
+async function docQueue(p, extra){
+  try{
+    const q=await docQueueAll();
+    q.push(Object.assign({qid:'q'+Date.now()+Math.random().toString(36).slice(2,6), kind:p.kind, dataBase64:p.dataBase64, mimeType:p.mimeType,
+      jobSite:p.jobSite||'', poNumber:p.poNumber||'', at:Date.now(), confirmed:!!p.confirmed, extract:p.extract||null, dateOverride:p.dateOverride||'',
+      needsConfirm:false, server:null}, extra||{}));
+    await DB.setCache('pendingScans', docQueueTrim(q));
+    docQueueCount(q);
+    if(!(extra&&extra.needsConfirm)){
+      const st=document.getElementById('dsStatus');
+      if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ No signal — the photo is saved on the phone and will be read and filed automatically once you\'re back online.</span>';
+      else toast('Saved on the phone — it will file itself when you have signal');
+    }
   }catch(e){ toast('Could not save the photo on the phone — try again with signal.'); }
 }
-async function flushPOs(){
-  if(!S.online||S._fpBusy) return; S._fpBusy=true;
+async function docQueueUpdate(qid, patch){
+  const q=await docQueueAll(); const it=q.find(x=>x.qid===qid); if(it) Object.assign(it, patch);
+  await DB.setCache('pendingScans', q); docQueueCount(q);
+}
+async function docQueueDel(qid){
+  const q=(await docQueueAll()).filter(x=>x.qid!==qid); await DB.setCache('pendingScans', q); docQueueCount(q);
+}
+function docQueueCount(q){ const n=(q||[]).filter(x=>x.needsConfirm).length; if(n!==(S.scanWaiting||0)){ S.scanWaiting=n; render(); } }
+function scanBanner(){
+  if(!S.scanWaiting) return '';
+  return `<div class="banner ot" style="cursor:pointer" onclick="openQueuedScan()">📷 <b>${S.scanWaiting} scanned document${S.scanWaiting>1?'s need':' needs'} your OK</b> — tap to review before it is saved.</div>`;
+}
+async function openQueuedScan(){
+  const q=await docQueueAll(); const it=q.find(x=>x.needsConfirm&&x.server); if(!it){ docQueueCount(q); return; }
+  docConfirm({kind:it.kind, dataBase64:it.dataBase64, mimeType:it.mimeType, jobSite:it.jobSite, poNumber:it.poNumber}, it.server, it.qid);
+}
+async function flushScans(){
+  if(!S.online||S._fsBusy) return; S._fsBusy=true;
   try{
-    let q=(await DB.getCache('pendingPOs'))||[];
-    while(q.length){
-      try{ await apiBg('scanSupplierPO', q[0]); toast('Supplier PO from earlier was read and filed ✓'); }
-      catch(e){
-        if(/does not look like|Could not read|clearer photo/i.test(e.message||'')) toast('⚠ A queued PO photo was unreadable — scan it again');
-        else break;                                  // transient — retry on the next reconnect
+    const snapshot=await docQueueAll();
+    for(const it of snapshot){
+      if(it.needsConfirm) continue;                            // waiting on a person
+      const p={kind:it.kind, dataBase64:it.dataBase64, mimeType:it.mimeType, jobSite:it.jobSite, poNumber:it.poNumber, queued:true};
+      if(it.confirmed){ p.confirmed=true; p.extract=it.extract; if(it.dateOverride) p.dateOverride=it.dateOverride; }
+      try{
+        const r=await apiBg('scanSupplierDoc', p);
+        // re-read: the person may have queued, answered or discarded scans while this one was being read
+        if(!(await docQueueAll()).some(x=>x.qid===it.qid)) continue;
+        if(r&&r.needsConfirm){ await docQueueUpdate(it.qid, {needsConfirm:true, server:r}); toast('A scanned document from earlier needs your OK — see the home screen'); }
+        else { await docQueueDel(it.qid); toast((it.kind==='quote'?'Estimate':'Receipt')+' from earlier was read and filed ✓'+(r&&r.warn?' — '+r.warn:'')); }
+      }catch(e){
+        const msg=e.message||'';
+        if(/does not look like|Could not read|clearer photo|could not be read/i.test(msg)){ await docQueueDel(it.qid); toast('⚠ A queued photo was unreadable — scan it again'); }
+        else if(/busy right now|Failed to fetch|NetworkError|timed out|No answer from the server|rate-limited|Session expired|Please sign in/i.test(msg)) break;   // transient — retry on the next reconnect
+        else { await docQueueUpdate(it.qid, {needsConfirm:true, server:{needsConfirm:true, kind:it.kind, supplier:'', invoiceNo:'', date:'', items:[], extract:it.extract||{},
+                 warnings:[{code:'date', text:'This scan could not be saved: '+msg, suggested:new Date().toISOString().slice(0,10)}]}}); }   // park it with the reason instead of jamming the queue
       }
-      q=q.slice(1); await DB.setCache('pendingPOs', q);
     }
+    docQueueCount(await docQueueAll());
   }catch(e){}
-  S._fpBusy=false;
+  S._fsBusy=false;
 }
 
 /* Materials used: search the whole company inventory (Paul buys per job, but common parts come
@@ -4384,7 +4577,7 @@ function reqNudge(){
 let plT=null;
 function openPriceList(){
   sheet(`<h2>💲 Price list</h2>
-    <p class="small muted">Live supplier prices and what we have on hand. Updated by every scanned PO and the daily invoice sweep — newest price wins.</p>
+    <p class="small muted">Live supplier prices and what we have on hand. Updated by every scanned receipt or estimate and the daily email sweep — newest price wins, whether it came from an invoice or a quote.</p>
     <input id="plQ" placeholder="Search: e.g. breaker 15a, NMD90, EMT 1/2" oninput="plSearch()">
     <div id="plList" class="small muted" style="margin-top:8px"><span class="spin"></span></div>
     <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
@@ -4399,7 +4592,7 @@ function plSearch(){
       const r=await apiBg('priceList',{q:val('plQ'),limit:40});
       const b2=document.getElementById('plList'); if(!b2) return;
       b2.innerHTML=(r.items||[]).map(it=>`<div class="list-item row between">
-          <div class="grow"><b>${esc(it.desc)}</b><div class="small muted">${esc(it.sku)} · ${it.onHand} ${esc(it.unit)} on hand${it.supplier?' · last from '+esc(it.supplier):''}${(it.lo&&it.loSup&&it.lo<it.price)?` · <span style="color:var(--good)">cheapest ${esc(it.loSup)} $${Number(it.lo).toFixed(2)}</span>`:''}</div></div>
+          <div class="grow"><b>${esc(it.desc)}</b><div class="small muted">${esc(it.sku)} · ${it.onHand} ${esc(it.unit)} on hand${it.supplier?' · '+(it.src?esc(it.src)+' — ':'last from ')+esc(it.supplier)+(it.date?' '+esc(it.date):''):''}${(it.lo&&it.loSup&&it.lo<it.price)?` · <span style="color:var(--good)">cheapest ${esc(it.loSup)} $${Number(it.lo).toFixed(2)}</span>`:''}</div></div>
           <div style="font-weight:800;white-space:nowrap">$${Number(it.price).toFixed(2)}</div>
         </div>`).join('') || '<p class="muted small">No match — try fewer words.</p>';
       if((r.total||0)>40) b2.innerHTML+=`<p class="small muted">Showing 40 of ${r.total} — refine the search.</p>`;
@@ -4498,7 +4691,7 @@ function forgotNudge(){
       <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">I'm still working</button>
     </div>`);
 }
-window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); flushReceipts(); flushPOs(); if(!S.onboard) loadOnboarding(); });
+window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); flushReceipts(); flushScans(); if(!S.onboard) loadOnboarding(); });
 window.addEventListener('offline', ()=>{ S.online=false; render(); });
 
 async function start(){
