@@ -929,6 +929,7 @@ const DB = (() => {
   return {
     async enqueue(item){ const s = await tx('queue','readwrite'); return new Promise((res,rej)=>{ const r=s.put(item); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error);}); },
     async all(){ const s = await tx('queue','readonly'); return new Promise((res,rej)=>{ const r=s.getAll(); r.onsuccess=()=>res(r.result||[]); r.onerror=()=>rej(r.error);}); },
+    async get(qid){ const s = await tx('queue','readonly'); return new Promise((res,rej)=>{ const r=s.get(qid); r.onsuccess=()=>res(r.result||null); r.onerror=()=>rej(r.error);}); },
     async del(qid){ const s = await tx('queue','readwrite'); return new Promise((res,rej)=>{ const r=s.delete(qid); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error);}); },
     async setCache(k,v){ const s=await tx('cache','readwrite'); return new Promise((res)=>{ s.put({k,v}).onsuccess=()=>res(); }); },
     async getCache(k){ const s=await tx('cache','readonly'); return new Promise((res)=>{ const r=s.get(k); r.onsuccess=()=>res(r.result?r.result.v:null); r.onerror=()=>res(null); }); },
@@ -993,12 +994,40 @@ async function api(action, payload, opts){
   finally{ if(!bg) busyEnd(id); }
 }
 function apiBg(action, payload){ return api(action, payload, {bg:true}); } // background refreshes — silent
+/* v42 — WHY A PUNCH IS LOST, AND THE ONE RULE THAT STOPS IT.
+ *
+ * apiMutate keeps a punch queued for retry only if it decides the failure was recoverable —
+ * and until v42 it decided that by matching the error TEXT against a list of Chrome's
+ * wordings ("Failed to fetch", "NetworkError"…). Everything else was treated as "the server
+ * rejected this punch" and the write-ahead copy was DELETED. That list did not contain:
+ *   • the app's own 30-second timeout ("No answer from the server…", added Sep 11 — since
+ *     then every clock-out that waited more than 30 s on weak signal has been thrown away);
+ *   • WebKit's wording for the same thing on an iPhone ("Load failed");
+ *   • the backend's transient errors ("Lock timeout: another process was holding the lock"
+ *     — the old backend held the lock for the whole 10-20 s AI read of a scanned PO).
+ * Meanwhile the ✅ "Clocked out — 6.2 hrs" card was already on screen, so the person had no
+ * way to know. Paul's tab shows nine shifts closed the next morning by hand; Elijah's Sep 5
+ * clock-out (same site, same minute as Paul's) is still open.
+ *
+ * The rule now: a punch is dropped ONLY when the server itself answered "no" to it
+ * (kind 'server'). A request that never got a readable answer — network, timeout, a Google
+ * error page, an expired session, a busy backend — is kind 'network'/'auth'/'transient' and
+ * STAYS QUEUED until it lands or the server refuses it. The backend is idempotent on the
+ * tap time (v30), so a retry of a punch that did land is answered as a duplicate, never as
+ * a second entry. */
+function apiErr_(msg, kind){ const e=new Error(msg); e.kind=kind; return e; }
+// Backend answers that mean "try again in a moment", not "no".
+const TRANSIENT_SERVER = /Lock timeout|acquire lock|Too many requests|Service invoked too many times|busy right now|Rate Limit|temporarily unavailable|timed out|deadline/i;
+function retryable_(e){
+  return !!e && (e.kind==='network' || e.kind==='auth' || e.kind==='transient' ||
+    /Failed to fetch|NetworkError|Load failed|network connection was lost|Session expired|sign-in token|signed in|audience mismatch|busy right now/i.test(e.message||''));
+}
 async function apiRaw_(action, payload, timeoutMs){
   // 24h session token (issued by the backend at login) — Google's own ID tokens die after
   // ~1h, which used to strand people mid-shift.
   if (!S.session){
     try{ google.accounts.id.prompt(); }catch(e){}
-    throw new Error('Please sign in.');
+    throw apiErr_('Please sign in.', 'auth');
   }
   // NOTE: no local expiry check — sessions renew themselves server-side on every use
   // (30-day rolling), and only a real server rejection means signing in again.
@@ -1011,29 +1040,40 @@ async function apiRaw_(action, payload, timeoutMs){
   // request is replayed by flushQueue rather than lost.
   const ctl = new AbortController();
   const killer = setTimeout(()=>ctl.abort(), timeoutMs || API_TIMEOUT);
+  const body = JSON.stringify({ sessionToken:S.session.token, action, payload: payload||{} });
   let res;
   try {
     res = await fetch(CONFIG.APPS_SCRIPT_URL, {
       method:'POST',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body: JSON.stringify({ sessionToken:S.session.token, action, payload: payload||{} }),
+      body,
       signal: ctl.signal,
+      // v43 — keepalive: a punch request outlives the page. Tap Submit, pocket the phone, and
+      // the browser still finishes sending it (the answer is lost, but the write-ahead copy is
+      // then replayed and answered as a duplicate). Small bodies only — the browser caps
+      // keepalive at 64 KB, and a receipt scan is far bigger than that.
+      keepalive: PUNCH.test(action) && body.length < 60000,
     });
   } catch(e){
-    if (e && e.name === 'AbortError') throw new Error('No answer from the server — check your signal and try again.');
-    throw e;
+    // Nothing came back. Whatever the browser calls it, this is a transport failure, never a
+    // rejection — the request may or may not have run, and the backend dedupes a replay.
+    if (e && e.name === 'AbortError') throw apiErr_('No answer from the server — check your signal and try again.', 'network');
+    throw apiErr_((e && e.message) ? 'Network error — ' + e.message : 'Network error', 'network');
   } finally { clearTimeout(killer); }
   let json;
   try { json = await res.json(); }
-  catch(e){ throw new Error('Google is busy right now — trying again shortly.'); } // HTML error page, not JSON
+  catch(e){ throw apiErr_('Google is busy right now — trying again shortly.', 'network'); } // HTML error page, not JSON
   // Profiling: total = network + server; `ms` is server-side time reported by the backend.
   console.debug(`[api] ${action}: ${Math.round(performance.now()-t0)}ms total (server ${json.ms??'?'}ms)`);
   if (!json.ok){
-    if (/Session expired/i.test(json.error||'')){
+    const msg = json.error || 'Request failed';
+    if (/Session expired/i.test(msg)){
       S.session=null; DB.setCache('session', null);
       try{ google.accounts.id.prompt(); }catch(e){} // silent re-auth in most cases
+      throw apiErr_(msg, 'auth');
     }
-    throw new Error(json.error || 'Request failed');
+    if (TRANSIENT_SERVER.test(msg)) throw apiErr_(msg, 'transient'); // the backend was busy, not wrong
+    throw apiErr_(msg, 'server');                                   // a real "no" — the only kind we act on
   }
   return json.data;
 }
@@ -1048,7 +1088,39 @@ let mutsInFlight = 0;
 function punchBusy(){ return mutsInFlight > 0; }
 let inflightQids = new Set(); // queued copies currently being delivered — flushQueue must skip them
 let tempIdMap = {};           // tmp_ id -> real EntryID, learned from punch responses/replays
+/* v42 — the map survives a restart. It used to live only in memory, so an app killed between a
+   clock-in landing and its clock-out being replayed forgot which real entry the tmp_ id meant. */
+function rememberId_(tmp, real){ if(!tmp||!real||tempIdMap[tmp]===real) return; tempIdMap[tmp]=real; DB.setCache('tempIdMap', tempIdMap).catch(()=>{}); }
 const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry|addManualEntry|useMaterial|returnMaterial)$/;
+const PUNCH = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak)$/; // what the home-screen banner counts
+/* v43 — a punch that has waited on the phone this long is "stuck": the banner turns red, and
+   the office is told as soon as it can be reached (stuckReport_), so an admin hears about a
+   day-old clock-out from the phone's side too, not only from the office's 24 h sweep. */
+const STUCK_HOURS = 24;
+function punchAge_(it){ return Date.now() - (Number(it && it.ts) || Date.now()); }
+function isStuck_(it){ return punchAge_(it) >= STUCK_HOURS*3600000; }
+function fmtAge_(ms){
+  const m=Math.max(0,Math.round(ms/60000));
+  if (m<1) return 'just now';
+  if (m<60) return m+' min';
+  const h=Math.floor(m/60), d=Math.floor(h/24);
+  if (d>=1) return d+(d===1?' day ':' days ')+(h%24)+' h';
+  return h+' h '+(m%60)+' min';
+}
+/* Queue bookkeeping for the screen: how many punches are waiting, plus any that the server
+   refused (kept in the 'syncLog' cache until the person has seen them). */
+async function queueCount_(){
+  try{
+    const items = await DB.all();
+    const punches = items.filter(it=>PUNCH.test(it.action));
+    const n = punches.length, stuck = punches.filter(isStuck_).length;
+    const refused = ((await DB.getCache('syncLog'))||[]).length;
+    // render() leaves an open sheet alone (it lives outside #app), so the banner is already
+    // there when the card is dismissed.
+    if (n!==(S.queued||0) || refused!==(S.refused||0) || stuck!==(S.stuck||0)){ S.queued=n; S.refused=refused; S.stuck=stuck; if(S.booted && S.session) render(); }
+  }catch(e){}
+}
+async function syncLogAdd_(entry){ try{ const l=((await DB.getCache('syncLog'))||[]).slice(-9); l.push(entry); await DB.setCache('syncLog', l); }catch(e){} queueCount_(); }
 /* v38 — the hourglass no longer sits on top of work that is already done.
  *
  * Every call below goes through apiMutate, and every one of them updates the screen FIRST and
@@ -1084,40 +1156,75 @@ async function apiMutate(action, payload, optimistic){
   if (tracked){ mutsInFlight++; if (S.tab==='clock' && !S._sheet) render(); }
   const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
   const item = { qid, action, payload, ts: Date.now(), tempId: optimistic && optimistic.tempId };
+  let stored = false; // did the write-ahead copy make it into IndexedDB?
   try {
     // WRITE-AHEAD for punches: persist to the queue BEFORE the network attempt. Each round
     // trip takes 4-6s — if the app is closed in that window (phone pocketed right after the
     // tap) the request dies, and without this the punch would silently vanish. On next open
     // flushQueue replays it, and the `at` timestamp keeps the recorded time correct.
-    if (tracked){ inflightQids.add(qid); await DB.enqueue(item); }
+    if (tracked){
+      inflightQids.add(qid);
+      try { await DB.enqueue(item); stored = true; }
+      catch(e){ console.warn('write-ahead failed', e); } // storage trouble must not block the punch itself
+      queueCount_();
+    }
     if (S.online && !tempRef){
       try {
         const data = await api(action, payload, { bg: true }); // silent: the UI already moved
-        if (tracked) await DB.del(qid); // delivered — clear the write-ahead copy
+        if (stored) await DB.del(qid); // delivered — clear the write-ahead copy
         return data;
       } catch(e){
-        // RECOVERABLE failures (network down, or an expired/invalid session that a re-sign-in
-        // will cure) must KEEP the write-ahead copy queued — flushQueue replays it after the
-        // next login. Previously an expired session deleted the punch outright (data loss).
-        if (!/Failed to fetch|NetworkError|Session expired|sign-in token|signed in|audience mismatch|busy right now/i.test(e.message)){
-          if (tracked) await DB.del(qid); // server REJECTED it — a bad punch must not replay forever
+        // v42 — ONLY a rejection by the server drops the punch. Every other failure (no
+        // answer, timeout, error page, expired session, busy backend) keeps the write-ahead
+        // copy queued for flushQueue. See the note above apiRaw_.
+        if (!retryable_(e)){
+          if (stored) await DB.del(qid); // server REJECTED it — a bad punch must not replay forever
           throw e;
         }
+        if (tracked && !stored){ e.notQueued = true; throw e; } // nowhere to keep it — say so, loudly
         /* recoverable — leave the write-ahead copy queued */
       }
     }
     if (!tracked) await DB.enqueue(item); // non-punch actions queue only on network failure
     if (tempRef && S.online) setTimeout(flushQueue, 50); // deliver the chain now, in order
+    if (tracked && stored) registerSync_(); // v43: the browser sends it when there is a connection, app open or not
     return { queued:true, qid };
   } finally {
-    if (tracked){ mutsInFlight--; if (!mutsInFlight && S.tab==='clock' && !S._sheet) render(); }
+    // v42: render even under a sheet (sheets live outside #app) — otherwise the big button
+    // could stay "Working…" behind the clock-out card.
+    if (tracked){ mutsInFlight--; if (!mutsInFlight && S.tab==='clock') render(); }
     inflightQids.delete(qid);
+    queueCount_();
   }
 }
 
 let syncing = false;
+/* A tmp_ id is 'tmp_' + Date.now() taken at the tap, and the clock-in's `at` is stamped the
+   same millisecond — so the real entry can be found again by its ClockIn time even after the
+   app forgot the mapping (killed, reinstalled, cache cleared). Looks in what we have, then asks
+   the server once. */
+async function resolveTmp_(tmpId, list){
+  const ms = Number(String(tmpId).slice(4)); if (!ms) return null;
+  const near = (arr) => (arr||[]).find(e => e && e.ClockIn && e.EntryID && String(e.EntryID).indexOf('tmp_')!==0 && Math.abs(new Date(e.ClockIn).getTime()-ms) < 2500);
+  let hit = near(S.entries) || (S.openEntry && near([S.openEntry]));
+  if (!hit && list) hit = near(list);
+  if (!hit && !list){ try { const d = await apiBg('bootstrap'); hit = near(d.entries) || near([d.openEntry]); } catch(e){} }
+  return hit && hit.EntryID && String(hit.EntryID).indexOf('tmp_')!==0 ? hit.EntryID : null;
+}
+/* Update a queued item in place — but only if it is still queued. Between the snapshot a flush
+   works from and this write, the service worker (v43) may have delivered and deleted it; a
+   blind put would bring it back from the dead. (A resurrected punch is only replayed and
+   answered as a duplicate, but the banner would show a phantom "waiting" punch meanwhile.) */
+async function requeue_(it, patch){
+  try { const cur = await DB.get(it.qid); if (cur) await DB.enqueue({ ...cur, ...patch }); } catch(e){}
+}
+function describePunch_(it){
+  const p=it.payload||{}; const when=p.at||new Date(it.ts).toISOString();
+  const what={clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start', endBreak:'break end'}[it.action]||it.action;
+  return what+' '+fmtDay(when)+' '+fmtTime(when)+(p.jobSite?' — '+p.jobSite:'');
+}
 async function flushQueue(){
-  if (syncing || !S.online || !S.session) return;
+  if (syncing || !S.online || !S.session) return 0;
   syncing = true;
   let processed = 0; // only pay for a full refresh when something actually synced
   try {
@@ -1126,25 +1233,33 @@ async function flushQueue(){
     for (const it of items){
       if (inflightQids.has(it.qid)) continue; // apiMutate is delivering this one right now
       const p = { ...it.payload };
+      if (PUNCH.test(it.action)) p.queuedAt = it.ts; // v43: the office sees how long the phone held it (a day or more → LATE email)
       // remap any temp entryId to the real one (from this flush OR learned earlier)
       if (p.entryId && (idMap[p.entryId] || tempIdMap[p.entryId]))
         p.entryId = idMap[p.entryId] || tempIdMap[p.entryId];
       // STILL-UNRESOLVED tmp reference: its parent clock-in is queued ahead of it or being
       // delivered by apiMutate right now. Sending it would get "Entry not found" and the
-      // catch below would DROP it (a lost clock-out). Wait for the parent instead; only
-      // drop if the parent is truly gone (its clock-in was rejected by the server).
+      // catch below would DROP it (a lost clock-out). Wait for the parent instead.
       if (typeof p.entryId==='string' && p.entryId.indexOf('tmp_')===0){
-        const parentPending = items.some(x => x.tempId === p.entryId);
+        // v42 — the parent is the clock-in that CREATED this tmp id, never the item itself.
+        // The old test matched a clock-out's own tempId, so a clock-out taken before its
+        // clock-in had synced waited for itself forever — and blocked every refresh meanwhile.
+        const parentPending = items.some(x => x.qid!==it.qid && x.tempId === p.entryId && /^(clockIn|switchJobSite)$/.test(x.action));
         if (parentPending) continue; // parent will land first — retry on the next flush
-        console.warn('Dropping orphaned queued action', it.action, p.entryId);
-        toast('A queued "'+it.action+'" could not sync — its clock-in never saved.');
-        await DB.del(it.qid); processed++; continue;
+        // Parent gone: either it landed and the mapping was lost, or the server refused it.
+        const real = await resolveTmp_(p.entryId);
+        if (real){ idMap[p.entryId]=real; rememberId_(p.entryId, real); p.entryId = real; }
+        else {
+          console.warn('Dropping orphaned queued action', it.action, p.entryId);
+          await syncLogAdd_({ ts: Date.now(), what: describePunch_(it), why: 'its clock-in never reached the server' });
+          await DB.del(it.qid); processed++; continue;
+        }
       }
       try {
-        const data = await api(it.action, p);
+        const data = await api(it.action, p, { bg:true });
         if (it.tempId && data && data.entry && data.entry.EntryID){
           idMap[it.tempId] = data.entry.EntryID;
-          tempIdMap[it.tempId] = data.entry.EntryID; // remember across flush runs
+          rememberId_(it.tempId, data.entry.EntryID); // remember across flush runs AND restarts
           // A clock-in delivered LATE: repair local state still holding the temp id, so
           // the running clock and any follow-up actions use the real entry.
           if (S.openEntry && S.openEntry.EntryID===it.tempId) S.openEntry = data.entry;
@@ -1153,26 +1268,87 @@ async function flushQueue(){
         }
         await DB.del(it.qid); processed++;
       } catch(e){
-        // Network problem OR auth problem (expired token): STOP and retry later —
-        // never drop queued work for a recoverable failure.
-        if (/Failed to fetch|NetworkError|sign-in token|signed in|audience mismatch|Session expired/i.test(e.message)) break;
+        // No usable answer (network, timeout, error page, session, busy backend): STOP and
+        // retry later — never drop queued work for a recoverable failure.
+        if (retryable_(e)){ await requeue_(it, { lastError: e.message, lastTry: Date.now(), tries: (it.tries||0)+1 }); break; }
+        // "You already have an open entry" on a clock-in replay: is it THIS clock-in, landed
+        // before the app was killed — or a different, older shift still open on the server?
+        // Only a matching ClockIn time makes it the former. (A v30 backend answers a replayed
+        // clock-in with the entry itself, so this branch is for the transition.)
+        if (/already have an open entry/i.test(e.message) && it.tempId){
+          const real = await resolveTmp_(it.tempId);
+          if (real){ idMap[it.tempId]=real; rememberId_(it.tempId, real);
+            if (S.openEntry && S.openEntry.EntryID===it.tempId) S.openEntry.EntryID = real;
+            await DB.del(it.qid); processed++; continue; }
+          // An older shift is still open: keep the clock-in queued and make the conflict visible.
+          await requeue_(it, { lastError: 'An earlier shift is still open on the server — fix it, then this clock-in will send.', conflict: true, lastTry: Date.now(), tries: (it.tries||0)+1 });
+          continue;
+        }
         // Write-ahead replay of a punch that already landed before the app was killed —
         // the duplicate is expected, drop it quietly.
         if (/Already clocked out|already have an open entry|Already on break|Not on break/i.test(e.message)){
           await DB.del(it.qid); processed++; continue;
         }
-        // genuine validation error — drop so the queue doesn't jam, but tell the user
+        // The server said no to this one — drop it so the queue moves on, and keep the
+        // reason where the person will see it (home-screen banner), not in a 3-second toast.
         console.warn('Dropping queued action', it.action, e.message);
-        toast('A queued "'+it.action+'" could not sync: '+e.message);
+        await syncLogAdd_({ ts: Date.now(), what: describePunch_(it), why: e.message });
         await DB.del(it.qid); processed++;
       }
     }
   } finally {
     syncing = false;
+    queueCount_();
   }
+  // v43 — whatever is still waiting: hand it to the browser to send when the phone next has a
+  // connection even if the app is closed (Background Sync), and tell the office about anything
+  // that has now waited a day (it can be reached, or this flush would not have got this far).
+  try {
+    const left = (await DB.all()).filter(it=>PUNCH.test(it.action) && !inflightQids.has(it.qid));
+    if (left.length){ registerSync_(); stuckReport_(left); }
+  } catch(e){}
   // The old unconditional refresh here fired a full 4-6s bootstrap every 60s (the periodic
   // sync timer) even with an empty queue — a constant background drag for zero new data.
   if (processed){ saveBootCache(); await refresh(true); }
+  return processed;
+}
+/* v43 — Background Sync: once registered, the browser fires the service worker's 'sync' event
+   the next time the phone has a connection — with the app closed, the screen off, the phone in
+   a pocket — and sw.js sends the queue (see there). Chrome/Android only; on an iPhone this is a
+   no-op and the queue goes on the next open, as before.
+   While the app is open and visible the worker leaves the sending to the app (which has its own
+   timers), so a registration made while visible is simply used up; going to the background
+   registers again (force) so the worker takes over from there. Registrations from failed
+   flushes are rate-limited — a busy office must never be hammered in a loop. */
+let lastSyncReg_ = 0;
+function registerSync_(force){
+  try {
+    if (!('serviceWorker' in navigator) || !('SyncManager' in window)) return;
+    if (!force && Date.now()-lastSyncReg_ < 30000) return;
+    lastSyncReg_ = Date.now();
+    navigator.serviceWorker.ready.then(reg => reg.sync && reg.sync.register('flush-punches')).catch(()=>{});
+  } catch(e){}
+}
+/* v43 — a punch still on the phone STUCK_HOURS after it was tapped: tell the office once a day
+   (it emails the person and the admins), and remember that it was told. */
+let stuckReporting_ = false;
+async function stuckReport_(items){
+  if (stuckReporting_ || !S.online || !S.session) return;
+  stuckReporting_ = true;
+  try {
+    for (const it of items){
+      if (!isStuck_(it)) continue;
+      if (it.stuckReported && Date.now()-it.stuckReported < 20*3600000) continue;
+      const p = it.payload||{};
+      try {
+        await apiBg('punchStuck', { action: it.action, at: p.at, queuedAt: it.ts, entryId: p.entryId, jobSite: p.jobSite,
+          hours: Math.round(punchAge_(it)/360000)/10, lastError: it.lastError||'', tries: it.tries||0 });
+        // Re-read before writing: a flush may have delivered (deleted) or re-queued it meanwhile.
+        const cur = await DB.get(it.qid);
+        if (cur) await DB.enqueue({ ...cur, stuckReported: Date.now() });
+      } catch(e){ break; } // no answer — the office cannot be reached after all; next time
+    }
+  } finally { stuckReporting_ = false; queueCount_(); }
 }
 
 /* ============================================================================
@@ -1200,7 +1376,8 @@ async function doLogin(){
     S.session = { token: json.data.sessionToken, exp: json.data.exp };
     await DB.setCache('session', S.session);
     applyBootstrap(json.data.boot);
-    S.booted = true;
+    overlayQueued_(await DB.all()); // v42: punches still waiting on this phone stay visible
+    S.booted = true; S._lastRefresh = Date.now();
     await DB.setCache('bootstrap', json.data.boot);
     flushQueue(); render();
     loadCustomers(); loadMaterials(); loadOnboarding();
@@ -1243,8 +1420,10 @@ async function boot(){
   try{ history.replaceState({tab:S.tab||'clock'},''); }catch(e){}
   // Stale-while-revalidate: paint instantly from the cached bootstrap, refresh in background.
   const cached = await DB.getCache('bootstrap');
-  if (cached){ applyBootstrap(cached); S.booted = true; render(); }
+  try { tempIdMap = Object.assign({}, (await DB.getCache('tempIdMap'))||{}, tempIdMap); } catch(e){} // v42: survives restarts
+  if (cached){ applyBootstrap(cached); overlayQueued_(await DB.all()); S.booted = true; render(); }
   else render(true); // first-ever load: show spinner
+  queueCount_();
   try {
     // Unsynced punches from the last session (app closed mid-request) MUST land before we
     // trust a server snapshot — the snapshot still shows the pre-punch state (clocked in
@@ -1265,7 +1444,7 @@ async function boot(){
       // the old button state. Drop it and re-sync shortly.
       if (seq === S.mutSeq && !mutsInFlight){
         applyBootstrap(data);
-        S.booted = true;
+        S.booted = true; S._lastRefresh = Date.now();
         await DB.setCache('bootstrap', data);
         render();
       } else scheduleRefresh();
@@ -1303,13 +1482,42 @@ async function refresh(silent){
     // Unsynced queued punches mean the server is BEHIND local state — deliver them first,
     // otherwise the snapshot would resurrect the pre-punch button state. flushQueue
     // refreshes on its own when it lands something.
-    if ((await DB.all()).length){ flushQueue(); return; }
+    // v42 — but a punch that CANNOT be delivered right now (no signal, or waiting on a fix)
+    // no longer blocks the refresh forever: the snapshot is taken anyway and the queued
+    // punches are laid over it (overlayQueued_), so the screen shows what the person did AND
+    // the app keeps learning what the server knows.
+    if ((await DB.all()).length){
+      if (await flushQueue()) return;                 // it landed something and refreshed itself
+      if (mutsInFlight > 0 || syncing){ scheduleRefresh(); return; }
+    }
     const seq = S.mutSeq;
     const d = await apiBg('bootstrap');
     if (seq !== S.mutSeq || mutsInFlight > 0 || syncing){ scheduleRefresh(); return; } // stale
-    applyBootstrap(d); await DB.setCache('bootstrap', d); render();
+    applyBootstrap(d); await DB.setCache('bootstrap', d);
+    overlayQueued_(await DB.all()); S._lastRefresh = Date.now(); render();
   }
   catch(e){ if(!silent) toast(e.message); }
+}
+/* Lay the punches still waiting in the queue over a fresh server snapshot, oldest first, so a
+   clock-out that has not reached the office yet still shows as clocked out (with the banner
+   saying it is waiting), and a queued clock-in still shows its running clock. */
+function overlayQueued_(items){
+  (items||[]).slice().sort((a,b)=>a.ts-b.ts).forEach(it=>{
+    const p=it.payload||{};
+    if (it.action==='clockIn' || it.action==='switchJobSite'){
+      if (it.action==='switchJobSite' && S.openEntry && !S.openEntry._pending)
+        upsertLocalEntry({ ...S.openEntry, ClockOut:p.at||new Date(it.ts).toISOString(), Source:'paused' });
+      const id = it.tempId || ('tmp_'+it.ts);
+      S.openEntry = { EntryID: tempIdMap[id]||id, ClockIn: p.at||new Date(it.ts).toISOString(), Company:p.company||'',
+        'Customer/Job Site':p.jobSite||'', 'PO#':p.poNumber||'', Status:'approved', Source:'live', _local:true, _pending:true };
+    } else if (it.action==='clockOut' && S.openEntry){
+      const id = tempIdMap[p.entryId]||p.entryId;
+      if (S.openEntry.EntryID===id || S.openEntry.EntryID===p.entryId){
+        upsertLocalEntry({ ...S.openEntry, ClockOut:p.at||new Date(it.ts).toISOString(), Source: p.paused?'paused':'live', _pending:true });
+        S.openEntry=null;
+      }
+    }
+  });
 }
 
 /* ============================================================================
@@ -1349,7 +1557,10 @@ async function doClockIn(payload){
   const gps = await getGps(4000); // AFTER the UI update — a slow fix must never freeze the tap
   let r=null;
   try { r = await apiMutate('clockIn', { ...payload, gps, at }, { tempId }); }
-  catch(e){ toast(e.message); refresh(true); return; } // e.g. already clocked in on another device
+  catch(e){ // e.g. an earlier shift is still open on the server — the refresh brings it back on screen
+    S.openEntry=null; S.mutSeq++; render(); saveBootCache();
+    toast(/already have an open entry/i.test(e.message) ? 'Not clocked in — an earlier shift is still open. Clock that one out first (tap the red banner to fix it).' : 'Clock-in did not save: '+e.message, 8000);
+    refresh(true); return; }
   // The response IS the authoritative entry — no full refresh needed (the old one here was
   // both a wasted 4-6s call and a flicker source).
   if (r && r.entry){ tempIdMap[tempId]=r.entry.EntryID; S.openEntry = r.entry; upsertLocalEntry(r.entry); }
@@ -1382,7 +1593,7 @@ async function doSwitchSite(payload){
   const gps = await getGps(4000);
   let r=null;
   try { r = await apiMutate('switchJobSite', { ...payload, gps, at }, { tempId }); }
-  catch(e){ toast(e.message); refresh(true); return; }
+  catch(e){ toast('Job switch did not save: '+e.message, 8000); refresh(true); return; }
   if (r && r.entry){ tempIdMap[tempId]=r.entry.EntryID; S.openEntry=r.entry; upsertLocalEntry(r.entry); }
   saveBootCache();
   toast('Switched job site');
@@ -1551,7 +1762,7 @@ function clockLogo(){
 function clockView(){
   let ot = weekHours() > (S.config.otThreshold||44)
     ? `<div class="banner ot">⚠ Overtime: ${weekHours().toFixed(1)} hrs this week (over ${S.config.otThreshold||44}).</div>` : '';
-  ot = obBanner() + scanBanner() + ot; // onboarding nag sits above everything until it's done
+  ot = obBanner() + syncBanner() + scanBanner() + ot; // onboarding nag sits above everything until it's done
   if (S.openEntry){
     const ageH=(Date.now()-new Date(S.openEntry.ClockIn))/3600000;
     if (ageH>14) ot = `<div class="banner ot" style="cursor:pointer" onclick="openForgotFix()">⚠ <b>Still clocked in since ${fmtDay(S.openEntry.ClockIn)} ${fmtTime(S.openEntry.ClockIn)}</b> — forgot to clock out? Tap here to fix it.</div>` + ot;
@@ -3108,10 +3319,15 @@ async function submitPicker(){
 
 /* ---- Clock out: confirm → review-and-edit → Submit ----
    The entry is only finalized when Submit is tapped. "Keep working" returns to the running
-   clock — nothing was sent, so no time is lost either way. The clock-out time is the moment
-   you CONFIRMED (coState.stopAt), not when you finish the form: filling in materials and
-   photos doesn't pad the day. */
-let coState=null, coSubmittedId=null, coJobResults=[], coMatResults=[];
+   clock — nothing was sent, so no time is lost either way.
+   v43 — the clock-out time is the moment SUBMIT is tapped, not the moment "Yes, clock out"
+   was confirmed. Writing up the day and the materials used is the last job of the day and
+   takes a minute or two; it used to be cut off. The review screen shows the time still
+   running (coTick_). A time typed into the Clock out box wins; and if the review sat open for
+   more than LONG_REVIEW_MIN minutes (phone put down mid-form), Submit asks which time is right
+   instead of silently padding the day. */
+let coState=null, coSubmittedId=null, coJobResults=[], coMatResults=[], coTickT=null;
+const LONG_REVIEW_MIN = 15;
 
 function openClockOut(){
   if (punchGuard_()) return;
@@ -3119,7 +3335,7 @@ function openClockOut(){
   sheet(`<div class="center">
     <h2>Clock out?</h2>
     ${site?`<p class="muted">${esc(site)}</p>`:''}
-    <p class="small muted">Next you'll review your day — nothing is saved until you hit Submit.</p>
+    <p class="small muted">Next you'll review your day — the clock keeps running until you hit Submit.</p>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="closeSheet()">Cancel</button>
       <button class="grow" style="background:linear-gradient(135deg,#dc2626,#f97316)" onclick="startClockOutReview()">Yes, clock out</button>
@@ -3134,9 +3350,9 @@ function startClockOutReview(){
     entryId: S.openEntry.EntryID,
     origInAt: S.openEntry.ClockIn,   // untouched original, for "did they edit it?"
     inAt: S.openEntry.ClockIn,
-    stopAt,                          // confirm moment — the default clock-out time
-    outAt: stopAt,
-    inEdited: false, outEdited: false, jobEdited: false,
+    stopAt,                          // confirm moment — only used to notice a review left open too long
+    outAt: stopAt,                   // v43: follows the clock (coTick_) until Submit, unless typed over
+    inEdited: false, outEdited: false, jobEdited: false, longReviewOk: false,
     jobSite: S.openEntry['Customer/Job Site']||'',
     poNumber: S.openEntry['PO#']||'',
     company: S.openEntry.Company||'',
@@ -3157,7 +3373,21 @@ function startClockOutReview(){
   // picker) and update the "Change job" list if it's showing when the fresh data lands.
   loadCustomers(true).then(()=>{ if (coState) coJobFilter(val('coJobSearch')); });
   renderClockOutReview();
+  clearInterval(coTickT); coTickT = setInterval(coTick_, 5000); // the Clock out box follows the clock
 }
+/* v43 — while the review is open the clock-out time is "now": keep coState.outAt and the
+   Clock out box in step with the clock, unless a time was typed in (outEdited) or the box is
+   being edited right now (a native time picker must not have the value change under it). */
+function coTick_(){
+  const c=coState; if(!c){ clearInterval(coTickT); coTickT=null; return; }
+  if (c.outEdited) return;
+  const el=document.getElementById('coOut');
+  if (el && document.activeElement===el) return; // being edited — leave both the value and outAt alone until the change event decides
+  c.outAt = new Date().toISOString();
+  if (el && el.value!==fmtHM(c.outAt)) el.value=fmtHM(c.outAt);
+  coUpdateWorked();
+}
+function coStopTick_(){ clearInterval(coTickT); coTickT=null; }
 
 function fmtHM(iso){ const d=new Date(iso); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
 function localDateStr(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
@@ -3167,7 +3397,7 @@ function renderClockOutReview(){
   const c = coState;
   sheet(`
     <h2 style="margin-bottom:2px">Review your day</h2>
-    <p class="small muted" style="margin-top:0">Fix anything that's wrong, then Submit.</p>
+    <p class="small muted" style="margin-top:0">Fix anything that's wrong, then Submit — your time keeps running until you do.</p>
     <div class="card" style="margin:10px 0">
       <div class="row between">
         <div><b id="coJobName">${esc(c.jobSite||c.company||'—')}</b>
@@ -3214,6 +3444,7 @@ function renderClockOutReview(){
 }
 
 function cancelClockOutReview(){
+  coStopTick_();
   coState=null; closeSheet(); render(); // timer resumes — the clock never actually stopped
   toast('Still clocked in');
 }
@@ -3227,14 +3458,16 @@ function coTimes(){
     const t=new Date(dstr+'T'+inV);
     if(!isNaN(t)){ c.inAt=t.toISOString(); c.inEdited=true; }
   } else if (inV){ c.inAt=c.origInAt; c.inEdited=false; }
-  if (outV && outV!==fmtHM(c.stopAt)){
+  // v43 — the box normally tracks the clock (coTick_ keeps it equal to fmtHM(c.outAt)), so a
+  // value that differs from it can only have been typed: that time wins from here on.
+  if (outV && outV!==fmtHM(c.outAt)){
     let t=new Date(dstr+'T'+outV);
     if(!isNaN(t)){
       if (t <= new Date(c.inAt)) t=new Date(t.getTime()+86400000); // out before in = overnight shift
       c.outAt=t.toISOString(); c.outEdited=true;
     }
-  } else if (outV){ c.outAt=c.stopAt; c.outEdited=false; }
-  c.breakMin = Math.max(0, Number(val('coBreak'))||0);
+  }
+  if (document.getElementById('coBreak')) c.breakMin = Math.max(0, Number(val('coBreak'))||0); // the review sheet may already be gone (coCommit_)
   // Any change to the numbers voids a pending "clock out anyway" confirmation.
   if (c.breakWarned && (c.inAt+'|'+c.outAt+'|'+c.breakMin) !== before){
     c.breakWarned = false;
@@ -3331,6 +3564,8 @@ function coUpdateMedia(){
 async function submitClockOut(){
   const c=coState; if(!c) return;
   coTimes(); // capture any input the change-event hasn't fired for yet
+  // v43 — the clock-out time is THIS tap, to the second, unless a time was typed in.
+  if (!c.outEdited) c.outAt = new Date().toISOString();
   if(!String(c.notes||'').trim() || String(c.notes).trim().length<3){
     toast('Describe what you worked on before clocking out — talk or type it.');
     const el=document.getElementById('coNotes'); if(el){ el.focus(); el.style.borderColor='var(--bad)'; }
@@ -3349,12 +3584,44 @@ async function submitClockOut(){
     coUpdateWorked();
     return;
   }
+  // v43 — a review left open for a long time (phone put down mid-form) must not quietly add
+  // that time to the day: ask which time is right. A typed time is already an answer.
+  if (!c.outEdited && !c.longReviewOk && Date.now()-new Date(c.stopAt).getTime() > LONG_REVIEW_MIN*60000){ coAskLongReview_(); return; }
+  return coCommit_();
+}
+function coAskLongReview_(){
+  const c=coState; if(!c) return;
+  const mins=Math.round((Date.now()-new Date(c.stopAt).getTime())/60000);
+  sheet(`<div class="center">
+    <div style="font-size:2.2rem">⏱</div>
+    <h2>Which clock-out time?</h2>
+    <p>You tapped <b>Clock out</b> at <b>${esc(fmtTime(c.stopAt))}</b> — ${mins} minutes ago.</p>
+    <button style="width:100%;margin-top:8px" onclick="coLongReview_(true)">${esc(fmtTime(new Date().toISOString()))} (now) — I kept working</button>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="coLongReview_(false)">${esc(fmtTime(c.stopAt))} — I had stopped</button>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="renderClockOutReview()">← Back to the review</button>
+  </div>`);
+  if (S._sheet) S._sheet.onclick = null;
+}
+function coLongReview_(useNow){
+  const c=coState; if(!c) return;
+  c.longReviewOk = true;
+  if (useNow) c.outAt = new Date().toISOString();
+  else { c.outAt = c.stopAt; c.outEdited = true; }
+  coCommit_();
+}
+/* Everything after the review is accepted: close the sheet, paint clocked-out, send. */
+async function coCommit_(){
+  const c=coState; if(!c) return;
+  coStopTick_();
+  const bmin=Number(c.breakMin)||0;
+  const gms=new Date(c.outAt)-new Date(c.inAt);
   coSubmittedId=c.entryId; // review really submitted — the late-GPS patch may now target it
   coState=null; closeSheet();
   S.mutSeq++; // flicker guard — invalidate any in-flight bootstrap snapshot
   const gross=Math.round((gms/3600000)*100)/100;
   const brkHrs=Math.min(Math.round((bmin/60)*100)/100, gross); // confirmed over-break clamps to the shift
   const net=Math.max(0, Math.round((gross-brkHrs)*100)/100);
+  const prevOpen=S.openEntry; // kept so a refused clock-out can put the running clock back
   const prevNotes=(S.openEntry&&S.openEntry.Notes)||'';
   const closing={ ...(S.openEntry||{}), EntryID:c.entryId, ClockIn:c.inAt, ClockOut:c.outAt,
     Hours:net, 'Gross Hours':gross, 'Break Hrs':brkHrs,
@@ -3367,13 +3634,29 @@ async function submitClockOut(){
                    // paint "Clock In", not resurrect the Clock Out button
   // Confirmation card IMMEDIATELY — it used to wait out the 4-6s server round trip. The
   // numbers are computed locally (same math as the server); its values reconcile below.
-  showEncouragement(net, weekHours() > (S.config.otThreshold||44), brkHrs);
+  // v42 — the card tells the truth. It used to show "✅ Clocked out" BEFORE the server had
+  // answered, and a failure was a 3-second toast underneath it. Now: ⏳ while sending, then
+  // ✅ once the office has it, 📶 if it is waiting on the phone for signal, ❌ if the server
+  // refused it (in which case the running clock comes straight back).
+  const ot = weekHours() > (S.config.otThreshold||44);
+  const before = prevOpen ? { ...prevOpen } : null;
+  showEncouragement(net, ot, brkHrs, 'sending');
   const p={ entryId:c.entryId, at:c.outAt, gps:c.gps, notes:c.notes, breakMin:bmin };
   if (c.inEdited) p.clockInAt=c.inAt;
   if (c.jobEdited){ p.jobSite=c.jobSite; p.poNumber=c.poNumber; p.company=c.company; }
   let r=null;
   try { r = await apiMutate('clockOut', p, { tempId:c.entryId }); }
-  catch(e){ toast('Clock-out failed: '+e.message); refresh(true); return; }
+  catch(e){
+    if (/Already clocked out/i.test(e.message)){ refresh(true); showEncouragement(net, ot, brkHrs, 'done'); return; } // closed from another device
+    // The server said no (or the punch could not even be kept on the phone): undo the
+    // optimistic close so the running clock is back, and say exactly why.
+    if (before && !S.openEntry){ S.openEntry = before; const i=(S.entries||[]).findIndex(x=>x.EntryID===c.entryId); if (i>=0) S.entries.splice(i,1); }
+    S.mutSeq++; render(); saveBootCache();
+    showEncouragement(net, ot, brkHrs, 'failed', e.message + (e.notQueued ? ' (and this phone could not keep a copy to retry)' : ''));
+    refresh(true); return;
+  }
+  if (r && r.queued){ showEncouragement(net, ot, brkHrs, 'queued'); }
+  else showEncouragement(r && r.hours!=null ? Number(r.hours) : net, ot, r && r.breakHrs!=null ? Number(r.breakHrs) : brkHrs, 'done'); // the office's numbers, now that we have them
   // Fold the server-computed values into the local entry — no full refresh needed.
   if (r && r.hours!=null){
     const i=(S.entries||[]).findIndex(x=>x.EntryID===c.entryId);
@@ -4239,6 +4522,32 @@ async function docQueueDel(qid){
   const q=(await docQueueAll()).filter(x=>x.qid!==qid); await DB.setCache('pendingScans', q); docQueueCount(q);
 }
 function docQueueCount(q){ const n=(q||[]).filter(x=>x.needsConfirm).length; if(n!==(S.scanWaiting||0)){ S.scanWaiting=n; render(); } }
+/* v42 — punches that have not reached the office yet, and punches the office refused, live on
+   the home screen until they are sent or seen. A 3-second toast was how a lost clock-out went
+   unnoticed for six days. */
+function syncBanner(){
+  let h='';
+  if (S.refused) h += `<div class="banner ot" style="cursor:pointer;background:#fee2e2;border-color:#fca5a5;color:#991b1b" onclick="openSyncStatus()">⚠ <b>${S.refused} punch${S.refused>1?'es were':' was'} refused by the office</b> — tap to see why.</div>`;
+  if (S.stuck) h += `<div class="banner ot" style="cursor:pointer;background:#fee2e2;border-color:#fca5a5;color:#991b1b" onclick="openSyncStatus()">⚠ <b>${S.stuck} punch${S.stuck>1?'es have':' has'} been waiting more than a day</b> — the office does NOT have ${S.stuck>1?'them':'it'}. Get signal and tap to send now.</div>`;
+  else if (S.queued) h += `<div class="banner ot" style="cursor:pointer" onclick="openSyncStatus()">📶 <b>${S.queued} punch${S.queued>1?'es':''} waiting to send</b> — will go by itself when there is signal. Tap to send now.</div>`;
+  return h;
+}
+async function openSyncStatus(){
+  const items=(await DB.all()).filter(it=>PUNCH.test(it.action)).sort((a,b)=>a.ts-b.ts);
+  const refused=(await DB.getCache('syncLog'))||[];
+  sheet(`<h2>Punches not at the office yet</h2>
+    ${items.length?items.map(it=>`<div class="list-item"><b>${esc(describePunch_(it))}</b>
+        <div class="small ${isStuck_(it)?'':'muted'}" ${isStuck_(it)?'style="color:var(--bad)"':''}>${isStuck_(it)?'⚠ ':''}waiting ${esc(fmtAge_(punchAge_(it)))}${isStuck_(it)?' — more than a day, the office does not have this':''}</div>
+        <div class="small muted">${it.conflict?'⚠ ':''}${esc(it.lastError||(it.lastTry?'':'not tried yet'))}${it.lastTry?' · last try '+fmtTime(new Date(it.lastTry).toISOString()):''}${it.stuckReported?' · admin emailed':''}</div></div>`).join('')
+      :'<p class="muted">Nothing waiting — everything you punched is at the office.</p>'}
+    ${refused.length?`<h3 style="margin-top:14px;color:var(--bad)">Refused by the office</h3>`+refused.map(r=>`<div class="list-item"><b>${esc(r.what)}</b><div class="small" style="color:var(--bad)">${esc(r.why)}</div></div>`).join('')
+      +`<p class="small muted">These were not saved. Enter them as a manual entry (Entries tab) if the time is owed.</p>`:''}
+    <div class="row" style="margin-top:14px">
+      ${items.length?`<button class="grow" onclick="closeSheet();toast('Sending…');flushQueue().then(n=>{ if(!n) toast(S.online?'Still could not reach the office — will keep trying.':'No signal — will send when you are back online.'); })">Send now</button>`:''}
+      ${refused.length?`<button class="secondary grow" onclick="DB.setCache('syncLog',[]).then(()=>{closeSheet();queueCount_();})">Clear refused</button>`:''}
+      <button class="secondary grow" onclick="closeSheet()">Close</button>
+    </div>`);
+}
 function scanBanner(){
   if(!S.scanWaiting) return '';
   return `<div class="banner ot" style="cursor:pointer" onclick="openQueuedScan()">📷 <b>${S.scanWaiting} scanned document${S.scanWaiting>1?'s need':' needs'} your OK</b> — tap to review before it is saved.</div>`;
@@ -4624,16 +4933,29 @@ async function resolveMat(k,action){
 }
 
 /* ---- Encouragement on clock-out ---- */
-function showEncouragement(hrs, ot, breakHrs){
+/* v42 — one card, four honest states. `state`: 'sending' (request in flight), 'done' (the
+   office has it), 'queued' (kept on the phone, will send when there is signal), 'failed' (the
+   server refused it — the person is still clocked in). Same sheet is re-rendered in place, so
+   the person watches ⏳ turn into ✅ (about 4-6 s) instead of being told ✅ up front. */
+function showEncouragement(hrs, ot, breakHrs, state, why){
   const msg = ENCOURAGEMENTS[Math.floor(dayIndex()) % ENCOURAGEMENTS.length];
+  const st = state||'done';
+  const icon = { sending:'⏳', done:'✅', queued:'📶', failed:'❌' }[st];
+  const head = { sending:`Clocking out — ${hrs.toFixed(2)} hrs`, done:`Clocked out — ${hrs.toFixed(2)} hrs`,
+                 queued:`Clock-out saved on this phone — ${hrs.toFixed(2)} hrs`, failed:'Clock-out did NOT save' }[st];
+  const body = st==='sending' ? '<p class="muted" style="margin:14px 0">Sending to the office…</p>'
+    : st==='queued' ? '<p style="margin:14px 0">Could not reach the office just now. Your clock-out is kept on this phone and will send by itself as soon as it can — you can close the app.</p><p class="small muted">Until it is sent, the home screen shows it as waiting.</p>'
+    : st==='failed' ? `<p style="margin:14px 0"><b>You are still clocked in.</b> The office refused this clock-out:</p><p class="small" style="color:var(--bad)">${esc(why||'')}</p><p class="small muted">Check the times and try again.</p>`
+    : `<p style="font-size:1.1rem;margin:14px 0">${esc(msg)}</p>`;
   sheet(`<div class="center">
-    <div style="font-size:2.6rem">✅</div>
-    <h2>Clocked out — ${hrs.toFixed(2)} hrs</h2>
-    ${breakHrs?`<div class="small muted">(${(breakHrs*60).toFixed(0)} min of breaks deducted)</div>`:''}
-    <p style="font-size:1.1rem;margin:14px 0">${esc(msg)}</p>
-    ${ot?'<div class="banner ot">You\'re into overtime this week — nice hustle.</div>':''}
-    <button style="width:100%;margin-top:8px" onclick="closeSheet()">Done</button>
+    <div style="font-size:2.6rem">${icon}</div>
+    <h2>${esc(head)}</h2>
+    ${breakHrs&&st!=='failed'?`<div class="small muted">(${(breakHrs*60).toFixed(0)} min of breaks deducted)</div>`:''}
+    ${body}
+    ${ot&&st==='done'?'<div class="banner ot">You\'re into overtime this week — nice hustle.</div>':''}
+    ${st==='sending'?'':`<button style="width:100%;margin-top:8px" onclick="closeSheet()">${st==='failed'?'OK':'Done'}</button>`}
   </div>`);
+  keepSheet_(); // a stray tap must not dismiss the answer before it is read
 }
 function dayIndex(){ // deterministic day-of-year so the message rotates predictably across the year
   const d=new Date(); const start=new Date(d.getFullYear(),0,0);
@@ -4652,10 +4974,10 @@ function wire(){
   if (S.openEntry) tickTimer();
 }
 let toastT=null;
-function toast(msg){
+function toast(msg, ms){
   const t=document.getElementById('toast');
   t.innerHTML=`<div class="toast">${esc(msg)}</div>`;
-  clearTimeout(toastT); toastT=setTimeout(()=>t.innerHTML='',3200);
+  clearTimeout(toastT); toastT=setTimeout(()=>t.innerHTML='', ms||3200);
 }
 
 /* ============================================================================
@@ -4693,6 +5015,27 @@ function forgotNudge(){
 }
 window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); flushReceipts(); flushScans(); if(!S.onboard) loadOnboarding(); });
 window.addEventListener('offline', ()=>{ S.online=false; render(); });
+/* v42 — a phone that was in a pocket does not fire 'online', and its 60-second timer was
+   frozen with the screen. The moment the app is back in front: send whatever is waiting and,
+   unless it was refreshed in the last minute, re-read the server so the screen is the truth. */
+document.addEventListener('visibilitychange', ()=>{
+  if (document.visibilityState!=='visible'){
+    // v43 — going to the background with punches waiting: the browser takes over the sending.
+    if (S.queued) registerSync_(true);
+    return;
+  }
+  if (!S.booted || !S.session) return;
+  S.online = navigator.onLine;
+  flushQueue().then(n=>{ if (!n && Date.now()-(S._lastRefresh||0) > 60000 && !S._sheet) refresh(true); });
+});
+/* v43 — the service worker talks back: 'punchesSent' after it delivered queued punches while
+   the app was closed or in the background — re-read the office so the screen is the truth. */
+if ('serviceWorker' in navigator){
+  navigator.serviceWorker.addEventListener('message', (ev)=>{
+    const m = ev.data || {};
+    if (m.type==='punchesSent'){ queueCount_(); if (S.booted && S.session){ toast((m.n||1)+' punch'+(m.n>1?'es':'')+' sent to the office in the background ✓', 5000); refresh(true); } }
+  });
+}
 
 async function start(){
   // restore the 24h session so a returning user doesn't have to tap sign-in every time
@@ -4700,6 +5043,10 @@ async function start(){
   if (sess && sess.token && Date.now() < sess.exp - 60000){ S.session=sess; await boot(); }
   initAuth();
   if ('serviceWorker' in navigator){ try{ await navigator.serviceWorker.register('./sw.js'); }catch(e){} }
+  // v43 — what the service worker needs to send punches on its own (it cannot see this script):
+  // the office's address; the session is already in the same cache ('session').
+  DB.setCache('apiUrl', CONFIG.APPS_SCRIPT_URL).catch(()=>{});
+  if (S.queued) registerSync_();
   // periodic background sync while app is open (flushQueue is a no-op when the queue is
   // empty); a full data refresh only every 5 min — it costs a 4-6s server call.
   setInterval(()=>{ if(S.online && S.booted){ flushQueue(); } }, 60000);
