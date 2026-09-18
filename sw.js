@@ -15,7 +15,7 @@
  * handler throws and the browser retries the sync later with backoff. Chrome/Android only:
  * Safari has no Background Sync, so on an iPhone the queue still goes on the next open.
  */
-const CACHE = 'pcw-pro-timesheet-v43'; // v43: clock-out time is the Submit tap; punches sent in the background (Background Sync + keepalive); waiting punches show their age, a day-old one is reported to the office
+const CACHE = 'pcw-pro-timesheet-v44'; // v44: scan a receipt from the Review screen and its lines fill Materials used; Take a photo vs From album; wide-lens toggle; an AI hiccup queues the photo instead of losing it. v43: clock-out time is the Submit tap; punches sent in the background (Background Sync + keepalive); waiting punches show their age, a day-old one is reported to the office
 const SHELL = ['./', './index.html', './manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {

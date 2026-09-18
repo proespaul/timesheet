@@ -3430,8 +3430,18 @@ function renderClockOutReview(){
     <input id="coMatSearch" placeholder="Search… e.g. half inch EMT, wago" autocomplete="off" oninput="coMatSuggest(this.value)">
     <div id="coMatSug"></div>
     <div id="coMatList"></div>
-    <label>Photos / videos</label>
-    <input type="file" accept="image/*,video/*" capture="environment" multiple onchange="coAddMedia(this)">
+    <label>Receipts from today</label>
+    <button class="secondary" style="width:100%;padding:11px 8px" onclick="coScanReceipt()">📷 Scan receipt / estimate</button>
+    ${c.scanned?`<div class="small muted" style="margin-top:4px">🧾 ${c.scanned} filed against ${esc(c.jobSite||c.company||'this job')}</div>`:''}
+    <label>Photos / videos of the job</label>
+    <div class="row">
+      <button class="secondary grow" style="padding:11px 8px" onclick="document.getElementById('coCamIn').click()">📸 Take a photo</button>
+      <button class="secondary grow" style="padding:11px 8px" onclick="document.getElementById('coGalIn').click()">🖼️ From album</button>
+    </div>
+    <!-- v44 — TWO inputs. Chrome/Android ignores capture= when multiple is set, so the old single
+         input always opened the photo album. One-shot camera input + a separate album picker. -->
+    <input id="coCamIn" type="file" accept="image/*" capture="environment" class="hidden" onchange="coAddMedia(this)">
+    <input id="coGalIn" type="file" accept="image/*,video/*" multiple class="hidden" onchange="coAddMedia(this)">
     <div id="coMedia" class="row" style="flex-wrap:wrap;align-items:flex-start"></div>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="cancelClockOutReview()">← Keep working</button>
@@ -3530,13 +3540,36 @@ function coUpdateMats(){
   const box=document.getElementById('coMatList'); const c=coState; if(!box||!c) return;
   box.innerHTML = c.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
     c.items.map((it,i)=>`<div class="list-item row">
-      <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}</div>
+      <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}${it.fromDoc?`<div class="small muted">&#129534; ${esc(it.fromDoc)} &middot; bought ${esc(it.bought)}</div>`:''}</div>
       <input type="number" step="any" min="0" value="${esc(it.qty)}" style="width:84px;margin:0;text-align:center" onchange="coMatQty(${i},this.value)">
       <button class="ghost" onclick="coMatRemove(${i})" aria-label="Remove">✕</button>
     </div>`).join('')+`</div>` : '';
 }
 
 /* photos / videos — attach to the entry right away (it already exists), local thumbnails */
+/* v44 — SCAN A RECEIPT FROM THE REVIEW SCREEN. The review sheet is replaced by the camera; the
+ * clock keeps running and coState keeps everything typed so far (notes, materials, photos).
+ * However the scan ends — filed, queued offline, discarded, cancelled — docFinish() brings the
+ * review back instead of closing the sheet. The receipt is recorded against the open job. */
+function coScanReceipt(){
+  if(!coState) return;
+  S._docBack = ()=>{ if(coState) renderClockOutReview(); else closeSheet(); };
+  openDocScan();
+}
+function docFinish(){
+  const back=S._docBack; S._docBack=null;
+  coAbsorbScan_();
+  if(back) back(); else closeSheet();
+}
+/* Receipt lines -> Materials used. The same receipt scanned twice adds nothing twice. */
+function coAbsorbScan_(){
+  const c=coState; if(!c||!c.pendingScanItems||!c.pendingScanItems.length) return;
+  const key=x=>String(x.sku||x.name||'').toLowerCase()+'|'+(x.fromDoc||'');
+  let n=0;
+  c.pendingScanItems.forEach(it=>{ if(c.items.some(x=>key(x)===key(it))) return; c.items.push(it); n++; });
+  c.pendingScanItems=null;
+  if(n) toast(n+' item(s) off the receipt - set the quantity to what you actually used');
+}
 function coAddMedia(input){
   if(!coState) return;
   for (const f of Array.from(input.files||[])){
@@ -4196,6 +4229,7 @@ async function openCamera(onShot, label){
           <div style="aspect-ratio:17/22;height:92%;border:2px dashed rgba(255,255,255,.75);border-radius:6px"></div>
         </div>
         <div id="camMsg" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:.95rem;text-align:center;padding:20px"><span class="spin"></span></div>
+        <div id="camLens" style="position:absolute;left:0;right:0;bottom:10px;display:flex;justify-content:center;gap:8px"></div>
       </div>
     </div>
     <p class="small muted center" style="margin:10px 0 6px">${esc(label||'Fill the dashed box with the page — upright or sideways, whichever fits it better.')}</p>
@@ -4234,6 +4268,7 @@ async function openCamera(onShot, label){
     v.addEventListener('resize', fit);
     const m=document.getElementById('camMsg'); if(m) m.remove();
     const b=document.getElementById('camShot'); if(b) b.disabled=false;
+    camLensSetup_(camStream.getVideoTracks()[0]);   // v44: wide-lens / lens-switch controls where the phone offers them
   }catch(e){
     // v39 — SAY WHY. This used to slide silently to the photo picker, so someone who had once
     // tapped "Don't Allow" got the library every time and never learned the camera was blocked
@@ -4279,8 +4314,73 @@ function camUnblockSteps_(){
   if (p === 'ios')     return ios;
   return '<b>Android:</b> ' + android + '<br><br><b>iPhone:</b> ' + ios;
 }
+/* v44 — WIDE LENS. A long receipt held inside the truck does not fit the 1× frame at arm's length.
+ * Two ways a phone can give us the ultrawide, and we take whichever this one offers:
+ *   1. Chrome exposes the camera's zoom range and it goes below 1× (Pixel and most Android 11+
+ *      phones): show a  0.7×  /  1×  toggle that sets the zoom ratio — same as tapping 0.7 in the
+ *      camera app. Any value under 1 switches the ultrawide in.
+ *   2. The back cameras are listed as separate devices instead (Samsung, iPhone): show a Lens
+ *      button that cycles through them (an iPhone's is labelled "Ultra Wide", so it goes straight
+ *      there and back).
+ * Neither → no button is shown and nothing else changes. The guide box and the picture follow
+ * whatever lens is live, so what is framed is still exactly what is sent. */
+let camLensWide=null, camBackCams=[], camBackIdx=0;
+async function camLensSetup_(tr){
+  const bar=document.getElementById('camLens'); if(!bar||!tr) return;
+  bar.innerHTML=''; camLensWide=null; camBackCams=[];
+  const pill=(txt,fn,on)=>`<button type="button" onclick="${fn}" style="padding:7px 14px;border-radius:999px;border:1px solid rgba(255,255,255,.7);background:${on?'rgba(255,255,255,.92)':'rgba(0,0,0,.45)'};color:${on?'#111':'#fff'};font-weight:700;font-size:.9rem">${txt}</button>`;
+  let caps={}; try{ caps=tr.getCapabilities?tr.getCapabilities():{}; }catch(e){}
+  const z=caps.zoom;
+  if(z && typeof z.min==='number' && z.min<1){
+    camLensWide = Math.max(z.min, 0.7);                       // 0.7× reads a receipt end to end without the ultrawide's edge stretch
+    const cur=(tr.getSettings&&tr.getSettings().zoom)||1;
+    bar.innerHTML = pill(camLensWide.toFixed(1)+'×','camZoom_('+camLensWide+')', cur<1) + pill('1×','camZoom_(1)', cur>=1);
+    return;
+  }
+  // No zoom range below 1× — are the back cameras separate devices?
+  let devs=[]; try{ devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput'); }catch(e){}
+  const cur=(tr.getSettings&&tr.getSettings())||{};
+  camBackCams = devs.filter(d=>/back|rear|environment/i.test(d.label||'') || d.deviceId===cur.deviceId);
+  if(camBackCams.length<2) return;
+  camBackIdx = Math.max(0, camBackCams.findIndex(d=>d.deviceId===cur.deviceId));
+  const uw = camBackCams.findIndex(d=>/ultra[ -]?wide/i.test(d.label||''));
+  if(uw>=0 && uw!==camBackIdx) bar.innerHTML = pill('Wide','camLensTo_('+uw+')', false) + pill('1×','camLensTo_('+camBackIdx+')', true);
+  else bar.innerHTML = pill('🔄 Lens','camLensTo_('+((camBackIdx+1)%camBackCams.length)+')', false);
+}
+async function camZoom_(val){
+  const tr=camStream&&camStream.getVideoTracks()[0]; if(!tr) return;
+  try{ await tr.applyConstraints({advanced:[{zoom:val}]}); }
+  catch(e){
+    // 0.7 may be off this phone's step grid — the range minimum always exists
+    let ok=false;
+    if(val<1){ try{ const c=tr.getCapabilities(); await tr.applyConstraints({advanced:[{zoom:c.zoom.min}]}); val=c.zoom.min; ok=true; }catch(e2){} }
+    if(!ok){ toast('This phone will not zoom out here — try shooting the receipt sideways.'); return; }
+  }
+  const bar=document.getElementById('camLens'); if(!bar) return;
+  Array.from(bar.querySelectorAll('button')).forEach((b,i)=>{ const on=(i===0)===(val<1);
+    b.style.background=on?'rgba(255,255,255,.92)':'rgba(0,0,0,.45)'; b.style.color=on?'#111':'#fff'; });
+}
+async function camLensTo_(idx){
+  const d=camBackCams[idx]; const v=document.getElementById('camVid'); if(!d||!v) return;
+  const b=document.getElementById('camShot'); if(b) b.disabled=true;
+  camStop();
+  try{
+    camStream = await navigator.mediaDevices.getUserMedia({ video:{ deviceId:{exact:d.deviceId} }, audio:false });
+    try{ const tr=camStream.getVideoTracks()[0]; if(tr&&tr.applyConstraints) await tr.applyConstraints({ width:{ideal:2048}, height:{ideal:2048} }); }catch(e){}
+    v.srcObject=camStream; await v.play().catch(()=>{});      // the 'resize' listener refits the box and the guide
+    camBackIdx=idx;
+    const bar=document.getElementById('camLens'); const uw=camBackCams.findIndex(x=>/ultra[ -]?wide/i.test(x.label||''));
+    if(bar){
+      const pill=(txt,fn,on)=>`<button type="button" onclick="${fn}" style="padding:7px 14px;border-radius:999px;border:1px solid rgba(255,255,255,.7);background:${on?'rgba(255,255,255,.92)':'rgba(0,0,0,.45)'};color:${on?'#111':'#fff'};font-weight:700;font-size:.9rem">${txt}</button>`;
+      const main=camBackCams.findIndex((x,i)=>i!==uw && /back|rear|environment/i.test(x.label||''));
+      bar.innerHTML = (uw>=0) ? pill('Wide','camLensTo_('+uw+')', idx===uw) + pill('1×','camLensTo_('+(main>=0?main:0)+')', idx!==uw)
+                              : pill('🔄 Lens','camLensTo_('+((idx+1)%camBackCams.length)+')', false);
+    }
+  }catch(e){ toast('That lens would not start — '+String((e&&e.name)||'')); }
+  if(b) b.disabled=false;
+}
 function camStop(){ try{ if(camStream) camStream.getTracks().forEach(t=>t.stop()); }catch(e){} camStream=null; }
-function camClose(){ camStop(); camOnShot=null; closeSheet(); }
+function camClose(){ camStop(); camOnShot=null; docFinish(); }   // v44: back to the review sheet when the scan came from there
 function camShoot(){
   const v=document.getElementById('camVid'); if(!v||!v.videoWidth) return;
   // 2000px on the long edge ≈ 180 dpi across a letter page — enough for part numbers and
@@ -4327,7 +4427,7 @@ function docScanAsk(b64, mime){
     <p class="small muted">${site?`On the clock at <b>${esc(site)}</b> — a receipt is recorded against that job.`:'Not clocked in — a receipt is recorded against Stock.'} An estimate only updates prices.</p>
     <button style="width:100%;padding:18px;font-size:1.05rem;margin-top:6px" onclick="docScanSend('receipt')">🧾 Receipt (we bought it)</button>
     <button style="width:100%;padding:18px;font-size:1.05rem;margin-top:10px" onclick="docScanSend('quote')">📄 Estimate / quote</button>
-    <button class="secondary" style="width:100%;margin-top:14px" onclick="S._docShot=null;closeSheet()">Cancel</button>`);
+    <button class="secondary" style="width:100%;margin-top:14px" onclick="S._docShot=null;docFinish()">Cancel</button>`);
   keepSheet_();
 }
 function docScanPayload(kind, shot){
@@ -4349,7 +4449,7 @@ function docScanWait(kind){
     <p class="center" id="dsSpin" style="margin:22px 0"><span class="spin"></span></p>
     <p id="dsHint" class="small muted center">10–20 seconds. ${kind==='quote'?'Prices update from the quote — nothing goes into inventory.':'The items go into inventory and the price list updates itself.'}</p>
     <div id="dsStatus" class="small muted" data-seq="${seq}"></div><div id="dsResults"></div>
-    <button class="secondary" style="width:100%;margin-top:14px" onclick="closeSheet()">Close</button>`);
+    <button class="secondary" style="width:100%;margin-top:14px" onclick="docFinish()">Close</button>`);
   keepSheet_();
   return seq;
 }
@@ -4369,11 +4469,13 @@ async function docScanCall(p, qid){
     if(docWaitOpen(seq)) docShowResult(p, r);
     else toast((r.kind==='quote'?'Estimate':'Receipt')+' filed ✓'+(r.warn?' — '+r.warn:''));
   }catch(e){
-    if(/busy right now|Failed to fetch|NetworkError|timed out|No answer from the server/i.test(e.message||'')){
+    // v44 - an overloaded or renamed AI model is TRANSIENT, not a bad photo. It used to print the
+    // error and lose the picture; now it queues like a no-signal scan and retries on its own.
+    if(/busy right now|Failed to fetch|NetworkError|timed out|No answer from the server|No AI model answered|HTTP 4?5\d\d?|overload|UNAVAILABLE|RESOURCE_EXHAUSTED|rate.?limit|quota/i.test(e.message||'')){
       if(qid) await docQueueUpdate(qid, {kind:p.kind, confirmed:!!p.confirmed, extract:p.extract||null, dateOverride:p.dateOverride||'', needsConfirm:false, server:null}); // keep the answers with the photo
       else await docQueue(p);
       if(qid){ const st=docWaitOpen(seq)?document.getElementById('dsStatus'):null;
-        if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ No signal — your answer is saved on the phone and will be sent when you\'re back online.</span>';
+        if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ Saved on the phone — it will be read and filed by itself as soon as it can be.</span>';
         else toast('No signal — your answer is saved and will be sent later'); }
     } else {
       const st=docWaitOpen(seq)?document.getElementById('dsStatus'):null;
@@ -4433,7 +4535,7 @@ async function docConfirmSend(kind){
 async function docConfirmCancel(){
   const pend=S._docPending; S._docPending=null;
   if(pend&&pend.qid){ await docQueueDel(pend.qid); toast('Scan discarded'); }
-  closeSheet();
+  docFinish();
 }
 /* "$5.52 → $5.60" in the colour of the direction; "$9.99 (new)"; "$4.90 (no change)". */
 function priceDelta(oldP, newP){
@@ -4451,6 +4553,17 @@ function docShowResult(p, r){
   if(head) head.textContent=r.duplicate?'Already on file':(isQ?(r.replaced?'Quote revised — prices updated':'Prices updated from the estimate'):(r.credit?'Credit note filed':'Added to inventory'));
   const sp=document.getElementById('dsSpin'); if(sp) sp.remove();
   const hint=document.getElementById('dsHint'); if(hint) hint.remove();
+  // v44 — the receipt's lines become the Materials used rows, quantity pre-filled with what was
+  // BOUGHT. Paul changes it to what was actually installed; leftovers stay on the truck. Each row
+  // keeps fromDoc (supplier + invoice no) so the office can tell a receipt line from a typed one.
+  if(S._docBack && coState && !r.duplicate && !r.credit && r.kind!=='quote'){
+    coState.scanned=(coState.scanned||0)+1;
+    const src=((r.supplier||'')+' '+(r.invoiceNo||'')).trim()||'receipt';
+    coState.pendingScanItems=(coState.pendingScanItems||[]).concat((r.items||[])
+      .map(it=>({ name:it.desc||it.sku||'', unit:'', qty:Math.abs(Number(it.qty))||1, matched:true,
+                  sku:it.sku||'', fromDoc:src, bought:Math.abs(Number(it.qty))||1 }))
+      .filter(x=>x.name));
+  }
   const doc=`<b>${esc(r.supplier||'')} ${esc(r.invoiceNo||'')}</b>${r.date?' · '+esc(r.date):''}`;
   st.innerHTML = r.duplicate
     ? `${doc} was already filed earlier — nothing was doubled.`
@@ -4573,7 +4686,7 @@ async function flushScans(){
       }catch(e){
         const msg=e.message||'';
         if(/does not look like|Could not read|clearer photo|could not be read/i.test(msg)){ await docQueueDel(it.qid); toast('⚠ A queued photo was unreadable — scan it again'); }
-        else if(/busy right now|Failed to fetch|NetworkError|timed out|No answer from the server|rate-limited|Session expired|Please sign in/i.test(msg)) break;   // transient — retry on the next reconnect
+        else if(/busy right now|Failed to fetch|NetworkError|timed out|No answer from the server|rate-limited|Session expired|Please sign in|No AI model answered|HTTP 4?5\d\d?|overload|UNAVAILABLE|RESOURCE_EXHAUSTED|quota/i.test(msg)) break;   // transient (incl. an AI model that is down or renamed) — retry on the next reconnect
         else { await docQueueUpdate(it.qid, {needsConfirm:true, server:{needsConfirm:true, kind:it.kind, supplier:'', invoiceNo:'', date:'', items:[], extract:it.extract||{},
                  warnings:[{code:'date', text:'This scan could not be saved: '+msg, suggested:new Date().toISOString().slice(0,10)}]}}); }   // park it with the reason instead of jamming the queue
       }
