@@ -1795,6 +1795,7 @@ function clockView(){
           <button class="actbtn grow" style="padding:12px 8px" onclick="openDocScan()"><span class="bic">📷</span><span>Scan receipt / estimate</span></button>
           <button class="actbtn grow" style="padding:12px 8px" onclick="openMatUse()"><span class="bic">🔩</span><span>Materials used</span></button>
         </div>
+        <button class="secondary" style="width:100%;margin-top:8px;padding:11px 8px" onclick="openManual()">➕ Add time manually</button>
         ${allowBtn()}
       </div>
       ${pausedCard()}`;
@@ -1809,6 +1810,7 @@ function clockView(){
         <button class="secondary grow" style="padding:11px 8px" onclick="openDocScan()">📷 Scan receipt / estimate</button>
         <button class="secondary grow" style="padding:11px 8px" onclick="openMatUse()">🔩 Materials used</button>
       </div>
+      <button class="secondary" style="width:100%;margin-top:8px;padding:11px 8px" onclick="openManual()">➕ Add time manually</button>
       ${allowBtn()}
     </div>
     ${pausedCard()}
@@ -3704,31 +3706,167 @@ async function coCommit_(){
   if (!c.gps) retryGpsPatch(c.entryId, 'out');
 }
 
-/* ---- Manual entry ---- */
+/* ---- Manual entry (v45: "Add time") ----
+   Rebuilt so Paul can put his own time in after the fact without fighting the form:
+   - the same open-PO job picker + company chips + materials as the clock-out review and Edit;
+   - a HOURS field: type the start and how many hours and the end time is computed
+     (start + hours + break). Edit the end instead and the hours follow;
+   - a date range ("Through") so a whole week can be backdated in one go — one entry per day,
+     Sat/Sun skipped unless the box is unticked; materials go on the first day's entry;
+   - an admin's own entries land APPROVED (the backend stamps Approved By/At when the author
+     is an admin), so Paul no longer approves his own time in the Admin tab. Crew entries
+     still go to 'pending' exactly as before.
+   Reachable from the Clock screen ("Add time manually") and the Entries tab ("+ Manual"). */
+let mnState=null, mnJobResults=[], mnMatResults=[];
 function openManual(){
   const today=todayStr(); // LOCAL date — toISOString() is UTC and prefills tomorrow every evening
-  sheet(`<h2>Manual entry</h2>
-    <p class="small muted">Flagged for admin approval. You can edit it until it's approved.</p>
-    <label>Date</label><input id="mDate" type="date" value="${today}">
-    <div class="row"><div class="grow"><label>Clock in</label><input id="mIn" type="time"></div>
-      <div class="grow"><label>Clock out</label><input id="mOut" type="time"></div></div>
-    <p class="small muted" style="margin:2px 0 0">Out earlier than in = overnight shift (ends the next day).</p>
-    <label>Break time (minutes, deducted from hours)</label><input id="mBreak" type="number" min="0" step="5" placeholder="0">
-    <label>Company (optional)</label>
-    <select id="mCompany"><option value="">— none —</option>${companyOptions().map(o=>`<option value="${esc(o.c)}">${esc(o.label)}</option>`).join('')}</select>
-    <label>Customer / job site (optional)</label><input id="mSite" placeholder="Job site">
+  mnState={ jobSite:'', poNumber:'', company:'', items:[] };
+  loadMaterials();
+  loadCustomers(true).then(()=>{ if (mnState) mnJobFilter(val('mnJobSearch')); }); // fresh open-PO list
+  const isAdmin = S.me && S.me.role==='admin';
+  sheet(`<h2>Add time</h2>
+    <p class="small muted">${isAdmin?'Your own entries are saved as approved.':'Flagged for admin approval. You can edit it until it’s approved.'}</p>
+    <div class="card" style="margin:10px 0">
+      <div class="row between">
+        <div><b id="mnJobName">Pick a job</b> <span class="small muted" id="mnJobPo"></span></div>
+        <button class="ghost" onclick="mnToggleJob()">Change</button>
+      </div>
+      <div id="mnJobPick">
+        <input id="mnJobSearch" placeholder="Search open jobs…" autocomplete="off" oninput="mnJobFilter(this.value)">
+        <div id="mnJobList" style="max-height:30vh;overflow:auto"></div>
+        <label>Internal company time (no PO)</label>
+        <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="mnPickCompany(companyOptions()[${i}].c)">${o.noPO?esc(o.label):coFace(o.c)}</span>`).join('')}</div>
+      </div>
+    </div>
+    <div class="row"><div class="grow"><label>Date</label><input id="mDate" type="date" value="${today}" onchange="mnCalc()"></div>
+      <div class="grow"><label>Through (optional, for several days)</label><input id="mDateTo" type="date" onchange="mnCalc()"></div></div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:6px"><input type="checkbox" id="mSkipWknd" checked onchange="mnCalc()" style="width:auto;margin:0"> Skip Saturday &amp; Sunday</label>
+    <div class="row"><div class="grow"><label>Start</label><input id="mIn" type="time" oninput="mnCalc('in')"></div>
+      <div style="width:96px"><label>Hours</label><input id="mHrs" type="number" min="0" step="0.25" value="8" inputmode="decimal" oninput="mnCalc('hrs')"></div>
+      <div style="width:104px"><label>Break (min)</label><input id="mBreak" type="number" min="0" step="5" placeholder="0" inputmode="numeric" oninput="mnCalc('brk')"></div></div>
+    <label>End — computed from start + hours + break (edit it and the hours follow)</label>
+    <input id="mOut" type="time" oninput="mnCalc('out')">
+    <p class="small muted" id="mnSummary" style="margin:2px 0 0"></p>
     <label>Notes</label><textarea id="mNotes" rows="2"></textarea>
+    <label>Materials used <span class="muted">(logged on the first day when several days are entered)</span></label>
+    <input id="mnMatSearch" placeholder="Search materials…" autocomplete="off" oninput="mnMatSuggest(this.value)">
+    <div id="mnMatSug"></div><div id="mnMatList"></div>
     <div class="row" style="margin-top:14px">
-      <button class="secondary grow" onclick="closeSheet()">Cancel</button>
-      <button class="grow" onclick="submitManual()">Submit</button>
+      <button class="secondary grow" onclick="mnState=null;closeSheet()">Cancel</button>
+      <button class="grow" onclick="submitManual()">Save</button>
     </div>`);
+  mnCalc();
+}
+/* Job picker — same behaviour as the Edit sheet, separate state so the two never collide. */
+function mnToggleJob(){ const d=document.getElementById('mnJobPick'); if(!d) return;
+  d.classList.toggle('hidden'); if(!d.classList.contains('hidden')) mnJobFilter(val('mnJobSearch')); }
+function mnJobFilter(q){
+  const box=document.getElementById('mnJobList'); if(!box) return;
+  mnJobResults=openPOs(q);
+  box.innerHTML = mnJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="mnPickJob(${i})"><b>${esc(c.po)}</b> · ${esc(c.name)}</div>`).join('')
+    || `<p class="small muted">${S.customers?'No open POs match.':'Loading open jobs…'}</p>`;
+}
+function mnPickJob(i){ const c=mnJobResults[i]; if(!c||!mnState) return;
+  mnState.jobSite=c.name; mnState.poNumber=c.po; mnState.company='';
+  mnJobHeader(); mnToggleJob(); }
+function mnPickCompany(x){ if(!mnState) return;
+  mnState.company=x; mnState.jobSite=''; mnState.poNumber='';
+  mnJobHeader(); mnToggleJob(); }
+function mnJobHeader(){ const s=mnState; if(!s) return;
+  const n=document.getElementById('mnJobName'), p=document.getElementById('mnJobPo');
+  if(n) n.textContent=s.jobSite||s.company||'Pick a job';
+  if(p) p.textContent=s.poNumber?('PO '+s.poNumber):''; }
+/* Time arithmetic on minutes-since-midnight. The end time is written as HH:MM only; an end
+   earlier than the start is an overnight shift, which the backend already lands on the next day. */
+function mnMins_(hhmm){ const m=String(hhmm||'').match(/^(\d{1,2}):(\d{2})/); return m? (Number(m[1])*60+Number(m[2])) : null; }
+function mnHHMM_(mins){ mins=((Math.round(mins)%1440)+1440)%1440; return String(Math.floor(mins/60)).padStart(2,'0')+':'+String(mins%60).padStart(2,'0'); }
+function mnPretty_(mins){ mins=((Math.round(mins)%1440)+1440)%1440; return new Date(2000,0,1,Math.floor(mins/60),mins%60).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}); }
+/* The calendar days this sheet will write, oldest first. "Through" blank = one day. */
+function mnDays_(){
+  const from=val('mDate'), to=val('mDateTo')||from; if(!from) return [];
+  const sk=document.getElementById('mSkipWknd'); const skipW=!!(sk&&sk.checked);
+  const d=new Date(from+'T00:00:00'), end=new Date(to+'T00:00:00');
+  if(isNaN(d)||isNaN(end)) return [];
+  if(end<d) return [from];
+  const out=[];
+  for(let n=0; d<=end && n<62; n++, d.setDate(d.getDate()+1)){ // setDate, not +86400000 — DST-safe
+    const dow=d.getDay(); if(skipW && (dow===0||dow===6)) continue;
+    out.push(localDateStr(d));
+  }
+  return out;
+}
+/* src tells which field the user just changed: 'out' → hours follow the end;
+   anything else → the end follows start + hours + break. */
+function mnCalc(src){
+  const inM=mnMins_(val('mIn')), brk=Math.max(0,Number(val('mBreak'))||0);
+  const hrsEl=document.getElementById('mHrs'), outEl=document.getElementById('mOut');
+  let hrs=Number(val('mHrs'));
+  if (src==='out'){
+    const outM=mnMins_(val('mOut'));
+    if (inM!=null && outM!=null){ let span=outM-inM; if(span<=0) span+=1440;
+      hrs=Math.max(0, Math.round(((span-brk)/60)*100)/100); if(hrsEl) hrsEl.value=hrs; }
+  } else if (inM!=null && val('mHrs')!=='' && hrs>=0 && outEl){
+    outEl.value=mnHHMM_(inM+hrs*60+brk);
+  }
+  const s=document.getElementById('mnSummary'); if(!s) return;
+  const days=mnDays_();
+  if (inM==null || val('mHrs')==='' || !(hrs>=0)){ s.textContent = days.length>1 ? days.length+' days' : ''; return; }
+  const endM=inM+hrs*60+brk, nextDay=endM>=1440;
+  let t=`${mnPretty_(inM)} → ${mnPretty_(endM)}${nextDay?' (next day)':''} · ${hrs.toFixed(2)} hrs paid`;
+  if (brk) t+=` (${(hrs+brk/60).toFixed(2)}h − ${brk}m break)`;
+  if (days.length>1) t+=` · ${days.length} days · ${(hrs*days.length).toFixed(1)} hrs total`;
+  s.textContent=t;
+}
+/* Materials — mirrors the Edit sheet's helpers. */
+function mnMatSuggest(q){
+  const box=document.getElementById('mnMatSug'); if(!box) return;
+  if(!q.trim()){ box.innerHTML=''; return; }
+  mnMatResults=localMatSearch(q); let h='';
+  mnMatResults.forEach((m,i)=>{ h+=`<div onclick="mnMatPick(${i})">${esc(m.name)}${m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}</div>`; });
+  h+=`<div onclick="mnMatTyped()">➕ Add “${esc(q)}” as typed <span class="small muted">(admin will review)</span></div>`;
+  box.innerHTML=`<div class="suggest">${h}</div>`;
+}
+function mnMatPick(i){ const m=mnMatResults[i]; if(!m||!mnState) return;
+  mnState.items.push({name:m.name, unit:m.unit||'', qty:1, matched:true}); mnMatClear(); mnUpdateMats(); }
+function mnMatTyped(){ const q=val('mnMatSearch').trim(); if(!q||!mnState) return;
+  mnState.items.push({name:q, unit:'', qty:1, matched:false}); mnMatClear(); mnUpdateMats(); }
+function mnMatClear(){ const i=document.getElementById('mnMatSearch'); if(i){ i.value=''; i.focus(); }
+  const b=document.getElementById('mnMatSug'); if(b) b.innerHTML=''; }
+function mnMatQty(i,v){ if(mnState&&mnState.items[i]) mnState.items[i].qty=v; }
+function mnMatRemove(i){ if(!mnState) return; mnState.items.splice(i,1); mnUpdateMats(); }
+function mnUpdateMats(){
+  const box=document.getElementById('mnMatList'); const s=mnState; if(!box||!s) return;
+  box.innerHTML = s.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
+    s.items.map((it,i)=>`<div class="list-item row">
+      <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}</div>
+      <input type="number" step="any" min="0" value="${esc(it.qty)}" style="width:84px;margin:0;text-align:center" onchange="mnMatQty(${i},this.value)">
+      <button class="ghost" onclick="mnMatRemove(${i})" aria-label="Remove">✕</button>
+    </div>`).join('')+`</div>` : '';
 }
 async function submitManual(){
-  const p={ date:val('mDate'), clockIn:val('mIn'), clockOut:val('mOut'), company:val('mCompany'), jobSite:val('mSite'), notes:val('mNotes'), breakMin:val('mBreak')||0 };
-  if(!p.date||!p.clockIn||!p.clockOut){ toast('Date, in and out are required'); return; }
-  closeSheet();
-  await apiMutate('addManualEntry', p);
-  await refresh(true); toast('Submitted for approval');
+  const st=mnState; if(!st) return;
+  const days=mnDays_(), inV=val('mIn'), outV=val('mOut'), hrs=Number(val('mHrs'));
+  const brk=Math.max(0,Number(val('mBreak'))||0);
+  if(!days.length||!inV||!outV){ toast('Date, start and hours (or end) are required'); return; }
+  if(!(hrs>0)){ toast('Hours must be more than 0'); return; }
+  if(!st.jobSite && !st.company){ toast('Pick a job or company first'); return; }
+  const isAdmin = S.me && S.me.role==='admin';
+  const base={ clockIn:inV, clockOut:outV, company:st.company, jobSite:st.jobSite, poNumber:st.poNumber, notes:val('mNotes'), breakMin:brk };
+  const mats=st.items.slice();
+  mnState=null; closeSheet();
+  let done=0, queued=0, firstId='', err='';
+  for (const date of days){ // one entry per day, oldest first so the sheet reads in order
+    try{
+      const r=await apiMutate('addManualEntry', { ...base, date });
+      if (r&&r.queued) queued++; else done++;
+      if (!firstId && r&&r.entry&&r.entry.EntryID) firstId=r.entry.EntryID;
+    }catch(e){ err=e.message; break; }
+  }
+  if (mats.length && (done||queued)) apiMutate('logMaterials',{ entryId:firstId, jobSite:st.jobSite||st.company||'', poNumber:st.poNumber||'', items:mats });
+  await refresh(true);
+  const n=done+queued;
+  if (err) toast(`${n} of ${days.length} saved — ${err}`, 5000);
+  else toast(`${n} ${n===1?'day':'days'} ${isAdmin?'saved':'submitted for approval'}${queued?' (will sync)':''}`);
 }
 
 /* ---- Edit entry (after submission too — mistakes caught later) ----
