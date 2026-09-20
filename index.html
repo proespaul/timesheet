@@ -5055,7 +5055,7 @@ function requestsView(){
       ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
       <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> estimated${price?` · ${price} provisional`:''}</div>
-      ${q.detail?`<details style="margin-top:4px"><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary><pre class="small" style="white-space:pre-wrap;margin:6px 0 0">${esc(q.detail)}</pre></details>`:''}
+      ${q.detail?`<details style="margin-top:4px"><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary>${reqDetailHtml(q.detail)}</details>`:''}
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="openReqSchedule(${i})">📅 Schedule it</button>
         <button class="ghost" onclick="reqDismiss(${i})">Dismiss</button>
@@ -5075,7 +5075,7 @@ function requestsView(){
       ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
       <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> job${price?` · ${price} quoted`:''}</div>
-      ${q.detail?`<details style="margin-top:4px"><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary><pre class="small" style="white-space:pre-wrap;margin:6px 0 0">${esc(q.detail)}</pre></details>`:''}
+      ${q.detail?`<details style="margin-top:4px"><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary>${reqDetailHtml(q.detail)}</details>`:''}
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="openReqBook(${i})">🔧 They said yes — book the job</button>
         <button class="ghost" onclick="reqNotProceeding(${i})">Didn't go ahead</button>
@@ -5100,6 +5100,7 @@ function requestsView(){
       <div class="row" style="margin-top:6px">
         <button class="grow secondary" onclick="openReqMove(${i})">📅 Move it</button>
         ${q.confirm==='waiting'?`<button class="ghost" onclick="reqRenotify(${i})">Ask again</button>`:''}
+        <button class="ghost" onclick="openReqCancel(${i})">Cancel job</button>
       </div>
     </div>`; }).join('');
   return `<h2>📨 Requests</h2>
@@ -5149,6 +5150,52 @@ function openReqSchedule(i){
 /* v46: Paul can flip a lead between Estimate call and Appointment before scheduling it — the
    form's answer is often not what the customer meant. The choice is sent with requestSchedule
    and decides the calendar block (30-min call vs full job) and the PO Log vs Estimate tab. */
+/* v46 — the ball-park estimate, rendered to be READ on a phone.
+   It used to sit in a <pre>, which is why it looked like code and why one long photo URL
+   forced the whole page to scroll sideways. Now: wrapped prose, section headings picked out,
+   and the photo links turned into actual thumbnails you can tap. */
+function reqDetailHtml(detail){
+  const raw = String(detail||'');
+  if(!raw.trim()) return '';
+  const photos = [];
+  raw.replace(/https:\/\/proes\.ca\/wp-content\/uploads\/forminator\/[^\s"'<>]+/g, u => { if(!photos.includes(u)) photos.push(u); return u; });
+  const gmail = (raw.match(/https:\/\/mail\.google\.com\/[^\s"'<>]+/)||[])[0] || '';
+  // drop the link dump from the body — the links become buttons below
+  const body = raw
+    .replace(/https:\/\/proes\.ca\/wp-content\/uploads\/forminator\/[^\s"'<>]+/g,'')
+    .replace(/https:\/\/mail\.google\.com\/[^\s"'<>]+/g,'')
+    .replace(/^[ \t]*\/\/[ \t]*PHOTOS[^\n]*\n?/gim,'')
+    .replace(/^[ \t]*(Photo \d+|Gmail)\s*:?\s*$/gim,'');
+  const lines = body.split('\n');
+  let html = '', inList = false;
+  const closeList = () => { if(inList){ html += '</ul>'; inList = false; } };
+  for (let ln of lines){
+    const t = ln.replace(/^\s*\/\/\s*/,'').trim();          // strip the "// " section markers
+    if(!t){ closeList(); continue; }
+    // a heading: ALL-CAPS-ish, or the == BANNER == form, or "LABEL:" on its own
+    if(/^={2,}.*={2,}$/.test(t) || /^[A-Z][A-Z0-9 \/\-]{3,}$/.test(t) || /^(SCENARIO [AB]|FLAG|RFI-\d+|TRAVEL|SOURCE|CUSTOMER|SCOPE|MATERIALS?)\b/i.test(t) && t.length < 90){
+      closeList();
+      html += `<div class="small" style="font-weight:700;margin:10px 0 2px;color:var(--accent2)">${esc(t.replace(/^=+\s*|\s*=+$/g,''))}</div>`;
+      continue;
+    }
+    if(/^[-•*]\s+/.test(t) || /^\d+[.)]\s+/.test(t)){
+      if(!inList){ html += '<ul style="margin:2px 0 2px 18px;padding:0">'; inList = true; }
+      html += `<li class="small" style="margin:1px 0">${esc(t.replace(/^[-•*]\s+|^\d+[.)]\s+/,''))}</li>`;
+      continue;
+    }
+    closeList();
+    html += `<p class="small" style="margin:3px 0">${esc(t)}</p>`;
+  }
+  closeList();
+  const shots = photos.length
+    ? `<div style="margin-top:8px"><div class="small muted" style="margin-bottom:4px">Photos from the customer (tap to open)</div>
+       <div style="display:flex;gap:8px;flex-wrap:wrap">${photos.map(u=>
+         `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Job photo" loading="lazy"
+            style="width:104px;height:104px;object-fit:cover;border-radius:10px;border:1px solid var(--line)"></a>`).join('')}</div></div>`
+    : '<p class="small muted" style="margin-top:8px">No photos attached.</p>';
+  const mail = gmail ? `<a class="small" href="${esc(gmail)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:8px">Open the original email</a>` : '';
+  return `<div style="margin-top:6px;overflow-wrap:anywhere;word-break:break-word">${html}${shots}${mail}</div>`;
+}
 function reqSetType(t){
   const seg=document.getElementById('rqTypeSeg'); if(!seg) return;
   seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
@@ -5171,7 +5218,9 @@ async function reqSchedule(i,btn){
   const notifyCustomer=(document.getElementById('rqNotifyCust')||{}).checked!==false;
   btn.disabled=true; btn.textContent='Booking…';
   try{
-    const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify, type, notifyCustomer, crew:assign.length||q.crew||1});
+    // Calendar event + crew email + PO workbook write + customer email in one call — well past
+    // the 30 s default, and an abort here looks like a failure on a booking that actually ran.
+    const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify, type, notifyCustomer, crew:assign.length||q.crew||1},{timeout:120000});
     S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
     // v23: approving also writes the PO Log workbook — an APPOINTMENT burns the next PO number,
     // an ESTIMATE files a row on the Estimate tab. Say which, because the PO number is the one
@@ -5183,7 +5232,13 @@ async function reqSchedule(i,btn){
     if (r && r.poNote && /FAILED|skipped/i.test(r.poNote)) setTimeout(()=>toast('PO Log not updated: '+r.poNote), 2600);
     if (r && r.custNote && /NOT notified|unavailable/i.test(r.custNote)) setTimeout(()=>toast(r.custNote), 2600);
     closeSheetDom(); render(); loadRequests();   // J) so the Booked list shows it straight away
-  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='📅 Put it on the calendar'; }
+  }catch(e){
+    // The server may have finished after we stopped waiting. Say so rather than implying it failed.
+    if (/already on the calendar/i.test(e.message||'')) { toast('Already booked ✓'); closeSheetDom(); loadRequests(); render(); return; }
+    if (e && e.kind === 'network') toast('The booking is taking a while. Pull to refresh in a moment — it may well have gone through.');
+    else toast(e.message);
+    btn.disabled=false; btn.textContent='📅 Put it on the calendar';
+  }
 }
 /* v46 — book the job off the back of an estimate call. Same shape as the schedule sheet, minus
    the type switch: choosing this IS choosing APPOINTMENT. */
@@ -5223,7 +5278,7 @@ async function reqBook(i,btn){
   const notifyCustomer=(document.getElementById('bkNotifyCust')||{}).checked!==false;
   btn.disabled=true; btn.textContent='Booking…';
   try{
-    const r=await api('requestBook',{id:q.id, start:start.toISOString(), hours, assign, notify, notifyCustomer, crew:assign.length||q.crew||1});
+    const r=await api('requestBook',{id:q.id, start:start.toISOString(), hours, assign, notify, notifyCustomer, crew:assign.length||q.crew||1},{timeout:120000});
     S.reqEstimates=(S.reqEstimates||[]).filter(x=>x.id!==q.id);
     toast('Booked ✓' + (r&&r.po?(' — '+r.po):'') + (assign.length?', crew notified':''));
     if (r && r.poNote && /FAILED/i.test(r.poNote)) setTimeout(()=>toast('PO Log not updated: '+r.poNote), 2600);
@@ -5270,11 +5325,48 @@ async function reqMove(i,btn){
   const notifyCustomer=(document.getElementById('mvNotify')||{}).checked!==false;
   btn.disabled=true; btn.textContent='Moving…';
   try{
-    const r=await api('requestReschedule',{id:q.id, start:start.toISOString(), hours, notify:notifyCustomer});
+    const r=await api('requestReschedule',{id:q.id, start:start.toISOString(), hours, notify:notifyCustomer},{timeout:120000});
     toast('Moved ✓'+(notifyCustomer?' — customer emailed':''));
     if(r&&r.note&&/NOT notified|unavailable|no customer email/i.test(r.note)) setTimeout(()=>toast(r.note),2600);
     closeSheetDom(); loadRequests(); render();
   }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='📅 Move it'; }
+}
+/* v46 — cancel a booked job. Frees the calendar slot and marks the PO Log row Cancelled.
+   The PO number is kept: it is an invoice number, and the sequence never reuses one. */
+function openReqCancel(i){
+  const q=(S.reqBooked||[])[i]; if(!q) return;
+  const when=q.start&&!isNaN(new Date(q.start))?new Date(q.start).toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
+  const crew=(q.assigned||[]).length;
+  sheet(`<h2>Cancel ${esc(q.customer||'this job')}?</h2>
+    <p class="small muted" style="margin-top:-4px">${q.po?esc(q.po)+' · ':''}${esc(when)}</p>
+    ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
+    <label>Why? (optional — goes in the log and in any email sent)</label>
+    <input id="cxReason" type="text" placeholder="e.g. customer postponed indefinitely">
+    ${crew?`<div class="perm"><input type="checkbox" id="cxCrew" checked><label for="cxCrew" style="margin:0">Tell the ${crew} assigned so they don't drive out</label></div>`:''}
+    <div class="perm"><input type="checkbox" id="cxCust"><label for="cxCust" style="margin:0">Email the customer a cancellation note${q.email?'':' (no email on file)'}</label></div>
+    <p class="small muted">Takes it off the calendar and marks ${q.po?esc(q.po)+' Cancelled':'the job Cancelled'} on the PO Log. The PO number is kept, not reused.</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheetDom();render()">Keep it</button>
+      <button class="grow" id="cxGo" onclick="reqCancel(${i},this)">Cancel the job</button>
+    </div>`);
+}
+async function reqCancel(i,btn){
+  const q=(S.reqBooked||[])[i]; if(!q) return;
+  const reason=val('cxReason')||'';
+  const notifyCrew=(document.getElementById('cxCrew')||{checked:false}).checked===true;
+  const notifyCustomer=(document.getElementById('cxCust')||{checked:false}).checked===true;
+  btn.disabled=true; btn.textContent='Cancelling…';
+  try{
+    const r=await api('requestCancel',{id:q.id, reason, notifyCrew, notifyCustomer},{timeout:120000});
+    S.reqBooked=(S.reqBooked||[]).filter(x=>x.id!==q.id);
+    toast('Cancelled ✓'+(r&&r.po?(' — '+r.po+' marked Cancelled'):''));
+    if(r&&r.note&&/NOT /.test(r.note)) setTimeout(()=>toast(r.note),2600);
+    closeSheetDom(); loadRequests(); render();
+  }catch(e){
+    if (e && e.kind === 'network') toast('Taking a while — pull to refresh in a moment, it may have gone through.');
+    else toast(e.message);
+    btn.disabled=false; btn.textContent='Cancel the job';
+  }
 }
 async function reqRenotify(i){
   const q=(S.reqBooked||[])[i]; if(!q) return;
