@@ -5038,6 +5038,8 @@ async function loadRequests(){
   try{
     const r=await apiBg('requestList',{});
     S.requests=r.requests||[]; S.pendingRequests=S.requests.length;
+    S.reqEstimates=r.estimates||[];   // v46: estimate calls held but not yet turned into jobs
+    S.reqBooked=r.booked||[];         // v46: booked jobs + whether the customer has confirmed
     if(S.tab==='requests') render();
   }catch(e){ S.reqErr=e.message; if(S.tab==='requests') render(); }
   S._reqLoading=false;
@@ -5048,8 +5050,7 @@ function requestsView(){
     const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
     return `<div class="list-item">
       <div class="row between">
-        <div><b>${esc(q.customer||'—')}</b> <span class="pill ${q.type==='APPOINTMENT'?'approved':'live'}">${esc(q.type||'')}</span></div>
-        <span class="small muted">${q.entryNo?('#'+esc(q.entryNo)):''}</span>
+        <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> <span class="pill ${q.type==='APPOINTMENT'?'approved':'live'}">${esc(q.type||'')}</span></div>
       </div>
       ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
@@ -5060,10 +5061,57 @@ function requestsView(){
         <button class="ghost" onclick="reqDismiss(${i})">Dismiss</button>
       </div>
     </div>`; }).join('');
+  /* v46 — estimate calls that have been held but never became a job. When the customer says yes,
+     this is where it turns into a PO instead of being retyped as a fresh lead. */
+  const ests=(S.reqEstimates||[]).map((q,i)=>{
+    const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
+    const when=q.start?new Date(q.start):null;
+    const called=when&&!isNaN(when)?when.toLocaleDateString(undefined,{month:'short',day:'numeric'}):'';
+    return `<div class="list-item">
+      <div class="row between">
+        <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> <span class="pill pending">QUOTED</span></div>
+        <span class="small muted">${called?('called '+esc(called)):''}</span>
+      </div>
+      ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
+      <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
+      <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> job${price?` · ${price} quoted`:''}</div>
+      ${q.detail?`<details style="margin-top:4px"><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary><pre class="small" style="white-space:pre-wrap;margin:6px 0 0">${esc(q.detail)}</pre></details>`:''}
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="openReqBook(${i})">🔧 They said yes — book the job</button>
+        <button class="ghost" onclick="reqNotProceeding(${i})">Didn't go ahead</button>
+      </div>
+    </div>`; }).join('');
+  /* v46 — booked jobs and where the customer stands on the time. Amber = waiting on them,
+     green = confirmed, red = they want it moved. Same colours as the calendar event. */
+  const CONF={confirmed:['🟢','Confirmed','approved'],declined:['🔴','Wants a new time','rejected'],
+              waiting:['🟠','Waiting on them','pending'],'no email':['⚪','No email on file','live'],
+              none:['⚪','Not asked','live']};
+  const bk=(S.reqBooked||[]).map((q,i)=>{
+    const c=CONF[q.confirm]||CONF.none;
+    const when=q.start?new Date(q.start):null;
+    const w=when&&!isNaN(when)?when.toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
+    return `<div class="list-item">
+      <div class="row between">
+        <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> ${q.po?`<span class="small muted">${esc(q.po)}</span>`:''}</div>
+        <span class="pill ${c[2]}">${c[0]} ${esc(c[1])}</span>
+      </div>
+      <div class="small" style="margin-top:2px"><b>${esc(w)}</b>${(q.bookedHours||q.hours)?` · ${q.bookedHours||q.hours} hr`:''}</div>
+      ${q.scope?`<div class="small muted" style="margin-top:2px">${esc(q.scope)}</div>`:''}
+      <div class="row" style="margin-top:6px">
+        <button class="grow secondary" onclick="openReqMove(${i})">📅 Move it</button>
+        ${q.confirm==='waiting'?`<button class="ghost" onclick="reqRenotify(${i})">Ask again</button>`:''}
+      </div>
+    </div>`; }).join('');
   return `<h2>📨 Requests</h2>
     <p class="small muted" style="margin-top:-4px">Website leads waiting to go on the calendar. Nothing is booked until you say so.</p>
     ${S.reqErr?`<div class="banner ot">${esc(S.reqErr)}</div>`:''}
-    <div class="card">${list||(S._reqLoading?'<p class="center"><span class="spin"></span></p>':'<p class="muted small">Nothing waiting. 🎉</p>')}</div>`;
+    <div class="card">${list||(S._reqLoading?'<p class="center"><span class="spin"></span></p>':'<p class="muted small">Nothing waiting. 🎉</p>')}</div>
+    ${ests?`<h3 style="margin-top:18px">Quoted — waiting on the customer</h3>
+      <p class="small muted" style="margin-top:-4px">Estimate calls you've held. Booking one here gets it a PO number and a PO Log row.</p>
+      <div class="card">${ests}</div>`:''}
+    ${bk?`<h3 style="margin-top:18px">Booked jobs</h3>
+      <p class="small muted" style="margin-top:-4px">🟠 waiting on the customer · 🟢 they confirmed · 🔴 they want it moved. The calendar event is the same colour.</p>
+      <div class="card">${bk}</div>`:''}`;
 }
 function reqRender(){ if(S.tab==='requests') render(); else go('requests'); }
 function openReqSchedule(i){
@@ -5073,43 +5121,167 @@ function openReqSchedule(i){
   const d=`${sug.getFullYear()}-${pad(sug.getMonth()+1)}-${pad(sug.getDate())}`;
   const t=`${pad(sug.getHours()||9)}:${pad(sug.getMinutes())}`;
   const crew=(S.employees||[]).filter(e=>e.active);
-  sheet(`<h2>${esc(q.customer||'Schedule')}</h2>
-    <p class="small muted" style="margin-top:-4px">${esc(q.type)}${q.entryNo?(' · #'+esc(q.entryNo)):''}${q.address?(' · '+esc(q.address)):''}</p>
+  const isAppt=String(q.type||'').toUpperCase()==='APPOINTMENT';
+  sheet(`<h2>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'Schedule')}</h2>
+    <p class="small muted" style="margin-top:-4px">${q.address?esc(q.address):''}</p>
     ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
     ${q.materials?`<div class="small muted">Materials: ${esc(q.materials)}</div>`:''}
-    <label>How long will it take? (hours — the AI guessed ${q.hours})</label>
+    <label>What is this? <span class="muted">(the form said ${esc(q.type)})</span></label>
+    <div class="seg" id="rqTypeSeg" style="margin-bottom:10px">
+      <button type="button" data-t="ESTIMATE" class="${isAppt?'':'on'}" onclick="reqSetType('ESTIMATE')">Estimate call</button>
+      <button type="button" data-t="APPOINTMENT" class="${isAppt?'on':''}" onclick="reqSetType('APPOINTMENT')">Appointment — book the job</button>
+    </div>
+    <input type="hidden" id="rqType" value="${isAppt?'APPOINTMENT':'ESTIMATE'}">
+    <p class="small muted" id="rqTypeNote" style="margin-top:-4px">${isAppt?'Books the full job. Gets the next PO number and a PO Log row (In progress).':'Blocks a 30-minute review call on the calendar. Goes on the Estimate tab — no PO number yet.'}</p>
+    <label>How long is the job? (hours — the AI guessed ${q.hours} with ${(q.crew||1)>1?((q.crew||1)+' people'):'you on your own'})</label>
     <input id="rqHours" type="number" step="0.25" min="0.25" value="${q.hours||1}">
     <div class="row"><div class="grow"><label>Date</label><input id="rqDate" type="date" value="${d}"></div>
       <div class="grow"><label>Start</label><input id="rqTime" type="time" value="${t}"></div></div>
     <label>Who's going?</label>
     <div>${crew.map(e=>`<div class="perm"><input type="checkbox" id="rq_${esc(e.email)}"><label for="rq_${esc(e.email)}" style="margin:0">${esc(e.name||e.email)}</label></div>`).join('')||'<p class="small muted">No active crew.</p>'}</div>
     <div class="perm"><input type="checkbox" id="rqNotify" checked><label for="rqNotify" style="margin:0">Email the crew their assignment</label></div>
+    <div class="perm" id="rqCustRow" style="${isAppt?'':'display:none'}"><input type="checkbox" id="rqNotifyCust" checked><label for="rqNotifyCust" style="margin:0">Email the customer to confirm the time${q.email?'':' (no email on file)'}</label></div>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="closeSheetDom();render()">Back</button>
       <button class="grow" id="rqGo" onclick="reqSchedule(${i},this)">📅 Put it on the calendar</button>
     </div>`);
 }
+/* v46: Paul can flip a lead between Estimate call and Appointment before scheduling it — the
+   form's answer is often not what the customer meant. The choice is sent with requestSchedule
+   and decides the calendar block (30-min call vs full job) and the PO Log vs Estimate tab. */
+function reqSetType(t){
+  const seg=document.getElementById('rqTypeSeg'); if(!seg) return;
+  seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  const h=document.getElementById('rqType'); if(h) h.value=t;
+  const cr=document.getElementById('rqCustRow'); if(cr) cr.style.display = t==='APPOINTMENT' ? '' : 'none';
+  const n=document.getElementById('rqTypeNote');
+  if(n) n.textContent = t==='APPOINTMENT'
+    ? 'Books the full job. Gets the next PO number and a PO Log row (In progress).'
+    : 'Blocks a 30-minute review call on the calendar. Goes on the Estimate tab — no PO number yet.';
+}
 async function reqSchedule(i,btn){
   const q=(S.requests||[])[i]; if(!q) return;
   const date=val('rqDate'), time=val('rqTime'), hours=Number(val('rqHours'))||q.hours||1;
+  const type=(val('rqType')||q.type||'ESTIMATE').toUpperCase()==='APPOINTMENT'?'APPOINTMENT':'ESTIMATE';
   if(!date||!time) return toast('Pick the date and time.');
   const start=new Date(date+'T'+time);
   if(isNaN(start)) return toast('That date/time did not read properly.');
   const assign=(S.employees||[]).filter(e=>e.active&&(document.getElementById('rq_'+e.email)||{}).checked).map(e=>e.email);
   const notify=(document.getElementById('rqNotify')||{}).checked!==false;
+  const notifyCustomer=(document.getElementById('rqNotifyCust')||{}).checked!==false;
   btn.disabled=true; btn.textContent='Booking…';
   try{
-    const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify});
+    const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify, type, notifyCustomer, crew:assign.length||q.crew||1});
     S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
     // v23: approving also writes the PO Log workbook — an APPOINTMENT burns the next PO number,
     // an ESTIMATE files a row on the Estimate tab. Say which, because the PO number is the one
     // thing Paul needs to carry away from this screen, and a silent failure there is invisible.
     let extra = assign.length ? ' — crew notified' : '';
     if (r && r.po) extra = ' — ' + r.po + (assign.length ? ', crew notified' : '');
+    else if (type==='ESTIMATE') extra = ' — 30-min call' + (assign.length ? ', crew notified' : '');
     toast('On the calendar ✓' + extra);
     if (r && r.poNote && /FAILED|skipped/i.test(r.poNote)) setTimeout(()=>toast('PO Log not updated: '+r.poNote), 2600);
-    closeSheetDom(); render();
+    if (r && r.custNote && /NOT notified|unavailable/i.test(r.custNote)) setTimeout(()=>toast(r.custNote), 2600);
+    closeSheetDom(); render(); loadRequests();   // J) so the Booked list shows it straight away
   }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='📅 Put it on the calendar'; }
+}
+/* v46 — book the job off the back of an estimate call. Same shape as the schedule sheet, minus
+   the type switch: choosing this IS choosing APPOINTMENT. */
+function openReqBook(i){
+  const q=(S.reqEstimates||[])[i]; if(!q) return;
+  const sug=new Date(Date.now()+86400000);
+  const pad=n=>String(n).padStart(2,'0');
+  const d=`${sug.getFullYear()}-${pad(sug.getMonth()+1)}-${pad(sug.getDate())}`;
+  const crew=(S.employees||[]).filter(e=>e.active);
+  const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
+  sheet(`<h2>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'Book the job')}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(q.address||'')}</p>
+    ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
+    ${price?`<div class="small muted">Quoted ${price}</div>`:''}
+    <label>How long is the job? (hours — quoted at ${q.bookedHours||q.hours})</label>
+    <input id="bkHours" type="number" step="0.25" min="0.25" value="${q.bookedHours||q.hours||1}">
+    <div class="row"><div class="grow"><label>Date</label><input id="bkDate" type="date" value="${d}"></div>
+      <div class="grow"><label>Start</label><input id="bkTime" type="time" value="08:30"></div></div>
+    <label>Who's going?</label>
+    <div>${crew.map(e=>`<div class="perm"><input type="checkbox" id="bk_${esc(e.email)}"><label for="bk_${esc(e.email)}" style="margin:0">${esc(e.name||e.email)}</label></div>`).join('')||'<p class="small muted">No active crew.</p>'}</div>
+    <div class="perm"><input type="checkbox" id="bkNotify" checked><label for="bkNotify" style="margin:0">Email the crew their assignment</label></div>
+    <div class="perm"><input type="checkbox" id="bkNotifyCust" checked><label for="bkNotifyCust" style="margin:0">Email the customer to confirm the time${q.email?'':' (no email on file)'}</label></div>
+    <p class="small muted">Gets the next PO number and a PO Log row (In progress). The estimate call stays on the calendar where it was.</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheetDom();render()">Back</button>
+      <button class="grow" id="bkGo" onclick="reqBook(${i},this)">🔧 Book it</button>
+    </div>`);
+}
+async function reqBook(i,btn){
+  const q=(S.reqEstimates||[])[i]; if(!q) return;
+  const date=val('bkDate'), time=val('bkTime'), hours=Number(val('bkHours'))||q.hours||1;
+  if(!date||!time) return toast('Pick the date and time.');
+  const start=new Date(date+'T'+time);
+  if(isNaN(start)) return toast('That date/time did not read properly.');
+  const assign=(S.employees||[]).filter(e=>e.active&&(document.getElementById('bk_'+e.email)||{}).checked).map(e=>e.email);
+  const notify=(document.getElementById('bkNotify')||{}).checked!==false;
+  const notifyCustomer=(document.getElementById('bkNotifyCust')||{}).checked!==false;
+  btn.disabled=true; btn.textContent='Booking…';
+  try{
+    const r=await api('requestBook',{id:q.id, start:start.toISOString(), hours, assign, notify, notifyCustomer, crew:assign.length||q.crew||1});
+    S.reqEstimates=(S.reqEstimates||[]).filter(x=>x.id!==q.id);
+    toast('Booked ✓' + (r&&r.po?(' — '+r.po):'') + (assign.length?', crew notified':''));
+    if (r && r.poNote && /FAILED/i.test(r.poNote)) setTimeout(()=>toast('PO Log not updated: '+r.poNote), 2600);
+    if (r && r.custNote && /NOT notified|unavailable/i.test(r.custNote)) setTimeout(()=>toast(r.custNote), 2600);
+    closeSheetDom(); render(); loadRequests();
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='🔧 Book it'; }
+}
+async function reqNotProceeding(i){
+  const q=(S.reqEstimates||[])[i]; if(!q) return;
+  if(!confirm('Close out '+(q.customer||'this estimate')+'? It stops showing here.')) return;
+  try{
+    await api('requestDismiss',{id:q.id, reason:'not proceeding'});
+    S.reqEstimates=(S.reqEstimates||[]).filter(x=>x.id!==q.id);
+    toast('Closed out'); render();
+  }catch(e){ toast(e.message); }
+}
+/* v46 — move a booked job. The customer is emailed the new time and asked again, so the
+   job goes back to amber until they answer: a time they haven't seen isn't confirmed. */
+function openReqMove(i){
+  const q=(S.reqBooked||[])[i]; if(!q) return;
+  const cur=q.start&&!isNaN(new Date(q.start))?new Date(q.start):new Date(Date.now()+86400000);
+  const pad=n=>String(n).padStart(2,'0');
+  const d=`${cur.getFullYear()}-${pad(cur.getMonth()+1)}-${pad(cur.getDate())}`;
+  const t=`${pad(cur.getHours())}:${pad(cur.getMinutes())}`;
+  sheet(`<h2>Move ${esc(q.customer||'this job')}</h2>
+    <p class="small muted" style="margin-top:-4px">${q.po?esc(q.po)+' · ':''}${esc(q.scope||'')}</p>
+    <label>How long is the job? (hours)</label>
+    <input id="mvHours" type="number" step="0.25" min="0.25" value="${q.bookedHours||q.hours||1}">
+    <div class="row"><div class="grow"><label>New date</label><input id="mvDate" type="date" value="${d}"></div>
+      <div class="grow"><label>New start</label><input id="mvTime" type="time" value="${t}"></div></div>
+    <div class="perm"><input type="checkbox" id="mvNotify" checked><label for="mvNotify" style="margin:0">Email the customer the new time</label></div>
+    <p class="small muted">Moves the calendar event and the PO Log start date. Goes back to 🟠 until they answer.</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheetDom();render()">Back</button>
+      <button class="grow" id="mvGo" onclick="reqMove(${i},this)">📅 Move it</button>
+    </div>`);
+}
+async function reqMove(i,btn){
+  const q=(S.reqBooked||[])[i]; if(!q) return;
+  const date=val('mvDate'), time=val('mvTime'), hours=Number(val('mvHours'))||q.bookedHours||q.hours||1;
+  if(!date||!time) return toast('Pick the date and time.');
+  const start=new Date(date+'T'+time);
+  if(isNaN(start)) return toast('That date/time did not read properly.');
+  const notifyCustomer=(document.getElementById('mvNotify')||{}).checked!==false;
+  btn.disabled=true; btn.textContent='Moving…';
+  try{
+    const r=await api('requestReschedule',{id:q.id, start:start.toISOString(), hours, notify:notifyCustomer});
+    toast('Moved ✓'+(notifyCustomer?' — customer emailed':''));
+    if(r&&r.note&&/NOT notified|unavailable|no customer email/i.test(r.note)) setTimeout(()=>toast(r.note),2600);
+    closeSheetDom(); loadRequests(); render();
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='📅 Move it'; }
+}
+async function reqRenotify(i){
+  const q=(S.reqBooked||[])[i]; if(!q) return;
+  try{
+    const r=await api('requestRenotify',{id:q.id});
+    toast(r&&/emailed/i.test(r.note||'')?'Asked again ✓':(r&&r.note)||'Sent');
+  }catch(e){ toast(e.message); }
 }
 async function reqDismiss(i){
   const q=(S.requests||[])[i]; if(!q) return;
