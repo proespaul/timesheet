@@ -5420,10 +5420,10 @@ function openReqCancel(i){
   sheet(`<h2>Cancel ${esc(q.customer||'this job')}?</h2>
     <p class="small muted" style="margin-top:-4px">${q.po?esc(q.po)+' · ':''}${esc(when)}</p>
     ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
-    <label>Why? (optional — goes in the log and in any email sent)</label>
-    <input id="cxReason" type="text" placeholder="e.g. customer postponed indefinitely">
+    <label>Note for the customer (optional — also goes to the crew and the log)</label>
+    <input id="cxReason" type="text" placeholder="e.g. Paul is sick today — we'll call you to rebook">
     ${crew?`<div class="perm"><input type="checkbox" id="cxCrew" checked><label for="cxCrew" style="margin:0">Tell the ${crew} assigned so they don't drive out</label></div>`:''}
-    <div class="perm"><input type="checkbox" id="cxCust"><label for="cxCust" style="margin:0">Email the customer a cancellation note${q.email?'':' (no email on file)'}</label></div>
+    ${q.email?`<div class="perm"><input type="checkbox" id="cxCust" checked><label for="cxCust" style="margin:0">Email the customer that it's cancelled</label></div>`:'<p class="small muted">No email on file — the customer will not be told automatically.</p>'}
     <p class="small muted">Takes it off the calendar and marks ${q.po?esc(q.po)+' Cancelled':'the job Cancelled'} on the PO Log. The PO number is kept, not reused.</p>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="closeSheetDom();render()">Keep it</button>
