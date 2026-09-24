@@ -5048,9 +5048,10 @@ function openRequests(){ go('requests'); }   // from the pop-up and older call s
 function requestsView(){
   const list=(S.requests||[]).map((q,i)=>{
     const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
-    return `<div class="list-item">
+    return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'req',${i})">
       <div class="row between">
         <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> <span class="pill ${q.type==='APPOINTMENT'?'approved':'live'}">${esc(q.type||'')}</span></div>
+        <span class="small" style="color:var(--accent2)">Details ›</span>
       </div>
       ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
@@ -5067,10 +5068,10 @@ function requestsView(){
     const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
     const when=q.start?new Date(q.start):null;
     const called=when&&!isNaN(when)?when.toLocaleDateString(undefined,{month:'short',day:'numeric'}):'';
-    return `<div class="list-item">
+    return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'est',${i})">
       <div class="row between">
         <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> <span class="pill pending">QUOTED</span></div>
-        <span class="small muted">${called?('called '+esc(called)):''}</span>
+        <span class="small muted">${called?('called '+esc(called)):''} <span style="color:var(--accent2)">›</span></span>
       </div>
       ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
@@ -5083,24 +5084,24 @@ function requestsView(){
     </div>`; }).join('');
   /* v46 — booked jobs and where the customer stands on the time. Amber = waiting on them,
      green = confirmed, red = they want it moved. Same colours as the calendar event. */
-  const CONF={confirmed:['🟢','Confirmed','approved'],declined:['🔴','Wants a new time','rejected'],
+  const CONF={confirmed:['🟢','Confirmed','approved'],declined:['🔴','Wants a new time','rejected'],cancelled:['⚫','Customer cancelled','rejected'],
               waiting:['🟠','Waiting on them','pending'],'no email':['⚪','No email on file','live'],
               none:['⚪','Not asked','live']};
   const bk=(S.reqBooked||[]).map((q,i)=>{
     const c=CONF[q.confirm]||CONF.none;
     const when=q.start?new Date(q.start):null;
     const w=when&&!isNaN(when)?when.toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
-    return `<div class="list-item">
+    return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'bk',${i})">
       <div class="row between">
         <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> ${q.po?`<span class="small muted">${esc(q.po)}</span>`:''}</div>
-        <span class="pill ${c[2]}">${c[0]} ${esc(c[1])}</span>
+        <span class="pill ${c[2]}">${c[0]} ${esc(c[1])}</span> <span class="small" style="color:var(--accent2)">›</span>
       </div>
       <div class="small" style="margin-top:2px"><b>${esc(w)}</b>${(q.bookedHours||q.hours)?` · ${q.bookedHours||q.hours} hr`:''}</div>
       ${q.scope?`<div class="small muted" style="margin-top:2px">${esc(q.scope)}</div>`:''}
       <div class="row" style="margin-top:6px">
         <button class="grow secondary" onclick="openReqMove(${i})">📅 Move it</button>
-        ${q.confirm==='waiting'?`<button class="ghost" onclick="reqRenotify(${i})">Ask again</button>`:''}
-        <button class="ghost" onclick="openReqCancel(${i})">Cancel job</button>
+        ${q.confirm==='waiting'?`<button class="ghost" onclick="reqRenotify(${i})">Ask again</button>`:(!q.confirm||q.confirm==='none')?`<button class="ghost" onclick="reqRenotify(${i})">📧 Email customer</button>`:''}
+        <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>
       </div>
     </div>`; }).join('');
   return `<h2>📨 Requests</h2>
@@ -5297,6 +5298,85 @@ async function reqNotProceeding(i){
 }
 /* v46 — move a booked job. The customer is emailed the new time and asked again, so the
    job goes back to amber until they answer: a time they haven't seen isn't confirmed. */
+/* v47 — JOB DETAILS. Tap any request, quoted estimate or booked job to see everything on it in
+   one place, act on it (schedule / book / move / email the customer / cancel), or correct it.
+   A correction is written to the Requests row and carried to the calendar and the PO Log. */
+// Tapping the card itself opens the details; its own buttons, links and the estimate expander
+// keep doing what they did, so the list stays as quick as before for the simple cases.
+function reqCardTap(ev,k,i){ if(ev.target.closest('button,a,summary,details,input,label')) return; openReqDetail(k,i); }
+function reqList(k){ return k==='req'?(S.requests||[]):k==='est'?(S.reqEstimates||[]):(S.reqBooked||[]); }
+function openReqDetail(k,i){
+  const q=reqList(k)[i]; if(!q) return;
+  const fmt=x=>{ const d=x?new Date(x):null; return d&&!isNaN(d)?d.toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):''; };
+  const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
+  const CONF={confirmed:'🟢 Confirmed',declined:'🔴 Wants a new time',cancelled:'⚫ Customer cancelled',
+              waiting:'🟠 Waiting on them','no email':'⚪ No email on file',none:'⚪ Not asked yet'};
+  const crewNames=(q.assigned||[]).map(e=>{ const m=(S.employees||[]).find(x=>x.email===e); return m&&m.name?m.name:e; });
+  const tel=String(q.phone||'').replace(/[^\d+]/g,'');
+  const row=(label,html)=>html?`<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line,rgba(0,0,0,.08));gap:12px"><span class="small muted" style="flex:0 0 auto">${label}</span><span style="text-align:right;overflow-wrap:anywhere">${html}</span></div>`:'';
+  const status= k==='req'?`New ${esc(q.type||'request')}` : k==='est'?'Quoted — waiting on the customer' : 'Booked';
+  let acts='';
+  if(k==='req') acts=`<button class="grow" onclick="openReqSchedule(${i})">📅 Schedule it</button>
+      <button class="ghost" onclick="reqDismiss(${i});closeSheetDom()">Dismiss</button>`;
+  if(k==='est') acts=`<button class="grow" onclick="openReqBook(${i})">🔧 They said yes — book the job</button>
+      <button class="ghost" onclick="reqNotProceeding(${i});closeSheetDom()">Didn't go ahead</button>`;
+  if(k==='bk') acts=`<button class="grow secondary" onclick="openReqMove(${i})">📅 Move it</button>
+      ${q.email?`<button class="ghost" onclick="reqRenotify(${i})">📧 ${q.confirm==='none'||q.confirm==='no email'?'Email customer':'Email again'}</button>`:''}
+      <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>`;
+  sheet(`<h2 style="margin-bottom:2px">${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</h2>
+    <p class="small muted" style="margin-top:0">${esc(status)}${q.po?' · '+esc(q.po):''}</p>
+    <div style="margin:8px 0 12px">
+      ${row(k==='est'?'Estimate call':'When', esc(fmt(q.start)||(q.suggested?('suggested '+fmt(q.suggested)):'')))}
+      ${k==='bk'?row('Customer answer', esc(CONF[q.confirm]||CONF.none)+(q.notifiedAt?`<br><span class="small muted">asked ${esc(fmt(q.notifiedAt))}</span>`:'')):''}
+      ${row('Phone', tel?`<a href="tel:${esc(tel)}">${esc(q.phone)}</a>`:'')}
+      ${row('Email', q.email?`<a href="mailto:${esc(q.email)}">${esc(q.email)}</a>`:'<span class="muted">none</span>')}
+      ${row('Address', q.address?`<a href="https://maps.google.com/?q=${encodeURIComponent(q.address)}" target="_blank" rel="noopener">${esc(q.address)}</a>`:'')}
+      ${row('Company', esc(q.company||''))}
+      ${row('Scope', esc(q.scope||''))}
+      ${row('Materials', esc(q.materials||''))}
+      ${row('Hours', (q.bookedHours||q.hours)?esc(String(q.bookedHours||q.hours))+' hr'+(q.crew>1?` · ${q.crew} people`:''):'')}
+      ${row('Price', esc(price))}
+      ${row('Crew', esc(crewNames.join(', ')))}
+    </div>
+    ${q.detail?`<details><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary>${reqDetailHtml(q.detail)}</details>`:''}
+    <div class="row" style="margin-top:14px;flex-wrap:wrap">${acts}</div>
+    <div class="row" style="margin-top:8px">
+      <button class="secondary grow" onclick="closeSheetDom();render()">Close</button>
+      <button class="secondary grow" onclick="openReqEdit('${k}',${i})">✏️ Correct details</button>
+    </div>`);
+}
+function openReqEdit(k,i){
+  const q=reqList(k)[i]; if(!q) return;
+  const f=(id,label,v,type)=>`<label>${label}</label><input id="${id}" type="${type||'text'}" value="${esc(v||'')}">`;
+  sheet(`<h2>Correct ${esc(q.customer||'this job')}</h2>
+    <p class="small muted" style="margin-top:-4px">Changes go to the request${k==='bk'?', the calendar event':''}${q.po?' and PO Log '+esc(q.po):(k==='est'?' and the Estimate tab':'')}. Use “Move it” to change the date or hours.</p>
+    ${f('edCustomer','Customer name',q.customer)}
+    ${f('edCompany','Company (blank for a homeowner)',q.company)}
+    ${f('edPhone','Phone',q.phone,'tel')}
+    ${f('edEmail','Email',q.email,'email')}
+    ${f('edAddress','Address',q.address)}
+    <label>Scope</label><textarea id="edScope" rows="3">${esc(q.scope||'')}</textarea>
+    <label>Materials</label><textarea id="edMaterials" rows="2">${esc(q.materials||'')}</textarea>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="openReqDetail('${k}',${i})">Back</button>
+      <button class="grow" id="edGo" onclick="reqSaveEdit('${k}',${i},this)">💾 Save</button>
+    </div>`);
+}
+async function reqSaveEdit(k,i,btn){
+  const q=reqList(k)[i]; if(!q) return;
+  const p={id:q.id, customer:val('edCustomer'), company:val('edCompany'), phone:val('edPhone'),
+    email:val('edEmail'), address:val('edAddress'), scope:val('edScope'), materials:val('edMaterials')};
+  if(!String(p.customer).trim()) return toast('The customer needs a name.');
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const r=await api('requestUpdate',p,{timeout:120000});
+    ['customer','company','phone','address','scope','materials'].forEach(x=>q[x]=String(p[x]).trim());
+    q.email=String(p.email).trim().toLowerCase();
+    toast(r&&r.changed&&r.changed.length?'Saved ✓':'Nothing changed');
+    if(r&&r.note&&/NOT |not found/.test(r.note)) setTimeout(()=>toast(r.note),2600);
+    openReqDetail(k,i); loadRequests();
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='💾 Save'; }
+}
 function openReqMove(i){
   const q=(S.reqBooked||[])[i]; if(!q) return;
   const cur=q.start&&!isNaN(new Date(q.start))?new Date(q.start):new Date(Date.now()+86400000);
@@ -5347,7 +5427,7 @@ function openReqCancel(i){
     <p class="small muted">Takes it off the calendar and marks ${q.po?esc(q.po)+' Cancelled':'the job Cancelled'} on the PO Log. The PO number is kept, not reused.</p>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="closeSheetDom();render()">Keep it</button>
-      <button class="grow" id="cxGo" onclick="reqCancel(${i},this)">Cancel the job</button>
+      <button class="grow danger" id="cxGo" onclick="reqCancel(${i},this)">Cancel the job</button>
     </div>`);
 }
 async function reqCancel(i,btn){
@@ -5372,7 +5452,8 @@ async function reqRenotify(i){
   const q=(S.reqBooked||[])[i]; if(!q) return;
   try{
     const r=await api('requestRenotify',{id:q.id});
-    toast(r&&/emailed/i.test(r.note||'')?'Asked again ✓':(r&&r.note)||'Sent');
+    toast(r&&/emailed/i.test(r.note||'')?'Customer emailed ✓':(r&&r.note)||'Sent');
+    loadRequests();
   }catch(e){ toast(e.message); }
 }
 async function reqDismiss(i){
