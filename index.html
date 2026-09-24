@@ -5443,7 +5443,21 @@ async function reqCancel(i,btn){
     if(r&&r.note&&/NOT /.test(r.note)) setTimeout(()=>toast(r.note),2600);
     closeSheetDom(); loadRequests(); render();
   }catch(e){
-    if (e && e.kind === 'network') toast('Taking a while — pull to refresh in a moment, it may have gone through.');
+    /* v47 — the cancel often lands even when its answer never makes it back to the phone (weak
+       signal, a slow Google reply). Before leaving the person stuck on this screen, ask the
+       server whether the job is still booked; if it is gone, the cancel worked. */
+    if (!(e && e.kind === 'server')) {
+      btn.textContent='Checking…';
+      try{
+        const r=await apiBg('requestList',{});
+        S.requests=r.requests||[]; S.reqEstimates=r.estimates||[]; S.reqBooked=r.booked||[];
+        if(!(S.reqBooked||[]).some(x=>x.id===q.id)){
+          toast('Cancelled ✓'+(q.po?(' — '+q.po+' marked Cancelled'):''));
+          closeSheetDom(); render(); return;
+        }
+      }catch(e2){}
+    }
+    if (e && e.kind === 'network') toast('No answer yet — close this and check the Booked list in a moment; it may have gone through.');
     else toast(e.message);
     btn.disabled=false; btn.textContent='Cancel the job';
   }
