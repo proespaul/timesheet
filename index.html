@@ -3360,6 +3360,7 @@ function startClockOutReview(){
     company: S.openEntry.Company||'',
     breakMin: brkMin, autoBreakMin: brkMin,
     notes: '', items: [], media: [], gps: null,
+    rv: { on:false, hours:0, res:null, picked:null, notify:false },  // v34 return visit
   };
   // GPS resolves while they review; if they submit first, it patches in afterwards.
   const eid = coState.entryId;
@@ -3428,6 +3429,7 @@ function renderClockOutReview(){
     <div class="row between" style="margin-top:2px"><span class="small" style="color:var(--navy);font-weight:700">What did you work on? (required)</span>
       <button class="secondary" id="coMicBtn" style="padding:6px 12px" onclick="dictate('coMicBtn','coNotes')">🎤 Talk</button></div>
     <textarea id="coNotes" rows="2" placeholder="e.g. changed light fixtures, wired panel — talk or type" oninput="coState&&(coState.notes=this.value)">${esc(c.notes)}</textarea>
+    ${coRvCard(c)}
     <label>Materials used</label>
     <input id="coMatSearch" placeholder="Search… e.g. half inch EMT, wago" autocomplete="off" oninput="coMatSuggest(this.value)">
     <div id="coMatSug"></div>
@@ -3452,7 +3454,110 @@ function renderClockOutReview(){
   `);
   // A stray tap on the backdrop must not throw away a half-filled review.
   if (S._sheet) S._sheet.onclick = null;
-  coUpdateWorked(); coUpdateMats(); coUpdateMedia();
+  coUpdateWorked(); coUpdateMats(); coUpdateMedia(); coRvSlotsRender();
+}
+
+/* ---- Return visit (v34) ------------------------------------------------------------------
+   "We booked 2 hours, it isn't done, when can we come back?"  The tech ticks the box, says how
+   much longer it needs, and the app reads Paul's calendar and offers the first openings that
+   actually fit. They agree one with the customer standing there; it is booked on Submit.
+
+   Booked AFTER the clock-out lands (the server only lets you book a return visit for a job you
+   have worked on) and never queued for retry — a slot you promised a customer is taken now or
+   not at all, and a booking that fires an hour later is a booking into a slot nobody checked. */
+function coRvCard(c){
+  const rv = c.rv || {};
+  const chips = [1,2,3,4,6,8].map(h=>`<span class="chip${Number(rv.hours)===h?' sel':''}" onclick="coRvSetHours(${h})">${h} hr</span>`).join('');
+  return `<div class="card" style="margin:10px 0${rv.on?';border-color:var(--accent2)':''}">
+    <label class="row" style="gap:10px;align-items:center;margin:0;cursor:pointer">
+      <input type="checkbox" id="coRvOn" ${rv.on?'checked':''} onchange="coRvToggle(this.checked)" style="width:20px;height:20px;flex:none;margin:0">
+      <span style="font-weight:700;color:var(--navy)">Job not finished — book the return visit</span>
+    </label>
+    <div id="coRvBody" class="${rv.on?'':'hidden'}" style="margin-top:10px">
+      <label style="margin-top:0">How much longer will it take?</label>
+      <div class="row" style="flex-wrap:wrap;gap:6px;align-items:center">${chips}
+        <input id="coRvHours" type="number" step="0.5" min="0.5" max="40" value="${rv.hours||''}"
+               placeholder="or type" style="width:104px" oninput="coRvSetHours(this.value,true)">
+      </div>
+      <button class="secondary" style="width:100%;margin-top:10px;padding:11px 8px" onclick="coRvFind()">📅 Find open slots</button>
+      <div id="coRvSlots" style="margin-top:8px"></div>
+    </div>
+  </div>`;
+}
+function coRvToggle(on){
+  const c=coState; if(!c) return;
+  c.rv.on=!!on;
+  if(!on){ c.rv.picked=null; c.rv.res=null; }
+  const b=document.getElementById('coRvBody'); if(b) b.classList.toggle('hidden', !on);
+  coRvSlotsRender();
+}
+/* typed=true means the number box fired: store it WITHOUT repainting, or the keyboard closes
+   and the caret jumps on every keystroke. */
+function coRvSetHours(v, typed){
+  const c=coState; if(!c) return;
+  const h=Math.max(0, Math.min(40, Number(v)||0));
+  if (c.rv.hours!==h){ c.rv.res=null; c.rv.picked=null; }
+  c.rv.hours=h;
+  if (typed){ coRvSlotsRender(); return; }
+  const box=document.getElementById('coRvHours'); if(box) box.value=h||'';
+  document.querySelectorAll('#coRvBody .chip').forEach(el=>{
+    el.classList.toggle('sel', el.textContent.trim()===h+' hr');
+  });
+  coRvSlotsRender();
+}
+async function coRvFind(){
+  const c=coState; if(!c) return;
+  const h=Number(c.rv.hours||0);
+  if(!(h>0)){ toast('Say how much longer it needs first.'); const el=document.getElementById('coRvHours'); if(el) el.focus(); return; }
+  const box=document.getElementById('coRvSlots');
+  if(box) box.innerHTML='<p class="small muted">Reading the calendar…</p>';
+  try{
+    const r=await api('visitSlots',{hours:h, count:4});
+    c.rv.res=r; c.rv.picked=null; coRvSlotsRender();
+  }catch(e){
+    if(box) box.innerHTML='<p class="small" style="color:var(--bad)">Could not read the calendar — '+esc(e.message)+'</p>';
+  }
+}
+function coRvPick(i){ const c=coState; if(!c) return; c.rv.picked=(c.rv.picked===i?null:i); coRvSlotsRender(); }
+function coRvSlotsRender(){
+  const c=coState, box=document.getElementById('coRvSlots');
+  if(!c||!box) return;
+  const r=c.rv.res;
+  if(!c.rv.on || !r){ box.innerHTML=''; return; }
+  if(!r.slots.length){
+    box.innerHTML='<p class="small muted">Nothing open that long in the next '+r.horizonDays+' days. Try fewer hours, or have Paul book it by hand.</p>';
+    return;
+  }
+  const head = r.multiDay
+    ? '<p class="small muted" style="margin:0 0 6px">'+r.hours+' hrs will not fit in one day — this books <b>day 1 of '+r.daysNeeded+'</b> ('+r.perVisit+' hrs). Book the rest separately.</p>'
+    : '';
+  const list = r.slots.map((s,i)=>{
+    const on = c.rv.picked===i;
+    return '<button class="secondary" style="width:100%;margin-top:6px;padding:11px 10px;text-align:left'
+      + (on?';border-color:var(--accent2);background:rgba(46,117,182,.10)':'') + '" onclick="coRvPick('+i+')">'
+      + (on?'✅ ':'') + '<b>'+esc(fmtDay(s.start))+'</b> <span class="small muted">'
+      + esc(fmtTime(s.start))+'–'+esc(fmtTime(s.end)) + (s.wholeDay?' · day is clear':'') + '</span></button>';
+  }).join('');
+  const tail = '<label class="row" style="gap:10px;align-items:center;margin-top:10px;cursor:pointer">'
+    + '<input type="checkbox" id="coRvNotify" '+(c.rv.notify?'checked':'')
+    + ' onchange="coState&&(coState.rv.notify=this.checked)" style="width:18px;height:18px;flex:none;margin:0">'
+    + '<span class="small">Email the customer a confirmation</span></label>'
+    + '<p class="small muted" style="margin:6px 0 0">Booked when you hit Submit. Workday '
+    + esc(r.workday.start)+'–'+esc(r.workday.end)+', '+esc(r.workday.days)
+    + '; stat holidays, your approved time off and '+r.workday.bufferMin+' min travel either side are already out.</p>';
+  box.innerHTML = head + list + tail;
+}
+/* The booking failed after the customer was told a time — that must not be a toast they miss. */
+function coRvFailed_(msg, slot){
+  sheet('<div class="center">'
+    + '<div style="font-size:2.2rem">📅</div>'
+    + '<h2>Return visit NOT booked</h2>'
+    + '<p class="small muted" style="margin-top:0">Your time went in fine — only the calendar booking failed.</p>'
+    + '<p style="color:var(--bad)">'+esc(msg)+'</p>'
+    + (slot?'<p class="small muted">You were booking '+esc(fmtDay(slot.start))+' '+esc(fmtTime(slot.start))+'.</p>':'')
+    + '<p class="small">Tell the customer you will confirm, and ask Paul to put it on the calendar.</p>'
+    + '<button style="width:100%;margin-top:10px" onclick="closeSheet()">Got it</button>'
+    + '</div>');
 }
 
 function cancelClockOutReview(){
@@ -3703,6 +3808,17 @@ async function coCommit_(){
     if (pend) toast(pend+' material item(s) flagged for admin review');
   }
   saveBootCache();
+  // v34 — the return visit, only now that the office has the clock-out (the server will not
+  // book a return visit for a job you have no entry on) and only if a slot was actually picked.
+  if (c.rv && c.rv.on && c.rv.picked!=null && c.rv.res && c.rv.res.slots[c.rv.picked]){
+    const s=c.rv.res.slots[c.rv.picked];
+    try{
+      const b = await api('visitBook',{ po:c.poNumber||'', jobSite:c.jobSite||c.company||'',
+        start:s.start, hours:s.hours, note:c.notes, notifyCustomer:!!c.rv.notify });
+      toast((b&&b.extended ? 'Booking extended — ' : 'Return visit booked — ')
+            + fmtDay(s.start)+', '+fmtTime(s.start), 5000);
+    }catch(e){ coRvFailed_(e.message, s); }
+  }
   if (!c.gps) retryGpsPatch(c.entryId, 'out');
 }
 
@@ -5045,17 +5161,40 @@ async function loadRequests(){
   S._reqLoading=false;
 }
 function openRequests(){ go('requests'); }   // from the pop-up and older call sites
+/* v34 — the customer's form photos, on the card itself.
+   They were already being captured: the ball-park sequence pulls the proes.ca image URLs out of
+   the form email and writes them into `detail`, and reqDetailHtml has rendered them since v46 —
+   but only once you expand "See the full estimate", which is not where you look when you are
+   scanning a list of leads. Same URLs, same source of truth, just visible up front. */
+function reqPhotoUrls(detail){
+  const out=[];
+  String(detail||'').replace(/https:\/\/proes\.ca\/wp-content\/uploads\/forminator\/[^\s"'<>]+/g,
+    u=>{ if(!out.includes(u)) out.push(u); return u; });
+  return out;
+}
+function reqPhotoStrip(q){
+  const ph=reqPhotoUrls(q&&q.detail);
+  if(!ph.length) return '';
+  return `<div class="row" style="flex-wrap:wrap;gap:6px;margin-top:6px;align-items:flex-start">
+    ${ph.slice(0,8).map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener" style="width:74px;text-decoration:none">
+      <img src="${esc(u)}" loading="lazy" alt="job photo"
+        style="width:74px;height:74px;object-fit:cover;border-radius:10px;background:var(--panel2);border:1px solid var(--line)"
+        onerror="this.replaceWith(Object.assign(document.createElement('div'),{textContent:'📷',style:'width:74px;height:74px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;border-radius:10px;background:var(--panel2);border:1px solid var(--line)'}))">
+    </a>`).join('')}
+    <span class="small muted" style="width:100%;margin-top:0">📷 ${ph.length} photo${ph.length===1?'':'s'} from the customer — tap to open</span>
+  </div>`;
+}
 function requestsView(){
   const list=(S.requests||[]).map((q,i)=>{
     const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
-    return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'req',${i})">
+    return `<div class="list-item">
       <div class="row between">
         <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> <span class="pill ${q.type==='APPOINTMENT'?'approved':'live'}">${esc(q.type||'')}</span></div>
-        <span class="small" style="color:var(--accent2)">Details ›</span>
       </div>
       ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
       <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> estimated${price?` · ${price} provisional`:''}</div>
+      ${reqPhotoStrip(q)}
       ${q.detail?`<details style="margin-top:4px"><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary>${reqDetailHtml(q.detail)}</details>`:''}
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="openReqSchedule(${i})">📅 Schedule it</button>
@@ -5068,14 +5207,15 @@ function requestsView(){
     const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
     const when=q.start?new Date(q.start):null;
     const called=when&&!isNaN(when)?when.toLocaleDateString(undefined,{month:'short',day:'numeric'}):'';
-    return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'est',${i})">
+    return `<div class="list-item">
       <div class="row between">
         <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> <span class="pill pending">QUOTED</span></div>
-        <span class="small muted">${called?('called '+esc(called)):''} <span style="color:var(--accent2)">›</span></span>
+        <span class="small muted">${called?('called '+esc(called)):''}</span>
       </div>
       ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
       <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> job${price?` · ${price} quoted`:''}</div>
+      ${reqPhotoStrip(q)}
       ${q.detail?`<details style="margin-top:4px"><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary>${reqDetailHtml(q.detail)}</details>`:''}
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="openReqBook(${i})">🔧 They said yes — book the job</button>
@@ -5084,24 +5224,25 @@ function requestsView(){
     </div>`; }).join('');
   /* v46 — booked jobs and where the customer stands on the time. Amber = waiting on them,
      green = confirmed, red = they want it moved. Same colours as the calendar event. */
-  const CONF={confirmed:['🟢','Confirmed','approved'],declined:['🔴','Wants a new time','rejected'],cancelled:['⚫','Customer cancelled','rejected'],
+  const CONF={confirmed:['🟢','Confirmed','approved'],declined:['🔴','Wants a new time','rejected'],
               waiting:['🟠','Waiting on them','pending'],'no email':['⚪','No email on file','live'],
               none:['⚪','Not asked','live']};
   const bk=(S.reqBooked||[]).map((q,i)=>{
     const c=CONF[q.confirm]||CONF.none;
     const when=q.start?new Date(q.start):null;
     const w=when&&!isNaN(when)?when.toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
-    return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'bk',${i})">
+    return `<div class="list-item">
       <div class="row between">
         <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> ${q.po?`<span class="small muted">${esc(q.po)}</span>`:''}</div>
-        <span class="pill ${c[2]}">${c[0]} ${esc(c[1])}</span> <span class="small" style="color:var(--accent2)">›</span>
+        <span class="pill ${c[2]}">${c[0]} ${esc(c[1])}</span>
       </div>
       <div class="small" style="margin-top:2px"><b>${esc(w)}</b>${(q.bookedHours||q.hours)?` · ${q.bookedHours||q.hours} hr`:''}</div>
       ${q.scope?`<div class="small muted" style="margin-top:2px">${esc(q.scope)}</div>`:''}
+      ${reqPhotoStrip(q)}
       <div class="row" style="margin-top:6px">
         <button class="grow secondary" onclick="openReqMove(${i})">📅 Move it</button>
-        ${q.confirm==='waiting'?`<button class="ghost" onclick="reqRenotify(${i})">Ask again</button>`:(!q.confirm||q.confirm==='none')?`<button class="ghost" onclick="reqRenotify(${i})">📧 Email customer</button>`:''}
-        <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>
+        ${q.confirm==='waiting'?`<button class="ghost" onclick="reqRenotify(${i})">Ask again</button>`:''}
+        <button class="ghost" onclick="openReqCancel(${i})">Cancel job</button>
       </div>
     </div>`; }).join('');
   return `<h2>📨 Requests</h2>
@@ -5298,85 +5439,6 @@ async function reqNotProceeding(i){
 }
 /* v46 — move a booked job. The customer is emailed the new time and asked again, so the
    job goes back to amber until they answer: a time they haven't seen isn't confirmed. */
-/* v47 — JOB DETAILS. Tap any request, quoted estimate or booked job to see everything on it in
-   one place, act on it (schedule / book / move / email the customer / cancel), or correct it.
-   A correction is written to the Requests row and carried to the calendar and the PO Log. */
-// Tapping the card itself opens the details; its own buttons, links and the estimate expander
-// keep doing what they did, so the list stays as quick as before for the simple cases.
-function reqCardTap(ev,k,i){ if(ev.target.closest('button,a,summary,details,input,label')) return; openReqDetail(k,i); }
-function reqList(k){ return k==='req'?(S.requests||[]):k==='est'?(S.reqEstimates||[]):(S.reqBooked||[]); }
-function openReqDetail(k,i){
-  const q=reqList(k)[i]; if(!q) return;
-  const fmt=x=>{ const d=x?new Date(x):null; return d&&!isNaN(d)?d.toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):''; };
-  const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
-  const CONF={confirmed:'🟢 Confirmed',declined:'🔴 Wants a new time',cancelled:'⚫ Customer cancelled',
-              waiting:'🟠 Waiting on them','no email':'⚪ No email on file',none:'⚪ Not asked yet'};
-  const crewNames=(q.assigned||[]).map(e=>{ const m=(S.employees||[]).find(x=>x.email===e); return m&&m.name?m.name:e; });
-  const tel=String(q.phone||'').replace(/[^\d+]/g,'');
-  const row=(label,html)=>html?`<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line,rgba(0,0,0,.08));gap:12px"><span class="small muted" style="flex:0 0 auto">${label}</span><span style="text-align:right;overflow-wrap:anywhere">${html}</span></div>`:'';
-  const status= k==='req'?`New ${esc(q.type||'request')}` : k==='est'?'Quoted — waiting on the customer' : 'Booked';
-  let acts='';
-  if(k==='req') acts=`<button class="grow" onclick="openReqSchedule(${i})">📅 Schedule it</button>
-      <button class="ghost" onclick="reqDismiss(${i});closeSheetDom()">Dismiss</button>`;
-  if(k==='est') acts=`<button class="grow" onclick="openReqBook(${i})">🔧 They said yes — book the job</button>
-      <button class="ghost" onclick="reqNotProceeding(${i});closeSheetDom()">Didn't go ahead</button>`;
-  if(k==='bk') acts=`<button class="grow secondary" onclick="openReqMove(${i})">📅 Move it</button>
-      ${q.email?`<button class="ghost" onclick="reqRenotify(${i})">📧 ${q.confirm==='none'||q.confirm==='no email'?'Email customer':'Email again'}</button>`:''}
-      <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>`;
-  sheet(`<h2 style="margin-bottom:2px">${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</h2>
-    <p class="small muted" style="margin-top:0">${esc(status)}${q.po?' · '+esc(q.po):''}</p>
-    <div style="margin:8px 0 12px">
-      ${row(k==='est'?'Estimate call':'When', esc(fmt(q.start)||(q.suggested?('suggested '+fmt(q.suggested)):'')))}
-      ${k==='bk'?row('Customer answer', esc(CONF[q.confirm]||CONF.none)+(q.notifiedAt?`<br><span class="small muted">asked ${esc(fmt(q.notifiedAt))}</span>`:'')):''}
-      ${row('Phone', tel?`<a href="tel:${esc(tel)}">${esc(q.phone)}</a>`:'')}
-      ${row('Email', q.email?`<a href="mailto:${esc(q.email)}">${esc(q.email)}</a>`:'<span class="muted">none</span>')}
-      ${row('Address', q.address?`<a href="https://maps.google.com/?q=${encodeURIComponent(q.address)}" target="_blank" rel="noopener">${esc(q.address)}</a>`:'')}
-      ${row('Company', esc(q.company||''))}
-      ${row('Scope', esc(q.scope||''))}
-      ${row('Materials', esc(q.materials||''))}
-      ${row('Hours', (q.bookedHours||q.hours)?esc(String(q.bookedHours||q.hours))+' hr'+(q.crew>1?` · ${q.crew} people`:''):'')}
-      ${row('Price', esc(price))}
-      ${row('Crew', esc(crewNames.join(', ')))}
-    </div>
-    ${q.detail?`<details><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary>${reqDetailHtml(q.detail)}</details>`:''}
-    <div class="row" style="margin-top:14px;flex-wrap:wrap">${acts}</div>
-    <div class="row" style="margin-top:8px">
-      <button class="secondary grow" onclick="closeSheetDom();render()">Close</button>
-      <button class="secondary grow" onclick="openReqEdit('${k}',${i})">✏️ Correct details</button>
-    </div>`);
-}
-function openReqEdit(k,i){
-  const q=reqList(k)[i]; if(!q) return;
-  const f=(id,label,v,type)=>`<label>${label}</label><input id="${id}" type="${type||'text'}" value="${esc(v||'')}">`;
-  sheet(`<h2>Correct ${esc(q.customer||'this job')}</h2>
-    <p class="small muted" style="margin-top:-4px">Changes go to the request${k==='bk'?', the calendar event':''}${q.po?' and PO Log '+esc(q.po):(k==='est'?' and the Estimate tab':'')}. Use “Move it” to change the date or hours.</p>
-    ${f('edCustomer','Customer name',q.customer)}
-    ${f('edCompany','Company (blank for a homeowner)',q.company)}
-    ${f('edPhone','Phone',q.phone,'tel')}
-    ${f('edEmail','Email',q.email,'email')}
-    ${f('edAddress','Address',q.address)}
-    <label>Scope</label><textarea id="edScope" rows="3">${esc(q.scope||'')}</textarea>
-    <label>Materials</label><textarea id="edMaterials" rows="2">${esc(q.materials||'')}</textarea>
-    <div class="row" style="margin-top:14px">
-      <button class="secondary grow" onclick="openReqDetail('${k}',${i})">Back</button>
-      <button class="grow" id="edGo" onclick="reqSaveEdit('${k}',${i},this)">💾 Save</button>
-    </div>`);
-}
-async function reqSaveEdit(k,i,btn){
-  const q=reqList(k)[i]; if(!q) return;
-  const p={id:q.id, customer:val('edCustomer'), company:val('edCompany'), phone:val('edPhone'),
-    email:val('edEmail'), address:val('edAddress'), scope:val('edScope'), materials:val('edMaterials')};
-  if(!String(p.customer).trim()) return toast('The customer needs a name.');
-  btn.disabled=true; btn.textContent='Saving…';
-  try{
-    const r=await api('requestUpdate',p,{timeout:120000});
-    ['customer','company','phone','address','scope','materials'].forEach(x=>q[x]=String(p[x]).trim());
-    q.email=String(p.email).trim().toLowerCase();
-    toast(r&&r.changed&&r.changed.length?'Saved ✓':'Nothing changed');
-    if(r&&r.note&&/NOT |not found/.test(r.note)) setTimeout(()=>toast(r.note),2600);
-    openReqDetail(k,i); loadRequests();
-  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='💾 Save'; }
-}
 function openReqMove(i){
   const q=(S.reqBooked||[])[i]; if(!q) return;
   const cur=q.start&&!isNaN(new Date(q.start))?new Date(q.start):new Date(Date.now()+86400000);
@@ -5420,14 +5482,14 @@ function openReqCancel(i){
   sheet(`<h2>Cancel ${esc(q.customer||'this job')}?</h2>
     <p class="small muted" style="margin-top:-4px">${q.po?esc(q.po)+' · ':''}${esc(when)}</p>
     ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
-    <label>Note for the customer (optional — also goes to the crew and the log)</label>
-    <input id="cxReason" type="text" placeholder="e.g. Paul is sick today — we'll call you to rebook">
+    <label>Why? (optional — goes in the log and in any email sent)</label>
+    <input id="cxReason" type="text" placeholder="e.g. customer postponed indefinitely">
     ${crew?`<div class="perm"><input type="checkbox" id="cxCrew" checked><label for="cxCrew" style="margin:0">Tell the ${crew} assigned so they don't drive out</label></div>`:''}
-    ${q.email?`<div class="perm"><input type="checkbox" id="cxCust" checked><label for="cxCust" style="margin:0">Email the customer that it's cancelled</label></div>`:'<p class="small muted">No email on file — the customer will not be told automatically.</p>'}
+    <div class="perm"><input type="checkbox" id="cxCust"><label for="cxCust" style="margin:0">Email the customer a cancellation note${q.email?'':' (no email on file)'}</label></div>
     <p class="small muted">Takes it off the calendar and marks ${q.po?esc(q.po)+' Cancelled':'the job Cancelled'} on the PO Log. The PO number is kept, not reused.</p>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="closeSheetDom();render()">Keep it</button>
-      <button class="grow danger" id="cxGo" onclick="reqCancel(${i},this)">Cancel the job</button>
+      <button class="grow" id="cxGo" onclick="reqCancel(${i},this)">Cancel the job</button>
     </div>`);
 }
 async function reqCancel(i,btn){
@@ -5443,21 +5505,7 @@ async function reqCancel(i,btn){
     if(r&&r.note&&/NOT /.test(r.note)) setTimeout(()=>toast(r.note),2600);
     closeSheetDom(); loadRequests(); render();
   }catch(e){
-    /* v47 — the cancel often lands even when its answer never makes it back to the phone (weak
-       signal, a slow Google reply). Before leaving the person stuck on this screen, ask the
-       server whether the job is still booked; if it is gone, the cancel worked. */
-    if (!(e && e.kind === 'server')) {
-      btn.textContent='Checking…';
-      try{
-        const r=await apiBg('requestList',{});
-        S.requests=r.requests||[]; S.reqEstimates=r.estimates||[]; S.reqBooked=r.booked||[];
-        if(!(S.reqBooked||[]).some(x=>x.id===q.id)){
-          toast('Cancelled ✓'+(q.po?(' — '+q.po+' marked Cancelled'):''));
-          closeSheetDom(); render(); return;
-        }
-      }catch(e2){}
-    }
-    if (e && e.kind === 'network') toast('No answer yet — close this and check the Booked list in a moment; it may have gone through.');
+    if (e && e.kind === 'network') toast('Taking a while — pull to refresh in a moment, it may have gone through.');
     else toast(e.message);
     btn.disabled=false; btn.textContent='Cancel the job';
   }
@@ -5466,8 +5514,7 @@ async function reqRenotify(i){
   const q=(S.reqBooked||[])[i]; if(!q) return;
   try{
     const r=await api('requestRenotify',{id:q.id});
-    toast(r&&/emailed/i.test(r.note||'')?'Customer emailed ✓':(r&&r.note)||'Sent');
-    loadRequests();
+    toast(r&&/emailed/i.test(r.note||'')?'Asked again ✓':(r&&r.note)||'Sent');
   }catch(e){ toast(e.message); }
 }
 async function reqDismiss(i){
