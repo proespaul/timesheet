@@ -2091,7 +2091,11 @@ function openJobDetail(k){
       <div><b>${esc(e.name)}</b></div>
       <div style="text-align:right"><b>${e.hours.toFixed(2)} hrs</b><div class="small muted">≈ $${e.cost.toFixed(2)}</div></div>
     </div>`).join('')||'<p class="muted small">No breakdown available.</p>'}
-    ${S.me&&S.me.role==='admin'?`<button style="width:100%;margin-top:10px" onclick="reqInvoice('${pk}',this)">🧾 Build the invoice (sends the job to Claude)</button>`:''}
+    ${S.me&&S.me.role==='admin'?`
+      <div class="small muted" style="margin-top:12px">Invoicing — two steps</div>
+      <button style="width:100%;margin-top:4px" onclick="reqInvoice('${pk}','initial',this)">🧾 Initial draft — every part listed, no markup</button>
+      <button class="secondary" style="width:100%;margin-top:6px" onclick="reqInvoice('${pk}','final',this)">✅ Final draft — parts rolled up, markup applied</button>
+      <p class="small muted" style="margin:6px 0 0">Initial first. Correct it in QuickBooks, then tap Final. Nothing is ever sent to the customer.</p>`:''}
     <button class="secondary" style="width:100%;margin-top:${S.me&&S.me.role==='admin'?'6':'10'}px" onclick="openJobEntries('${pk}')">📆 Day-by-day breakdown</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobPOs('${pk}')">📦 Materials &amp; supplier POs</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobPhotos('${pk}')">📷 View job photos</button>
@@ -2174,15 +2178,27 @@ async function openJobPOs(pk){
 
 /* 3.6: one tap → a structured request lands in admin@proes.ca's inbox, where Claude's
    hourly sweep picks it up and runs the QuickBooks invoice build (POs + markup + hours). */
-async function reqInvoice(pk,btn){
+/* v37 — invoicing in two steps.
+   INITIAL: every part on its own line at cost, consumables on one Misc. line naming them all,
+   no markup — so Paul can see at a glance that nothing was missed, and fix it in QuickBooks.
+   FINAL: reads back whatever Paul left on the invoice, rolls the parts into the usual single
+   Materials line and applies the markup tier to the corrected total. Neither stage sends. */
+const INV_LABEL = { initial:'🧾 Initial draft — every part listed, no markup',
+                    final:  '✅ Final draft — parts rolled up, markup applied' };
+async function reqInvoice(pk,stage,btn){
   const ref=dereg(pk); if(!ref) return;
   if(!S.online) return toast('You need signal to send the request.');
+  if(stage==='final' && !confirm('Final draft rewrites the invoice in QuickBooks: the itemised '
+      +'part lines are replaced by one Materials line with the markup applied.\n\n'
+      +'Have you finished correcting it in QuickBooks?')) return;
   btn.disabled=true; btn.textContent='Sending…';
   try{
-    await api('invoiceRequest',{po:ref.po||'', jobSite:ref.jobSite});
+    await api('invoiceRequest',{po:ref.po||'', jobSite:ref.jobSite, stage:stage});
     btn.textContent='✓ Sent to Claude';
-    toast('Request sent — the invoice gets built within the hour and lands in QuickBooks as a draft.');
-  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='🧾 Build the invoice (sends the job to Claude)'; }
+    toast(stage==='final'
+      ? 'Final draft requested — the parts get rolled up and the markup applied. Still not sent to the customer.'
+      : 'Initial draft requested — every part listed at cost, for you to check in QuickBooks.', 6000);
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent=INV_LABEL[stage]||'Build the invoice'; }
 }
 
 /* Day-by-day drill-down: every shift on the job — when, who, how long, status. */
@@ -3544,6 +3560,7 @@ function coRvSlotsRender(){
     + '<span class="small">Email the customer a confirmation</span></label>'
     + '<p class="small muted" style="margin:6px 0 0">Booked when you hit Submit. Workday '
     + esc(r.workday.start)+'–'+esc(r.workday.end)+', '+esc(r.workday.days)
+    + (r.workday.lunch?' (lunch '+esc(r.workday.lunch)+')':'')
     + '; stat holidays, your approved time off and '+r.workday.bufferMin+' min travel either side are already out.</p>';
   box.innerHTML = head + list + tail;
 }
@@ -5374,6 +5391,8 @@ async function reqSchedule(i,btn){
     toast('On the calendar ✓' + extra);
     if (r && r.poNote && /FAILED|skipped/i.test(r.poNote)) setTimeout(()=>toast('PO Log not updated: '+r.poNote), 2600);
     if (r && r.custNote && /NOT notified|unavailable/i.test(r.custNote)) setTimeout(()=>toast(r.custNote), 2600);
+    // v36 — an estimate call is allowed to sit over a running job, but say what it landed on.
+    if (r && r.slotNote) setTimeout(()=>toast(r.slotNote, 6000), 3400);
     closeSheetDom(); render(); loadRequests();   // J) so the Booked list shows it straight away
   }catch(e){
     // The server may have finished after we stopped waiting. Say so rather than implying it failed.
@@ -5426,6 +5445,8 @@ async function reqBook(i,btn){
     toast('Booked ✓' + (r&&r.po?(' — '+r.po):'') + (assign.length?', crew notified':''));
     if (r && r.poNote && /FAILED/i.test(r.poNote)) setTimeout(()=>toast('PO Log not updated: '+r.poNote), 2600);
     if (r && r.custNote && /NOT notified|unavailable/i.test(r.custNote)) setTimeout(()=>toast(r.custNote), 2600);
+    // v36 — an estimate call is allowed to sit over a running job, but say what it landed on.
+    if (r && r.slotNote) setTimeout(()=>toast(r.slotNote, 6000), 3400);
     closeSheetDom(); render(); loadRequests();
   }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='🔧 Book it'; }
 }
