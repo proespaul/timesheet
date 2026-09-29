@@ -2192,14 +2192,20 @@ async function reqInvoice(pk,stage,btn){
       +'Have you finished correcting it in QuickBooks?')) return;
   btn.disabled=true; btn.textContent='Sending…';
   try{
-    const r=await api('invoiceRequest',{po:ref.po||'', jobSite:ref.jobSite, stage:stage});
+    // v53 — the script now emails the request AND starts Claude; on a cold start that can take
+    // longer than the default wait, so give it 90 s instead of calling a sent request a failure.
+    const r=await api('invoiceRequest',{po:ref.po||'', jobSite:ref.jobSite, stage:stage},{timeout:90000});
     btn.textContent = r&&r.fired ? '⚡ Claude is building it' : '✓ Sent to Claude';
     toast(stage==='final'
       ? 'Final draft requested — the parts get rolled up and the markup applied. Still not sent to the customer.'
       : (r&&r.fired
           ? 'Claude started on it now — the draft should be in QuickBooks in about 5–10 minutes. Every part at cost, for you to check.'
           : 'Initial draft requested — every part listed at cost, for you to check in QuickBooks.' + (r&&r.note?' ('+r.note+')':'')), 7000);
-  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent=INV_LABEL[stage]||'Build the invoice'; }
+  }catch(e){
+    // No answer is not a no: the request is usually already on its way. Say so, and do not
+    // invite a second tap (the build checks QuickBooks first, so a repeat is harmless anyway).
+    if (e && e.kind === 'network'){ btn.textContent='✓ Probably sent'; toast('The office was slow to answer, but the request has most likely gone through — watch for the "Initial draft ready" email in a few minutes before tapping again.', 8000); return; }
+    toast(e.message); btn.disabled=false; btn.textContent=INV_LABEL[stage]||'Build the invoice'; }
 }
 
 /* Day-by-day drill-down: every shift on the job — when, who, how long, status. */
