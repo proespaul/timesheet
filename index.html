@@ -2192,11 +2192,13 @@ async function reqInvoice(pk,stage,btn){
       +'Have you finished correcting it in QuickBooks?')) return;
   btn.disabled=true; btn.textContent='Sending…';
   try{
-    await api('invoiceRequest',{po:ref.po||'', jobSite:ref.jobSite, stage:stage});
-    btn.textContent='✓ Sent to Claude';
+    const r=await api('invoiceRequest',{po:ref.po||'', jobSite:ref.jobSite, stage:stage});
+    btn.textContent = r&&r.fired ? '⚡ Claude is building it' : '✓ Sent to Claude';
     toast(stage==='final'
       ? 'Final draft requested — the parts get rolled up and the markup applied. Still not sent to the customer.'
-      : 'Initial draft requested — every part listed at cost, for you to check in QuickBooks.', 6000);
+      : (r&&r.fired
+          ? 'Claude started on it now — the draft should be in QuickBooks in about 5–10 minutes. Every part at cost, for you to check.'
+          : 'Initial draft requested — every part listed at cost, for you to check in QuickBooks.' + (r&&r.note?' ('+r.note+')':'')), 7000);
   }catch(e){ toast(e.message); btn.disabled=false; btn.textContent=INV_LABEL[stage]||'Build the invoice'; }
 }
 
@@ -3496,6 +3498,13 @@ function coRvCard(c){
       </div>
       <button class="secondary" style="width:100%;margin-top:10px;padding:11px 8px" onclick="coRvFind()">📅 Find open slots</button>
       <div id="coRvSlots" style="margin-top:8px"></div>
+      ${(S.me&&S.me.role==='admin')?`<details id="coRvOwn" ${rv.custom?'open':''} style="margin-top:12px">
+        <summary class="small" style="color:var(--accent2);cursor:pointer;font-weight:700">🗓️ Pick my own day &amp; time (jobs already there get moved)</summary>
+        <div class="row"><div class="grow"><label>Day</label><input id="coRvOwnDate" type="date" value="${rv.custom?esc(rv.custom.date):''}"></div>
+          <div class="grow"><label>Start</label><input id="coRvOwnTime" type="time" value="${rv.custom?esc(rv.custom.time):'08:30'}"></div></div>
+        <button class="secondary" style="width:100%;margin-top:8px" onclick="coRvOwnCheck()">Check what moves</button>
+        <div id="coRvOwnPlan" style="margin-top:8px"></div>
+      </details>`:''}
     </div>
   </div>`;
 }
@@ -3533,7 +3542,54 @@ async function coRvFind(){
     if(box) box.innerHTML='<p class="small" style="color:var(--bad)">Could not read the calendar — '+esc(e.message)+'</p>';
   }
 }
-function coRvPick(i){ const c=coState; if(!c) return; c.rv.picked=(c.rv.picked===i?null:i); coRvSlotsRender(); }
+function coRvPick(i){ const c=coState; if(!c) return; c.rv.picked=(c.rv.picked===i?null:i);
+  if(c.rv.picked!=null && c.rv.custom){ c.rv.custom=null; const pl=document.getElementById('coRvOwnPlan'); if(pl) pl.innerHTML=''; }
+  coRvSlotsRender(); }
+/* v52 — PICK MY OWN DAY & TIME. Paul chooses any day and time. A job already there moves to the
+   same time on the next work day; if that spot is taken by another job, that one moves on too,
+   and so on. Estimate calls and personal events never move. Nothing happens until he ticks the
+   box under the plan, and it is booked only when he hits Submit. Every moved customer lands on
+   "Call these customers" in Requests, and he gets the same list by email. */
+async function coRvOwnCheck(){
+  const c=coState; if(!c) return;
+  const h=Number(c.rv.hours||0);
+  if(!(h>0)){ toast('Say how much longer it needs first.'); return; }
+  const date=val('coRvOwnDate'), time=val('coRvOwnTime');
+  if(!date||!time) return toast('Pick the day and the start time.');
+  const start=new Date(date+'T'+time); if(isNaN(start)) return toast('That day/time did not read properly.');
+  const box=document.getElementById('coRvOwnPlan'); if(box) box.innerHTML='<p class="small muted">Working out what moves…</p>';
+  try{
+    const plan=await api('bumpPlan',{start:start.toISOString(), hours:h, po:c.poNumber||'', jobSite:c.jobSite||c.company||''},{timeout:60000});
+    c.rv.custom={ date, time, start:start.toISOString(), hours:h, plan, ok:false };
+    c.rv.picked=null; coRvSlotsRender();
+    if(box) box.innerHTML = bumpPlanHtml(plan)
+      + '<label class="row" style="gap:10px;align-items:center;margin-top:10px;cursor:pointer">'
+      + '<input type="checkbox" onchange="coState&&coState.rv.custom&&(coState.rv.custom.ok=this.checked)" style="width:20px;height:20px;flex:none;margin:0">'
+      + '<span class="small"><b>Yes — book it here'+(plan.moves.length?' and move '+(plan.moves.length===1?'that job':'those '+plan.moves.length+' jobs'):'')+'</b> when I hit Submit</span></label>'
+      + '<label class="row" style="gap:10px;align-items:center;margin-top:6px;cursor:pointer">'
+      + '<input type="checkbox" '+(c.rv.notify?'checked':'')+' onchange="coState&&(coState.rv.notify=this.checked)" style="width:18px;height:18px;flex:none;margin:0">'
+      + '<span class="small">Email this customer a confirmation</span></label>';
+  }catch(e){ c.rv.custom=null; if(box) box.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+}
+/* The plan, readable on a phone. Shared by the return visit and the Call-list Reschedule. */
+function bumpPlanHtml(plan){
+  const m=plan.mover;
+  let h='<div class="card" style="margin:0;padding:10px">'
+    + '<div class="small"><b>'+(m.kind==='new'?'Return visit':'This job')+':</b> '+esc(fmtDay(m.start))+' '+esc(fmtTime(m.start))+'–'+esc(fmtTime(m.end))+'</div>';
+  if(plan.moves.length){
+    h+='<div class="small" style="margin-top:8px;font-weight:700">These jobs move to the next work day:</div>';
+    h+=plan.moves.map(x=>'<div class="small" style="margin-top:6px;padding-left:8px;border-left:3px solid var(--pending)">'
+      + '<b>'+esc(x.customer||x.title)+'</b>'+(x.po?' <span class="muted">'+esc(x.po)+'</span>':'')
+      + (x.job?'<br><span class="muted">'+esc(x.job)+'</span>':'')
+      + '<br>'+esc(fmtDay(x.from))+' '+esc(fmtTime(x.from))+' → <b>'+esc(fmtDay(x.to))+' '+esc(fmtTime(x.to))+'</b>'
+      + (x.phone?'<br>📞 '+esc(x.phone):'<br><span style="color:var(--pending)">no phone on file</span>')
+      + (x.sitsOver&&x.sitsOver.length?'<br><span style="color:var(--pending)">⚠️ now sits over '+esc(x.sitsOver.join(', '))+'</span>':'')
+      + '</div>').join('');
+    h+='<p class="small muted" style="margin:8px 0 0">They go on your "Call these customers" list and you get the same list by email.</p>';
+  } else h+='<div class="small" style="margin-top:6px;color:var(--good)">✓ Nothing needs to move.</div>';
+  if(plan.warnings&&plan.warnings.length) h+=plan.warnings.map(w=>'<div class="small" style="margin-top:6px;color:var(--pending)">⚠️ '+esc(w)+'</div>').join('');
+  return h+'</div>';
+}
 function coRvSlotsRender(){
   const c=coState, box=document.getElementById('coRvSlots');
   if(!c||!box) return;
@@ -3652,7 +3708,7 @@ function coMatSuggest(q){
   box.innerHTML=`<div class="suggest">${h}</div>`;
 }
 function coMatPick(i){ const m=coMatResults[i]; if(!m||!coState) return;
-  coState.items.push({name:m.name, unit:m.unit||'', qty:1, matched:true}); coMatClear(); coUpdateMats(); }
+  coState.items.push({name:m.name, sku:m.sku||'', unit:m.unit||'', qty:1, matched:true}); coMatClear(); coUpdateMats(); }
 function coMatTyped(){ const q=val('coMatSearch').trim(); if(!q||!coState) return;
   coState.items.push({name:q, unit:'', qty:1, matched:false}); coMatClear(); coUpdateMats(); }
 function coMatClear(){ const i=document.getElementById('coMatSearch'); if(i){ i.value=''; i.focus(); }
@@ -3834,6 +3890,17 @@ async function coCommit_(){
       toast((b&&b.extended ? 'Booking extended — ' : 'Return visit booked — ')
             + fmtDay(s.start)+', '+fmtTime(s.start), 5000);
     }catch(e){ coRvFailed_(e.message, s); }
+  } else if (c.rv && c.rv.on && c.rv.custom && c.rv.custom.ok){
+    // v52 — Paul's own day and time, with the bump chain he confirmed on the review screen.
+    const k=c.rv.custom;
+    try{
+      const b = await api('bumpApply',{ start:k.start, hours:k.hours, po:c.poNumber||'', jobSite:c.jobSite||c.company||'',
+        note:c.notes, notifyCustomer:!!c.rv.notify, hash:k.plan.hash },{timeout:120000});
+      toast('Return visit booked — '+fmtDay(k.start)+', '+fmtTime(k.start)
+        + (b&&b.moved?' · '+b.moved+' job(s) moved — ring them from Requests › Call these customers':''), 7000);
+      if (b&&b.problems&&b.problems.length) setTimeout(()=>toast('Could not move: '+b.problems.join('; '), 8000), 7200);
+      loadRequests();
+    }catch(e){ coRvFailed_(e.message, {start:k.start}); }
   }
   if (!c.gps) retryGpsPatch(c.entryId, 'out');
 }
@@ -3959,7 +4026,7 @@ function mnMatSuggest(q){
   box.innerHTML=`<div class="suggest">${h}</div>`;
 }
 function mnMatPick(i){ const m=mnMatResults[i]; if(!m||!mnState) return;
-  mnState.items.push({name:m.name, unit:m.unit||'', qty:1, matched:true}); mnMatClear(); mnUpdateMats(); }
+  mnState.items.push({name:m.name, sku:m.sku||'', unit:m.unit||'', qty:1, matched:true}); mnMatClear(); mnUpdateMats(); }
 function mnMatTyped(){ const q=val('mnMatSearch').trim(); if(!q||!mnState) return;
   mnState.items.push({name:q, unit:'', qty:1, matched:false}); mnMatClear(); mnUpdateMats(); }
 function mnMatClear(){ const i=document.getElementById('mnMatSearch'); if(i){ i.value=''; i.focus(); }
@@ -4073,7 +4140,7 @@ function edMatSuggest(q){
   box.innerHTML=`<div class="suggest">${h}</div>`;
 }
 function edMatPick(i){ const m=edMatResults[i]; if(!m||!edState) return;
-  edState.items.push({name:m.name, unit:m.unit||'', qty:1, matched:true}); edMatClear(); edUpdateMats(); }
+  edState.items.push({name:m.name, sku:m.sku||'', unit:m.unit||'', qty:1, matched:true}); edMatClear(); edUpdateMats(); }
 function edMatTyped(){ const q=val('edMatSearch').trim(); if(!q||!edState) return;
   edState.items.push({name:q, unit:'', qty:1, matched:false}); edMatClear(); edUpdateMats(); }
 function edMatClear(){ const i=document.getElementById('edMatSearch'); if(i){ i.value=''; i.focus(); }
@@ -4504,7 +4571,8 @@ async function openCamera(onShot, label){
     </div>
     <p class="small muted center" style="margin:10px 0 6px">${esc(label||'Fill the dashed box with the page — upright or sideways, whichever fits it better.')}</p>
     <button id="camShot" style="width:100%;padding:20px;font-size:1.15rem" onclick="camShoot()" disabled>📸 Take the picture</button>
-    <button class="secondary" style="width:100%;margin-top:8px" onclick="camClose()">Cancel</button>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="camNative()">📱 Too close? Use the phone's camera (0.5× wide lens)</button>
+    <button class="ghost" style="width:100%;margin-top:6px" onclick="camClose()">Cancel</button>
     <input id="camFallback" type="file" accept="image/*" capture="environment" class="hidden" onchange="camFromFile(this)">`);
   if (S._sheet) S._sheet.onclick=null;   // a stray backdrop tap must not kill the camera
   try{
@@ -4515,7 +4583,13 @@ async function openCamera(onShot, label){
     camStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'} }, audio:false });
     try{
       const tr=camStream.getVideoTracks()[0];
-      if (tr && tr.applyConstraints) await tr.applyConstraints({ width:{ideal:2048}, height:{ideal:2048} });
+      // v52 — ask for the sensor's FULL 4:3 frame. A 16:9 stream is the sensor with the top and
+      // bottom cut off, which is exactly why the page had to be held so far away.
+      if (tr && tr.applyConstraints) await tr.applyConstraints({ width:{ideal:2592}, height:{ideal:1944}, aspectRatio:{ideal:4/3} });
+      // and never start zoomed in: some phones hand the web a stream at 1.x
+      const zc = tr && tr.getCapabilities ? (tr.getCapabilities().zoom||null) : null;
+      const zs = tr && tr.getSettings ? tr.getSettings().zoom : null;
+      if (zc && typeof zc.min==='number' && zs && zs > Math.max(1, zc.min)) await tr.applyConstraints({advanced:[{zoom:Math.max(1, zc.min)}]});
     }catch(e){ /* stays at the default resolution — still readable */ }
     const v=document.getElementById('camVid'); if(!v){ camStop(); return; }
     v.srcObject=camStream; await v.play().catch(()=>{});
@@ -4650,6 +4724,13 @@ async function camLensTo_(idx){
   if(b) b.disabled=false;
 }
 function camStop(){ try{ if(camStream) camStream.getTracks().forEach(t=>t.stop()); }catch(e){} camStream=null; }
+/* v52 — the phone's own camera app. On Android it opens straight into the camera, where the 0.5×
+   ultra-wide lens is one tap — so a letter page fits at about 25–30 cm. The photo comes back here
+   and goes through exactly the same scan as the in-app camera. */
+function camNative(){
+  camStop();
+  const f=document.getElementById('camFallback'); if(f){ f.value=''; f.click(); }
+}
 function camClose(){ camStop(); camOnShot=null; docFinish(); }   // v44: back to the review sheet when the scan came from there
 function camShoot(){
   const v=document.getElementById('camVid'); if(!v||!v.videoWidth) return;
@@ -5172,6 +5253,7 @@ async function loadRequests(){
     S.requests=r.requests||[]; S.pendingRequests=S.requests.length;
     S.reqEstimates=r.estimates||[];   // v46: estimate calls held but not yet turned into jobs
     S.reqBooked=r.booked||[];         // v46: booked jobs + whether the customer has confirmed
+    S.reqCalls=r.calls||[];           // v52: customers to ring because their job was moved
     if(S.tab==='requests') render();
   }catch(e){ S.reqErr=e.message; if(S.tab==='requests') render(); }
   S._reqLoading=false;
@@ -5262,7 +5344,7 @@ function requestsView(){
         <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>
       </div>
     </div>`; }).join('');
-  return `<h2>📨 Requests</h2>
+  return `${callsCardHtml()}<h2>📨 Requests</h2>
     <p class="small muted" style="margin-top:-4px">Website leads waiting to go on the calendar. Nothing is booked until you say so.</p>
     ${S.reqErr?`<div class="banner ot">${esc(S.reqErr)}</div>`:''}
     <div class="card">${list||(S._reqLoading?'<p class="center"><span class="spin"></span></p>':'<p class="muted small">Nothing waiting. 🎉</p>')}</div>
@@ -5274,6 +5356,70 @@ function requestsView(){
       <div class="card">${bk}</div>`:''}`;
 }
 function reqRender(){ if(S.tab==='requests') render(); else go('requests'); }
+/* v52 — CALL THESE CUSTOMERS. Every job that was bumped to make room for another. Paul rings them;
+   "Called ✓" when the new day works, "Reschedule" to put it where the customer wants (that can
+   move other jobs too, and shows him the plan first). */
+function callsCardHtml(){
+  const L=S.reqCalls||[]; if(!L.length) return '';
+  return `<h2>📞 Call these customers</h2>
+    <p class="small muted" style="margin-top:-4px">Their job was moved to make room for another. Ring them to confirm the new day.</p>
+    <div class="card" style="border-color:var(--pending)">${L.map((x,i)=>`<div class="list-item">
+      <div><b>${esc(x.customer||'—')}</b>${x.po?` <span class="muted small">${esc(x.po)}</span>`:''}</div>
+      ${x.job?`<div class="small muted">${esc(x.job)}</div>`:''}
+      <div class="small" style="margin-top:2px">Moved to <b>${esc(fmtDay(x.now))} ${esc(fmtTime(x.now))}</b> <span class="muted">(was ${esc(fmtDay(x.was))} ${esc(fmtTime(x.was))})</span></div>
+      <div class="row" style="margin-top:6px">
+        ${x.phone?`<a class="grow" href="tel:${esc(String(x.phone).replace(/[^0-9+]/g,''))}" style="text-decoration:none"><button class="grow" style="width:100%">📞 ${esc(x.phone)}</button></a>`:'<span class="small" style="color:var(--pending)">No phone on file</span>'}
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button class="secondary grow" onclick="callDone(${i},this)">✓ Called — day works</button>
+        <button class="ghost grow" onclick="openCallMove(${i})">📅 Reschedule</button>
+      </div>
+    </div>`).join('')}</div>`;
+}
+async function callDone(i,btn){
+  const x=(S.reqCalls||[])[i]; if(!x) return;
+  btn.disabled=true;
+  try{ await api('callDone',{id:x.id}); S.reqCalls=S.reqCalls.filter(y=>y.id!==x.id); toast('Done ✓'); render(); }
+  catch(e){ toast(e.message); btn.disabled=false; }
+}
+function openCallMove(i){
+  const x=(S.reqCalls||[])[i]; if(!x) return;
+  const d=new Date(x.now), pad=n=>String(n).padStart(2,'0');
+  sheet(`<h2>Reschedule ${esc(x.customer||'')}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(x.job||'')}${x.po?' · '+esc(x.po):''}<br>Now booked ${esc(fmtDay(x.now))} ${esc(fmtTime(x.now))}</p>
+    <div class="row"><div class="grow"><label>Day the customer wants</label><input id="cmDate" type="date" value="${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}"></div>
+      <div class="grow"><label>Start</label><input id="cmTime" type="time" value="${pad(d.getHours())}:${pad(d.getMinutes())}"></div></div>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="callMoveCheck(${i})">Check what moves</button>
+    <div id="cmPlan" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:12px">
+      <button class="secondary grow" onclick="closeSheet()">Back</button>
+      <button class="grow" id="cmGo" disabled onclick="callMoveGo(${i},this)">Confirm the move</button>
+    </div>`);
+}
+async function callMoveCheck(i){
+  const x=(S.reqCalls||[])[i]; if(!x) return;
+  const date=val('cmDate'), time=val('cmTime'); if(!date||!time) return toast('Pick the day and the time.');
+  const start=new Date(date+'T'+time); if(isNaN(start)) return toast('That day/time did not read properly.');
+  const box=document.getElementById('cmPlan'), go=document.getElementById('cmGo');
+  if(box) box.innerHTML='<p class="small muted">Working out what moves…</p>'; if(go) go.disabled=true;
+  try{
+    const plan=await api('bumpPlan',{start:start.toISOString(), eventId:x.eventId},{timeout:60000});
+    S._cmPlan={ start:start.toISOString(), plan };
+    if(box) box.innerHTML=bumpPlanHtml(plan); if(go) go.disabled=false;
+  }catch(e){ S._cmPlan=null; if(box) box.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+}
+async function callMoveGo(i,btn){
+  const x=(S.reqCalls||[])[i], k=S._cmPlan; if(!x||!k) return;
+  btn.disabled=true; btn.textContent='Moving…';
+  try{
+    const b=await api('bumpApply',{start:k.start, eventId:x.eventId, hash:k.plan.hash, callId:x.id},{timeout:120000});
+    toast('Moved to '+fmtDay(k.start)+' '+fmtTime(k.start)+(b&&b.moved?' · '+b.moved+' more job(s) moved — they are on the call list':''), 7000);
+    S._cmPlan=null; closeSheet(); loadRequests();
+  }catch(e){
+    toast(e.message, 7000); btn.disabled=false; btn.textContent='Confirm the move';
+    if(/changed/i.test(e.message||'')) callMoveCheck(i);        // show the fresh plan
+  }
+}
 function openReqSchedule(i){
   const q=(S.requests||[])[i]; if(!q) return;
   const sug=q.suggested&&!isNaN(new Date(q.suggested))?new Date(q.suggested):new Date(Date.now()+86400000);
@@ -5292,11 +5438,21 @@ function openReqSchedule(i){
       <button type="button" data-t="APPOINTMENT" class="${isAppt?'on':''}" onclick="reqSetType('APPOINTMENT')">Appointment — book the job</button>
     </div>
     <input type="hidden" id="rqType" value="${isAppt?'APPOINTMENT':'ESTIMATE'}">
-    <p class="small muted" id="rqTypeNote" style="margin-top:-4px">${isAppt?'Books the full job. Gets the next PO number and a PO Log row (In progress).':'Blocks a 30-minute review call on the calendar. Goes on the Estimate tab — no PO number yet.'}</p>
+    <p class="small muted" id="rqTypeNote" style="margin-top:-4px">${isAppt?'Books the full job. Gets the next PO number and a PO Log row (In progress).':'Blocks the call on the calendar. Goes on the Estimate tab — no PO number yet.'}</p>
+    <div id="rqCallRow" style="${isAppt?'display:none':''}">
+      <label>How long is the call?</label>
+      <div class="seg" id="rqCallSeg" style="margin-bottom:6px">
+        ${[[15,'15 min'],[30,'30 min'],[60,'1 h'],[120,'2 h']].map(([m,t])=>`<button type="button" data-m="${m}" class="${m===30?'on':''}" onclick="reqSetCall(${m})">${t}</button>`).join('')}
+      </div>
+      <input type="hidden" id="rqCallMin" value="30">
+    </div>
     <label>How long is the job? (hours — the AI guessed ${q.hours} with ${(q.crew||1)>1?((q.crew||1)+' people'):'you on your own'})</label>
-    <input id="rqHours" type="number" step="0.25" min="0.25" value="${q.hours||1}">
-    <div class="row"><div class="grow"><label>Date</label><input id="rqDate" type="date" value="${d}"></div>
-      <div class="grow"><label>Start</label><input id="rqTime" type="time" value="${t}"></div></div>
+    <input id="rqHours" type="number" step="0.25" min="0.25" value="${q.hours||1}" oninput="reqSlotsSoon()">
+    <label>Open times <span class="muted">(tap one — or set your own below)</span></label>
+    <div id="rqOpen" class="row" style="flex-wrap:wrap;gap:6px"><span class="small muted">Reading the calendar…</span></div>
+    <p class="small" id="rqSlotNote" style="margin:6px 0 0"></p>
+    <div class="row"><div class="grow"><label>Date</label><input id="rqDate" type="date" value="${d}" onchange="reqSlotsLoad(true)"></div>
+      <div class="grow"><label>Start</label><input id="rqTime" type="time" value="${t}" onchange="reqSlotsLoad(true)"></div></div>
     <label>Who's going?</label>
     <div>${crew.map(e=>`<div class="perm"><input type="checkbox" id="rq_${esc(e.email)}"><label for="rq_${esc(e.email)}" style="margin:0">${esc(e.name||e.email)}</label></div>`).join('')||'<p class="small muted">No active crew.</p>'}</div>
     <div class="perm"><input type="checkbox" id="rqNotify" checked><label for="rqNotify" style="margin:0">Email the crew their assignment</label></div>
@@ -5305,6 +5461,60 @@ function openReqSchedule(i){
       <button class="secondary grow" onclick="closeSheetDom();render()">Back</button>
       <button class="grow" id="rqGo" onclick="reqSchedule(${i},this)">📅 Put it on the calendar</button>
     </div>`);
+  reqSlotsLoad(true);
+}
+/* v52 — OPEN TIMES. Reads Paul's calendar for real gaps that fit what is being booked: an
+   estimate call of the chosen length (15 min – 2 h, no travel padding, never split by lunch) or
+   the whole job (30 min travel either side). If the time in the boxes does not fit — the call got
+   longer, or the suggested slot is taken — it moves to the next open time and says so, before
+   anything is sent. The server checks again when you book. */
+let rqSlotsTimer=null, rqSlotsSeq=0;
+function reqSetCall(m){
+  const seg=document.getElementById('rqCallSeg'); if(seg) seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',Number(b.dataset.m)===m));
+  const h=document.getElementById('rqCallMin'); if(h) h.value=m;
+  reqSlotsLoad(true);
+}
+function reqSlotsSoon(){ clearTimeout(rqSlotsTimer); rqSlotsTimer=setTimeout(()=>reqSlotsLoad(true), 700); }
+function reqSlotMinutes(){
+  const appt=(val('rqType')||'ESTIMATE')==='APPOINTMENT';
+  return appt ? Math.round((Number(val('rqHours'))||1)*60) : (Number(val('rqCallMin'))||30);
+}
+async function reqSlotsLoad(autoMove){
+  const box=document.getElementById('rqOpen'), note=document.getElementById('rqSlotNote'); if(!box) return;
+  const appt=(val('rqType')||'ESTIMATE')==='APPOINTMENT', mins=reqSlotMinutes();
+  if(appt && mins>540){ box.innerHTML='<span class="small muted">Longer than one working day — pick the first day by hand.</span>'; if(note) note.textContent=''; return; }
+  const date=val('rqDate'), time=val('rqTime'); const at=(date&&time)?new Date(date+'T'+time):null;
+  const seq=++rqSlotsSeq;
+  box.innerHTML='<span class="small muted">Reading the calendar…</span>';
+  try{
+    const r=await api('openSlots',{minutes:mins, kind:appt?'job':'call', count:6, at:at&&!isNaN(at)?at.toISOString():''});
+    if(seq!==rqSlotsSeq || !document.getElementById('rqOpen')) return;       // a newer request won
+    S._rqSlots=r.slots||[];
+    box.innerHTML = S._rqSlots.length ? S._rqSlots.map((x,k)=>`<span class="chip" data-k="${k}" onclick="reqPickSlot(${k})">${esc(fmtDay(x.start))} ${esc(fmtTime(x.start))}</span>`).join('')
+      : '<span class="small muted">Nothing open that long in the next 30 days.</span>';
+    const len = appt ? (mins/60)+' h job' : (mins<60?mins+' min':(mins/60)+' h')+' call';
+    if(r.atFits===true){ if(note){ note.style.color='var(--good)'; note.textContent='✓ '+fmtDay(at)+' '+fmtTime(at)+' is free for the '+len+'.'; } reqMarkSlot(at); }
+    else if(r.atFits===false){
+      if(autoMove!==false && S._rqSlots.length){
+        const first=S._rqSlots[0];
+        reqPickSlot(0, true);
+        if(note){ note.style.color='var(--pending)'; note.textContent='⚠️ '+fmtDay(at)+' '+fmtTime(at)+' does not work ('+r.atWhy+') — moved to '+fmtDay(first.start)+' '+fmtTime(first.start)+'. Check it before booking.'; }
+      } else if(note){ note.style.color='var(--bad)'; note.textContent='✗ '+fmtDay(at)+' '+fmtTime(at)+' does not work: '+r.atWhy+'.'; }
+    }
+  }catch(e){ if(seq===rqSlotsSeq) box.innerHTML='<span class="small" style="color:var(--bad)">Could not read the calendar — '+esc(e.message)+'</span>'; }
+}
+function reqPickSlot(k, quiet){
+  const x=(S._rqSlots||[])[k]; if(!x) return;
+  const d=new Date(x.start), pad=n=>String(n).padStart(2,'0');
+  const di=document.getElementById('rqDate'), ti=document.getElementById('rqTime');
+  if(di) di.value=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  if(ti) ti.value=`${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  reqMarkSlot(d);
+  if(!quiet){ const note=document.getElementById('rqSlotNote'); if(note){ note.style.color='var(--good)'; note.textContent='✓ '+fmtDay(x.start)+' '+fmtTime(x.start)+'–'+fmtTime(x.end)+' is open.'; } }
+}
+function reqMarkSlot(d){
+  document.querySelectorAll('#rqOpen .chip').forEach(el=>{ const x=(S._rqSlots||[])[Number(el.dataset.k)];
+    el.classList.toggle('sel', !!x && d && new Date(x.start).getTime()===new Date(d).getTime()); });
 }
 /* v46: Paul can flip a lead between Estimate call and Appointment before scheduling it — the
    form's answer is often not what the customer meant. The choice is sent with requestSchedule
@@ -5360,10 +5570,12 @@ function reqSetType(t){
   seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
   const h=document.getElementById('rqType'); if(h) h.value=t;
   const cr=document.getElementById('rqCustRow'); if(cr) cr.style.display = t==='APPOINTMENT' ? '' : 'none';
+  const cl=document.getElementById('rqCallRow'); if(cl) cl.style.display = t==='APPOINTMENT' ? 'none' : '';
   const n=document.getElementById('rqTypeNote');
   if(n) n.textContent = t==='APPOINTMENT'
     ? 'Books the full job. Gets the next PO number and a PO Log row (In progress).'
-    : 'Blocks a 30-minute review call on the calendar. Goes on the Estimate tab — no PO number yet.';
+    : 'Blocks the call on the calendar. Goes on the Estimate tab — no PO number yet.';
+  if(document.getElementById('rqOpen')) reqSlotsLoad(true);
 }
 async function reqSchedule(i,btn){
   const q=(S.requests||[])[i]; if(!q) return;
@@ -5379,14 +5591,15 @@ async function reqSchedule(i,btn){
   try{
     // Calendar event + crew email + PO workbook write + customer email in one call — well past
     // the 30 s default, and an abort here looks like a failure on a booking that actually ran.
-    const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify, type, notifyCustomer, crew:assign.length||q.crew||1},{timeout:120000});
+    const callMinutes=Number(val('rqCallMin'))||30;
+    const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify, type, notifyCustomer, callMinutes, crew:assign.length||q.crew||1},{timeout:120000});
     S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
     // v23: approving also writes the PO Log workbook — an APPOINTMENT burns the next PO number,
     // an ESTIMATE files a row on the Estimate tab. Say which, because the PO number is the one
     // thing Paul needs to carry away from this screen, and a silent failure there is invisible.
     let extra = assign.length ? ' — crew notified' : '';
     if (r && r.po) extra = ' — ' + r.po + (assign.length ? ', crew notified' : '');
-    else if (type==='ESTIMATE') extra = ' — 30-min call' + (assign.length ? ', crew notified' : '');
+    else if (type==='ESTIMATE') { const cm=Number(val('rqCallMin'))||30; extra = ' — '+(cm<60?cm+'-min':(cm/60)+'-h')+' call' + (assign.length ? ', crew notified' : ''); }
     toast('On the calendar ✓' + extra);
     if (r && r.poNote && /FAILED|skipped/i.test(r.poNote)) setTimeout(()=>toast('PO Log not updated: '+r.poNote), 2600);
     if (r && r.custNote && /NOT notified|unavailable/i.test(r.custNote)) setTimeout(()=>toast(r.custNote), 2600);
@@ -5397,7 +5610,7 @@ async function reqSchedule(i,btn){
     // The server may have finished after we stopped waiting. Say so rather than implying it failed.
     if (/already on the calendar/i.test(e.message||'')) { toast('Already booked ✓'); closeSheetDom(); loadRequests(); render(); return; }
     if (e && e.kind === 'network') toast('The booking is taking a while. Pull to refresh in a moment — it may well have gone through.');
-    else toast(e.message);
+    else { toast(e.message, 7000); if(/taken/i.test(e.message||'')) reqSlotsLoad(true); }   // v52: offer the open times again
     btn.disabled=false; btn.textContent='📅 Put it on the calendar';
   }
 }
