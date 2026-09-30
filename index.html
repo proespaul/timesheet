@@ -2052,6 +2052,11 @@ function jobsRowsHtml(){
   let list=d.jobs.filter(j=>!q || j.name.toLowerCase().includes(q) || (j.po||'').toLowerCase().includes(q));
   const arch=list.filter(j=>j.po&&poArchived(j.status));
   if(!S.jobsShowArch) list=list.filter(j=>!(j.po&&poArchived(j.status)));
+  // v54 - internal company time (PRO, PCW...) always sits at the top, in the company order
+  const coOrder=(S.companies||[]).map(c=>String(c).toLowerCase());
+  const coRank=j=>{ if(j.po) return -1; return coOrder.indexOf(String(j.name||'').trim().toLowerCase()); };
+  list=list.map((j,i)=>({j,i})).sort((x,y)=>{ const a=coRank(x.j), b=coRank(y.j);
+    if(a>=0||b>=0){ if(a<0) return 1; if(b<0) return -1; return a-b; } return x.i-y.i; }).map(x=>x.j);
   const archToggle = arch.length
     ? `<button class="ghost" style="width:100%;margin-top:6px" onclick="S.jobsShowArch=!S.jobsShowArch;jobsFilter(S.jobsQuery||'')">${S.jobsShowArch?'▾ Hide':'▸ Show'} ${arch.length} archived job${arch.length===1?'':'s'} (invoiced/closed)</button>` : '';
   let h=list.map(j=>{ const k=reg(j); return `<div class="list-item row between" style="cursor:pointer" onclick="openJobDetail('${k}')">
