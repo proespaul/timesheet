@@ -2017,7 +2017,6 @@ function openMore(){
   const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
   const items=[['jha','🦺','JHA'],['hours','📊','Hours']];
   if(canApprove()) items.push(['entries','📋','Entries']);   // off the main bar to make room for Requests
-  if(canTeam) items.push(['jobs','🏗️','Jobs']);
   if(canTeam) items.push(['team','👥','Team']);
   if(isAdmin) items.push(['admin','⚙️','Admin']);
   sheet(`<h2>More</h2>
@@ -2052,11 +2051,9 @@ function jobsRowsHtml(){
   let list=d.jobs.filter(j=>!q || j.name.toLowerCase().includes(q) || (j.po||'').toLowerCase().includes(q));
   const arch=list.filter(j=>j.po&&poArchived(j.status));
   if(!S.jobsShowArch) list=list.filter(j=>!(j.po&&poArchived(j.status)));
-  // v54 - internal company time (PRO, PCW...) always sits at the top, in the company order
-  const coOrder=(S.companies||[]).map(c=>String(c).toLowerCase());
-  const coRank=j=>{ if(j.po) return -1; return coOrder.indexOf(String(j.name||'').trim().toLowerCase()); };
-  list=list.map((j,i)=>({j,i})).sort((x,y)=>{ const a=coRank(x.j), b=coRank(y.j);
-    if(a>=0||b>=0){ if(a<0) return 1; if(b<0) return -1; return a-b; } return x.i-y.i; }).map(x=>x.j);
+  // v55 - internal company time (PRO, PCW, GNG...) is not a job: not listed here at all
+  const coSet=new Set((S.companies||[]).map(c=>String(c).trim().toLowerCase()));
+  list=list.filter(j=>j.po || !coSet.has(String(j.name||'').trim().toLowerCase()));
   const archToggle = arch.length
     ? `<button class="ghost" style="width:100%;margin-top:6px" onclick="S.jobsShowArch=!S.jobsShowArch;jobsFilter(S.jobsQuery||'')">${S.jobsShowArch?'▾ Hide':'▸ Show'} ${arch.length} archived job${arch.length===1?'':'s'} (invoiced/closed)</button>` : '';
   let h=list.map(j=>{ const k=reg(j); return `<div class="list-item row between" style="cursor:pointer" onclick="openJobDetail('${k}')">
@@ -2098,9 +2095,9 @@ function openJobDetail(k){
     </div>`).join('')||'<p class="muted small">No breakdown available.</p>'}
     ${S.me&&S.me.role==='admin'?`
       <div class="small muted" style="margin-top:12px">Invoicing — two steps</div>
-      <button style="width:100%;margin-top:4px" onclick="reqInvoice('${pk}','initial',this)">🧾 Build Initial Draft</button>
+      <button style="width:100%;margin-top:4px" onclick="openInvoiceList('${pk}')">🧾 Build Initial Draft</button>
       <button class="secondary" style="width:100%;margin-top:6px" onclick="reqInvoice('${pk}','final',this)">✅ Build Final Draft</button>
-      <p class="small muted" style="margin:6px 0 0">Initial lists every part at cost, for you to correct in QuickBooks. Final rolls them up and applies the markup. Neither is ever sent to the customer.</p>`:''}
+      <p class="small muted" style="margin:6px 0 0">Initial: you confirm the quantity of each part first, then Claude bills that list at cost and adds the hours. Final rolls them up and applies the markup. Neither is ever sent to the customer.</p>`:''}
     <button class="secondary" style="width:100%;margin-top:${S.me&&S.me.role==='admin'?'6':'10'}px" onclick="openJobEntries('${pk}')">📆 Day-by-day breakdown</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobPOs('${pk}')">📦 Materials &amp; supplier POs</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobPhotos('${pk}')">📷 View job photos</button>
@@ -2211,6 +2208,106 @@ async function reqInvoice(pk,stage,btn){
     // invite a second tap (the build checks QuickBooks first, so a repeat is harmless anyway).
     if (e && e.kind === 'network'){ btn.textContent='✓ Probably sent'; toast('The office was slow to answer, but the request has most likely gone through — watch for the "Initial draft ready" email in a few minutes before tapping again.', 8000); return; }
     toast(e.message); btn.disabled=false; btn.textContent=INV_LABEL[stage]||'Build the invoice'; }
+}
+
+/* v55 — Build Initial Draft: Paul confirms the parts first.
+   Every line from the job's supplier POs (same part at the same price merged; credit notes net
+   off), each with an editable quantity. 0 = not billed. "Add a part" for anything bought
+   elsewhere. Save → the list is stored on the Invoice lists tab and Claude builds the draft from
+   it, then fetches the hours. If a list was saved before, its quantities come back pre-filled. */
+let invList=null;
+async function openInvoiceList(pk){
+  const ref=dereg(pk); if(!ref) return;
+  if(!S.online) return toast('You need signal to load the parts.');
+  sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center" style="margin:22px 0"><span class="spin"></span> Loading the POs…</p>`);
+  const mine=S._sheet;
+  try{
+    const [m,saved]=await Promise.all([
+      apiBg('jobMaterials',{jobSite:ref.jobSite, poNumber:ref.po||''}),
+      apiBg('invoiceMaterials',{po:ref.po||'', jobSite:ref.jobSite}).catch(()=>null)]);
+    if(S._sheet!==mine) return;
+    const byKey={}, order=[];
+    (m.bought||[]).forEach(b=>{
+      const unit=b.price!=null?Math.round(Number(b.price)*100)/100:null;
+      const k=(String(b.sku||'').trim().toUpperCase()||String(b.desc||'').trim().toLowerCase())+'|'+(unit==null?'':unit);
+      if(!byKey[k]){ byKey[k]={sku:b.sku||'', desc:b.desc||'', unit, bought:0, supplier:b.supplier||'', invoice:String(b.invoice||''), src:[]}; order.push(k); }
+      const it=byKey[k]; it.bought+=Number(b.qty)||0;
+      const inv=(b.supplier||'')+' '+(b.invoice||''); if(!it.src.includes(inv)) it.src.push(inv);
+    });
+    let items=order.map(k=>byKey[k]).filter(it=>Math.round(it.bought*1000)>0)
+      .map(it=>({...it, bought:Math.round(it.bought*1000)/1000, qty:Math.round(it.bought*1000)/1000}));
+    // pre-fill from an earlier save: same part + price keeps Paul's quantity; his extra lines come back too
+    if(saved&&saved.found){
+      const sk=it=>(String(it.sku||'').trim().toUpperCase()||String(it.desc||'').trim().toLowerCase())+'|'+(it.unit==null?'':Math.round(it.unit*100)/100);
+      const prev={}; (saved.items||[]).forEach(x=>prev[sk(x)]=x);
+      items.forEach(it=>{ const x=prev[sk(it)]; it.qty = x ? x.qty : 0; if(x) x._used=1; });
+      (saved.items||[]).filter(x=>!x._used&&x.bought==null).forEach(x=>items.push({sku:x.sku||'',desc:x.desc,unit:x.unit,bought:null,qty:x.qty,supplier:'',invoice:'',src:[],added:true}));
+    }
+    invList={ref, items, savedAt: saved&&saved.found?saved.savedAt:''};
+    renderInvoiceList();
+  }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
+}
+function invListRead(){
+  if(!invList) return;
+  invList.items.forEach((it,i)=>{
+    const q=document.getElementById('ilq'+i); if(q) it.qty=Math.max(0,Number(q.value)||0);
+    if(it.added){ const d=document.getElementById('ild'+i), u=document.getElementById('ilu'+i);
+      if(d) it.desc=d.value.trim(); if(u) it.unit=u.value===''?null:Math.max(0,Number(u.value)||0); }
+  });
+}
+function invListTotals(){
+  invListRead(); let t=0, n=0;
+  invList.items.forEach(it=>{ if(it.qty>0&&it.desc){ n++; if(it.unit!=null) t+=it.unit*it.qty; } });
+  const el=document.getElementById('ilTot'); if(el) el.textContent=`${n} part line${n===1?'':'s'} · $${t.toFixed(2)} at cost`;
+  invList.items.forEach((it,i)=>{ const c=document.getElementById('ilc'+i); if(c) c.textContent=it.unit!=null?'$'+(it.unit*it.qty).toFixed(2):'—'; });
+}
+function renderInvoiceList(){
+  const L=invList; if(!L) return;
+  const rows=L.items.map((it,i)=>`<div class="list-item" style="padding:8px 0">
+      ${it.added
+        ? `<input id="ild${i}" placeholder="Part description" value="${esc(it.desc||'')}" oninput="invListTotals()" style="margin:0 0 6px">`
+        : `<div><b>${esc(it.desc)}</b></div>
+           <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}`:''}</div>`}
+      <div class="row" style="align-items:center;gap:8px;margin-top:4px">
+        <button class="secondary" style="width:44px;padding:8px 0" onclick="invStep(${i},-1)">−</button>
+        <input id="ilq${i}" type="number" min="0" step="any" inputmode="decimal" value="${it.qty}" oninput="invListTotals()" style="width:84px;margin:0;text-align:center">
+        <button class="secondary" style="width:44px;padding:8px 0" onclick="invStep(${i},1)">+</button>
+        ${it.added
+          ? `<span class="small muted">@ $</span><input id="ilu${i}" type="number" min="0" step="0.01" inputmode="decimal" placeholder="cost" value="${it.unit==null?'':it.unit}" oninput="invListTotals()" style="width:84px;margin:0">`
+          : `<span class="small muted">@ ${it.unit!=null?'$'+it.unit.toFixed(2):'no cost'}</span>`}
+        <span class="grow" style="text-align:right;font-weight:600" id="ilc${i}"></span>
+      </div></div>`).join('');
+  sheet(`<h2 style="margin-bottom:2px">${esc(L.ref.jobSite)} — parts to bill</h2>
+    <p class="small muted" style="margin-top:0">${L.ref.po?('PO '+esc(L.ref.po)+' · '):''}Set how many of each part to put on the invoice. 0 = leave it off. Claude bills exactly this list at cost, then adds the hours.${L.savedAt?' <b>Pre-filled from your last save.</b>':''}</p>
+    ${rows||'<p class="muted small">No supplier POs are filed against this job. Add parts below, or save with none for a labour-only draft.</p>'}
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="invAdd()">＋ Add a part</button>
+    <div class="card row between" style="margin:10px 0"><b>Parts</b><b id="ilTot"></b></div>
+    <div class="row" style="margin-top:6px">
+      <button class="secondary grow" onclick="invList=null;closeSheet()">Cancel</button>
+      <button class="grow" id="ilGo" onclick="invListSave()">Save &amp; build draft</button>
+    </div>`);
+  invListTotals();
+}
+function invStep(i,d){ invListRead(); const it=invList.items[i]; it.qty=Math.max(0,Math.round((Number(it.qty)+d)*1000)/1000);
+  const q=document.getElementById('ilq'+i); if(q) q.value=it.qty; invListTotals(); }
+function invAdd(){ invListRead(); invList.items.push({sku:'',desc:'',unit:null,bought:null,qty:1,supplier:'',invoice:'',src:[],added:true}); renderInvoiceList();
+  const i=invList.items.length-1; setTimeout(()=>{ const d=document.getElementById('ild'+i); if(d) d.focus(); },50); }
+async function invListSave(){
+  invListRead();
+  const L=invList, btn=document.getElementById('ilGo');
+  const items=L.items.filter(it=>it.desc).map(it=>({sku:it.sku,desc:it.desc,qty:it.qty,unit:it.unit,supplier:it.supplier,invoice:it.invoice,bought:it.bought}));
+  if(!items.some(it=>it.qty>0) && !confirm('No parts on the list — build a labour-only draft?')) return;
+  btn.disabled=true; btn.textContent='Sending…';
+  try{
+    const r=await api('invoiceMaterialsSave',{po:L.ref.po||'', jobSite:L.ref.jobSite, items},{timeout:90000});
+    invList=null; closeSheet();
+    toast(r&&r.fired
+      ? `Saved ${r.lines} part line(s) ($${Number(r.partsCost||0).toFixed(2)} at cost). Claude started on it — the draft should be in QuickBooks in about 5–10 minutes.`
+      : `Saved ${r.lines} part line(s). Initial draft requested.` + (r&&r.note?' ('+r.note+')':''), 8000);
+  }catch(e){
+    if (e && e.kind === 'network'){ invList=null; closeSheet(); toast('The office was slow to answer, but the list has most likely been saved and sent — watch for the "Initial draft ready" email before trying again.', 8000); return; }
+    toast(e.message); btn.disabled=false; btn.textContent='Save & build draft';
+  }
 }
 
 /* Day-by-day drill-down: every shift on the job — when, who, how long, status. */
