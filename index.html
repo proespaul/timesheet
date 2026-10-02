@@ -1461,6 +1461,7 @@ function applyBootstrap(d){
   S.employees = d.employees||[];
   if (d.pendingRequests !== undefined) S.pendingRequests = d.pendingRequests;
   setTimeout(()=>{ forgotNudge(); reqNudge(); }, 900);   // after the first paint, one at a time
+  setTimeout(()=>{ if(canApprove()) loadApprovals(); }, 1500);   // v56 — badge counts approvals too
   if (d.pending !== undefined) S.pending = d.pending; // pending now loads on demand (Admin tab)
 }
 /* Write-through: keep the cached bootstrap in step with optimistic local state, so
@@ -1996,7 +1997,7 @@ function tabBar(){
   const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
   const t=(id,ic,label)=>`<button class="${S.tab===id?'active':''}" onclick="go('${id}')"><span class="ic">${ic}</span>${label}</button>`;
   const cal=`<span class="calic"><span class="calic-top"></span><span class="calic-num">${new Date().getDate()}</span></span>`;
-  const pend=(S.pendingRequests||0);
+  const pend=(S.pendingRequests||0)+apvCount();
   const canReq=canApprove();
   // Paul's own bar (Sept 2026): the four things he actually works from, then More.
   // Crew get Entries in its place — they have no Requests or Jobs to look at.
@@ -4031,8 +4032,14 @@ function openManual(){
   loadMaterials();
   loadCustomers(true).then(()=>{ if (mnState) mnJobFilter(val('mnJobSearch')); }); // fresh open-PO list
   const isAdmin = S.me && S.me.role==='admin';
+  // v56 — an admin can add time for anyone. Defaults to themself (or to whoever was passed in).
+  mnState.forEmail = (isAdmin && openManual._for) || '';
+  openManual._for = '';
+  if (isAdmin && !(S.employees&&S.employees.length) && S.online)
+    api('listEmployees').then(r=>{ S.employees=r.employees||[]; const el=document.getElementById('mnFor'); if(el) el.outerHTML=mnForSelect(); }).catch(()=>{});
   sheet(`<h2>Add time</h2>
-    <p class="small muted">${isAdmin?'Your own entries are saved as approved.':'Flagged for admin approval. You can edit it until it’s approved.'}</p>
+    ${isAdmin?`<label style="margin-top:0">For</label>${mnForSelect()}`:''}
+    <p class="small muted">${isAdmin?'Entries you add are saved as approved. Adding for someone else emails them.':'Flagged for admin approval. You can edit it until it’s approved.'}</p>
     <div class="card" style="margin:10px 0">
       <div class="row between">
         <div><b id="mnJobName">Pick a job</b> <span class="small muted" id="mnJobPo"></span></div>
@@ -4158,7 +4165,10 @@ async function submitManual(){
   if(!(hrs>0)){ toast('Hours must be more than 0'); return; }
   if(!st.jobSite && !st.company){ toast('Pick a job or company first'); return; }
   const isAdmin = S.me && S.me.role==='admin';
+  const forEmail = isAdmin ? (val('mnFor')||'') : '';
+  const forOther = !!forEmail && forEmail!==S.me.email;
   const base={ clockIn:inV, clockOut:outV, company:st.company, jobSite:st.jobSite, poNumber:st.poNumber, notes:val('mNotes'), breakMin:brk };
+  if (forOther) base.employeeEmail = forEmail;
   const mats=st.items.slice();
   mnState=null; closeSheet();
   let done=0, queued=0, firstId='', err='';
@@ -4172,8 +4182,9 @@ async function submitManual(){
   if (mats.length && (done||queued)) apiMutate('logMaterials',{ entryId:firstId, jobSite:st.jobSite||st.company||'', poNumber:st.poNumber||'', items:mats });
   await refresh(true);
   const n=done+queued;
-  if (err) toast(`${n} of ${days.length} saved — ${err}`, 5000);
-  else toast(`${n} ${n===1?'day':'days'} ${isAdmin?'saved':'submitted for approval'}${queued?' (will sync)':''}`);
+  const who = forOther ? ' for '+empName(forEmail) : '';
+  if (err) toast(`${n} of ${days.length} saved${who} — ${err}`, 5000);
+  else toast(`${n} ${n===1?'day':'days'} ${isAdmin?'saved':'submitted for approval'}${who}${queued?' (will sync)':''}`);
 }
 
 /* ---- Edit entry (after submission too — mistakes caught later) ----
@@ -4287,6 +4298,7 @@ async function submitEdit(){
     toast(r&&r.reflagged ? 'Saved — sent back for approval' : (r&&r.queued ? 'Saved (will sync)' : 'Saved'));
   }catch(err){ toast(err.message); }
   refresh(true);
+  if (canApprove()) loadApprovals();               // v56 — an edited pending entry shows its new hours
 }
 
 /* ---- Media upload ---- */
@@ -4472,7 +4484,11 @@ async function removeEmp(email){ closeSheet(); try{ await api('removeEmployee',{
 async function viewEmployee(email){
   try{ const r=await api('listEntries',{email});
     const rows=(r.entries||[]).slice(0,60).map(e=>entryRow(e,email)).join('')||'<p class="muted">No entries.</p>';
-    sheet(`<h2>${esc(email)}</h2><div>${rows}</div><button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+    const isAdmin=S.me&&S.me.role==='admin';
+    sheet(`<h2>${esc(empName(email))}</h2>
+      ${isAdmin?`<p class="small muted" style="margin-top:-4px">Tap Edit on any entry to change its times, break or job. Your changes keep their approval.</p>
+        <button class="secondary" style="width:100%;margin-bottom:8px" onclick="closeSheetDom();openManualFor('${esc(email)}')">＋ Add time for ${esc(empName(email).split(' ')[0])}</button>`:''}
+      <div>${rows}</div><button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
   }catch(e){toast(e.message);}
 }
 
@@ -5356,6 +5372,7 @@ async function runStatPay(btn){
  * the AI's hours, picks the slot, assigns the crew — and only then does it hit the calendar. */
 async function loadRequests(){
   if(S._reqLoading||!S.online) return; S._reqLoading=true;
+  if(canApprove()) loadApprovals();                 // v56 — hours / time off / allowances waiting
   try{
     const r=await apiBg('requestList',{});
     S.requests=r.requests||[]; S.pendingRequests=S.requests.length;
@@ -5452,7 +5469,7 @@ function requestsView(){
         <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>
       </div>
     </div>`; }).join('');
-  return `${callsCardHtml()}<h2>📨 Requests</h2>
+  return `${approvalsHtml()}${callsCardHtml()}<h2>📨 Requests</h2>
     <p class="small muted" style="margin-top:-4px">Website leads waiting to go on the calendar. Nothing is booked until you say so.</p>
     ${S.reqErr?`<div class="banner ot">${esc(S.reqErr)}</div>`:''}
     <div class="card">${list||(S._reqLoading?'<p class="center"><span class="spin"></span></p>':'<p class="muted small">Nothing waiting. 🎉</p>')}</div>
@@ -5464,6 +5481,122 @@ function requestsView(){
       <div class="card">${bk}</div>`:''}`;
 }
 function reqRender(){ if(S.tab==='requests') render(); else go('requests'); }
+
+/* v56 — EVERYTHING THAT NEEDS AN ADMIN'S OK, at the top of Requests: hours (new manual entries,
+   and entries changed after approval), time-off requests, allowance claims. Same decisions as
+   before — they used to live in Admin and Schedule, which still work too. */
+function apvCount(){ const a=S.approvals; return a?((a.entries||[]).length+(a.timeOff||[]).length+(a.allowances||[]).length):0; }
+async function loadApprovals(){
+  if(S._apvLoading||!S.online||!canApprove()) return; S._apvLoading=true;
+  try{ S.approvals=await apiBg('approvalsAll',{}); S.pending=S.approvals.entries||[]; }
+  catch(e){ /* older script: keep whatever we had */ }
+  S._apvLoading=false;
+  if(S.tab==='requests'||S.tab==='admin') render(); else { const tb=document.querySelector('.tabbar'); if(tb) tb.outerHTML=tabBar(); }
+}
+function empName(email){ const e=(S.employees||[]).find(x=>lc(x.email)===lc(email)); return (e&&e.name)||String(email||'').split('@')[0]; }
+function lc(x){ return String(x||'').trim().toLowerCase(); }
+function approvalsHtml(){
+  if(!canApprove()) return '';
+  const a=S.approvals||{}, isAdmin=S.me&&S.me.role==='admin';
+  const ents=a.entries||[], tos=a.timeOff||[], als=a.allowances||[];
+  const n=ents.length+tos.length+als.length;
+  const hrs=ents.map(e=>{ const k=reg({e, employeeEmail:e._employee});
+    const changed = e['Approved By']==='' && e.Source!=='manual' && e['Last Edited At'] && e.ClockOut && (new Date(e['Last Edited At'])-new Date(e.ClockOut)>5*60000);
+    const tag = e.Source==='manual' ? 'Time added by hand' : (changed ? 'Hours changed' : 'Hours to approve');
+    return `<div class="list-item">
+      <div class="row between"><div><b>${esc(e._name||e._employee)}</b> <span class="pill pending">${tag}</span></div><span class="small muted">${fmtDay(e.ClockIn||e.Date)}</span></div>
+      <div class="small">${esc(e['Customer/Job Site']||e.Company||'—')}${e['PO#']?` <span class="muted">PO ${esc(e['PO#'])}</span>`:''}</div>
+      <div class="small muted">${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)} · <b style="color:var(--text)">${e.Hours||'?'} hrs</b>${Number(e['Break Hrs'])?` (${(Number(e['Break Hrs'])*60).toFixed(0)} min break)`:''}</div>
+      ${gpsBadge(e)}
+      ${e.Notes?`<div class="small">${esc(e.Notes)}</div>`:''}
+      ${changed?`<div class="small muted">✎ changed ${fmtDay(e['Last Edited At'])} ${fmtTime(e['Last Edited At'])} by ${esc(String(e['Last Edited By']||'').split('@')[0])}</div>`:''}
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="apvEntry('${k}',true,this)">Approve</button>
+        <button class="secondary" onclick="openEditEntry('${k}')">Edit</button>
+        <button class="danger" onclick="apvEntry('${k}',false,this)">Reject</button>
+      </div></div>`; }).join('');
+  const off=tos.map(t=>{ const k=reg(t); return `<div class="list-item">
+      <div class="row between"><div><b>${esc(t.name)}</b> <span class="pill pending">Time off</span></div></div>
+      <div class="small">${esc(t.start)}${t.end!==t.start?(' → '+esc(t.end)):''}</div>
+      ${t.reason?`<div class="small muted">${esc(t.reason)}</div>`:''}
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="apvTimeOff('${k}',true,this)">Approve</button>
+        <button class="secondary grow" onclick="apvTimeOff('${k}',false,this)">Deny</button></div></div>`; }).join('');
+  const alw=als.map(c=>{ const k=reg(c); return `<div class="list-item">
+      <div class="row between"><div><b>${esc(c.name)}</b> <span class="pill pending">${esc(c.typeName)}</span></div><b>$${Number(c.amount).toFixed(2)}</b></div>
+      <div class="small">${esc(c.date)}${c.km?` · ${c.km} km`:''}</div>
+      ${c.note?`<div class="small muted">${esc(c.note)}</div>`:''}
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="apvAllow('${k}',true,this)">Approve</button>
+        <button class="secondary grow" onclick="apvAllow('${k}',false,this)">Deny</button></div></div>`; }).join('');
+  return `<h2>✅ Needs your OK${n?` <span class="pill pending">${n}</span>`:''}</h2>
+    <p class="small muted" style="margin-top:-4px">Hours, time off and allowances waiting for an admin.</p>
+    <div class="card">
+      ${hrs?`<h3 style="margin-top:0">Hours</h3>${hrs}`:''}
+      ${off?`<h3>Time off</h3>${off}`:''}
+      ${alw?`<h3>Allowances</h3>${alw}`:''}
+      ${n?'':(S.approvals?'<p class="muted small">Nothing waiting. 🎉</p>':'<p class="center"><span class="spin"></span></p>')}
+      ${isAdmin?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openHoursFor()">✏️ Add or change someone's hours</button>`:''}
+    </div>`;
+}
+function apvDrop(kind, id){ const a=S.approvals; if(!a) return;
+  if(kind==='e') a.entries=(a.entries||[]).filter(x=>x.EntryID!==id);
+  if(kind==='t') a.timeOff=(a.timeOff||[]).filter(x=>x.id!==id);
+  if(kind==='a') a.allowances=(a.allowances||[]).filter(x=>x.id!==id);
+  S.pending=a.entries||[]; render(); }
+async function apvEntry(k,ok,btn){
+  const ref=dereg(k); if(!ref) return; const e=ref.e, email=ref.employeeEmail;
+  if(!S.online) return toast('You need signal.');
+  if(!ok){ apvRejectAsk(email,e.EntryID); return; }
+  btn.disabled=true;
+  try{ await api('approveEntry',{employeeEmail:email,entryId:e.EntryID}); apvDrop('e',e.EntryID); toast('Approved — '+(e._name||email)); }
+  catch(err){ toast(err.message); btn.disabled=false; }
+}
+function apvRejectAsk(email,entryId){
+  sheet(`<h2>Reject entry</h2><label>Reason (shown to the employee)</label>
+    <textarea id="rjNote" rows="3" placeholder="Why is this rejected?"></textarea>
+    <div class="row" style="margin-top:12px"><button class="secondary grow" onclick="closeSheet()">Cancel</button>
+    <button class="grow danger" onclick="apvRejectGo('${esc(email)}','${esc(entryId)}')">Reject</button></div>`);
+}
+async function apvRejectGo(email,entryId){ const note=val('rjNote'); closeSheet();
+  try{ await api('rejectEntry',{employeeEmail:email,entryId,note}); apvDrop('e',entryId); toast('Rejected'); }
+  catch(err){ toast(err.message); } }
+async function apvTimeOff(k,ok,btn){
+  const t=dereg(k); if(!t) return; if(!S.online) return toast('You need signal.');
+  btn.disabled=true;
+  try{ await api('timeOffDecide',{reqId:t.id,approve:ok}); apvDrop('t',t.id);
+    toast((ok?'Approved':'Denied')+' — '+t.name+' has been emailed.'); if(S.sched) schedRefreshAll(); }
+  catch(err){ toast(err.message); btn.disabled=false; }
+}
+async function apvAllow(k,ok,btn){
+  const c=dereg(k); if(!c) return; if(!S.online) return toast('You need signal.');
+  btn.disabled=true;
+  try{ await api('allowanceDecide',{id:c.id,approve:ok}); apvDrop('a',c.id);
+    toast((ok?'Approved':'Denied')+' — '+c.name+' $'+Number(c.amount).toFixed(2)); }
+  catch(err){ toast(err.message); btn.disabled=false; }
+}
+/* v56 — admin: add or change anyone's hours. Pick the person → their entries (Edit on each) or Add time. */
+async function openHoursFor(){
+  if(!S.online) return toast('You need signal.');
+  if(!(S.employees&&S.employees.length)){ try{ const r=await api('listEmployees'); S.employees=r.employees||[]; }catch(e){ return toast(e.message); } }
+  const emps=(S.employees||[]).filter(e=>e.active&&e.role!=='bookkeeper');
+  sheet(`<h2>Whose hours?</h2>
+    <p class="small muted" style="margin-top:-4px">See and edit their entries, or add time they forgot.</p>
+    ${emps.map(e=>`<div class="list-item row between">
+      <div><b>${esc(e.name)}</b><div class="small muted">${esc(e.email)}</div></div>
+      <div class="row" style="gap:6px">
+        <button class="ghost" onclick="closeSheetDom();viewEmployee('${esc(e.email)}')">Entries</button>
+        <button class="secondary" onclick="closeSheetDom();openManualFor('${esc(e.email)}')">＋ Add</button>
+      </div></div>`).join('')}
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+}
+function openManualFor(email){ openManual._for=email; openManual(); }
+function mnForSelect(){
+  const me=S.me||{}, emps=(S.employees||[]).filter(e=>e.active&&e.role!=='bookkeeper');
+  const sel=(mnState&&mnState.forEmail)||me.email;
+  const list=emps.some(e=>lc(e.email)===lc(me.email))?emps:[{email:me.email,name:me.name||'Me'}].concat(emps);
+  return `<select id="mnFor" style="margin-bottom:4px">${list.map(e=>`<option value="${esc(e.email)}" ${lc(e.email)===lc(sel)?'selected':''}>${esc(lc(e.email)===lc(me.email)?(e.name||'Me')+' (me)':e.name)}</option>`).join('')}</select>`;
+}
 /* v52 — CALL THESE CUSTOMERS. Every job that was bumped to make room for another. Paul rings them;
    "Called ✓" when the new day works, "Reschedule" to put it where the customer wants (that can
    move other jobs too, and shows him the plan first). */
