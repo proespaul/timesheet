@@ -16,6 +16,9 @@
     --text:#1a2947; --muted:#5b6b85; --navy:#1F3864; --accent:#2E75B6; --accent2:#2265ab;
     --pulse:#4DA3FF;
     --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --pending:#ca8a04;
+    /* --good was used in seven places and never defined, so every "✓ that is fine" line
+     * rendered in the ordinary text colour. Same green as --ok. */
+    --good:#16a34a;
     --radius:16px; --safe: env(safe-area-inset-bottom, 0px);
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
@@ -5760,22 +5763,107 @@ function openCollPick(i){
   });
 }
 
-/* ---- THE DAY-VIEW PICKER ----------------------------------------------------------------
- * One day of Paul's calendar, the way Google shows it: what is on, who it is for, tap it for the
- * detail. Underneath, a start time and a length that accept ANYTHING — 6 AM, a Sunday, a slot
- * with a job already in it. If a job is in the way the card says whose it is and what happens to
- * it, and the booking does not go through until Paul ticks the box. =========================*/
+/* ---- THE CALENDAR PICKER -----------------------------------------------------------------
+ * TWO SCREENS, the way a calendar works. First the MONTH: every day of it, with a dot for each
+ * job booked that day, weekends and stat holidays and Paul's days off shaded. Tap a day and you
+ * get THAT DAY — what is on it, who it is for, tap any booking for its detail — and underneath, a
+ * start time and a length that accept ANYTHING: 6 AM, a Sunday, a slot with a job already in it.
+ * If a job is in the way the card says whose it is and what happens to it, and the booking does
+ * not go through until Paul ticks the box. ================================================*/
 let dpState=null;
 function dpDateStr(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function dpMonthOf(ds){ return String(ds||'').substring(0,7); }
 function dayPickOpen(o){
-  dpState={ date:o.date||todayStr(), hours:Math.max(0.25,Number(o.hours)||1),
+  const date=o.date||todayStr();
+  dpState={ view:'month', month:dpMonthOf(date), date:date,
+            hours:Math.max(0.25,Number(o.hours)||1),
             title:o.title||'Pick a time', sub:o.sub||'', back:o.back||'', onConfirm:o.onConfirm,
-            data:null, err:'', loading:true, time:'', bump:false };
+            mdata:null, mloading:true, merr:'',
+            data:null, err:'', loading:false, time:'', bump:false };
+  dayPickRender(); dpMonthLoad();
+}
+function dayPickRender(){ if(!dpState) return; dpState.view==='month'?dpMonthRender():dpDayRender(); }
+
+/* ---- screen one: the month --------------------------------------------------------------- */
+async function dpMonthLoad(){
+  const want=dpState&&dpState.month; if(!want) return;
+  if(!S.online){ dpState.mloading=false; dpState.merr='You need signal to see the calendar.'; dayPickRender(); return; }
+  try{
+    const r=await apiBg('schedMonth',{month:want});
+    if(!dpState||dpState.month!==want) return;
+    dpState.mdata=r; dpState.mloading=false; dpState.merr='';
+  }catch(e){ if(!dpState||dpState.month!==want) return;
+    dpState.mloading=false; dpState.merr=e.message||'Could not read the calendar.'; }
+  if(dpState.view==='month') dayPickRender();
+}
+function dpMonthShift(k){
+  if(!dpState) return;
+  const p=dpState.month.split('-').map(Number), d=new Date(p[0],p[1]-1+k,1);
+  dpState.month=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  dpState.mdata=null; dpState.mloading=true; dpState.merr='';
+  dayPickRender(); dpMonthLoad();
+}
+function dpMonthRender(){
+  const d=dpState; if(!d) return;
+  const md=d.mdata, days=(md&&md.days)||[];
+  const p=d.month.split('-').map(Number);
+  const label=new Date(p[0],p[1]-1,1).toLocaleDateString([], {month:'long', year:'numeric'});
+  const today=(md&&md.today)||todayStr();
+  const blanks=days.length?days[0].dow:0;
+  const cell=(x)=>{
+    const sel=x.date===d.date, isToday=x.date===today, past=x.date<today, off=x.holiday||x.leave;
+    const bg = sel?'var(--accent2)' : off?'#f6ecd8' : x.weekend?'var(--panel2)' : 'var(--panel)';
+    const fg = sel?'#fff' : past?'var(--muted)' : 'var(--text)';
+    const dot = sel?'#fff':'var(--accent)';
+    return `<button type="button" onclick="dpOpenDay('${x.date}')"
+      aria-label="${esc(x.date+(x.jobs?(' — '+x.jobs+' job'+(x.jobs===1?'':'s')):' — nothing booked')+(off?(' — '+(x.holiday||x.leave)):''))}"
+      style="padding:5px 0 3px;border:${isToday&&!sel?'2px':'1px'} solid ${isToday&&!sel?'var(--accent)':'var(--line)'};
+             border-radius:10px;background:${bg};color:${fg};display:flex;flex-direction:column;
+             align-items:center;justify-content:flex-start;gap:3px;min-height:48px;font:inherit;cursor:pointer">
+      <span style="font-size:0.95rem;font-weight:${isToday?'800':'600'};line-height:1">${x.day}</span>
+      <span style="height:7px;display:flex;gap:2px;align-items:center;justify-content:center">
+        ${x.jobs?('<i style="width:5px;height:5px;border-radius:50%;background:'+dot+';display:block"></i>').repeat(Math.min(x.jobs,3)):''}
+        ${x.jobs>3?`<i style="font-size:0.62rem;font-style:normal;line-height:1;color:${dot}">+</i>`:''}
+        ${(!x.jobs&&x.other)?`<i style="width:4px;height:4px;border-radius:50%;background:${sel?'#fff':'var(--muted)'};display:block"></i>`:''}
+      </span></button>`;
+  };
+  sheet(`<h2>${esc(d.title)}</h2>
+    ${d.sub?`<p class="small muted" style="margin-top:-4px">${esc(d.sub)}</p>`:''}
+    <div class="row between" style="align-items:center;margin-top:6px">
+      <button class="ghost" style="flex:none;min-width:46px" onclick="dpMonthShift(-1)">‹</button>
+      <b>${esc(label)}</b>
+      <button class="ghost" style="flex:none;min-width:46px" onclick="dpMonthShift(1)">›</button>
+    </div>
+    ${d.merr?`<p class="small" style="color:var(--bad);margin:6px 0 0">${esc(d.merr)}</p>`:''}
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-top:8px">
+      ${['S','M','T','W','T','F','S'].map(x=>`<div class="small muted" style="text-align:center;padding-bottom:2px">${x}</div>`).join('')}
+      ${d.mloading?'':'<div></div>'.repeat(blanks)}
+      ${d.mloading?'':days.map(cell).join('')}
+    </div>
+    ${d.mloading?'<p class="center" style="margin:16px 0"><span class="spin"></span></p>':''}
+    <p class="small muted" style="margin-top:10px">● one dot per job booked that day. Tap a day to see what is on it and pick a start time. Shaded days are weekends, stat holidays or days you are off — you can still book them.</p>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="${d.back?esc(d.back):'closeSheet()'}">Back</button>`);
+}
+function dpOpenDay(ds){
+  if(!dpState||!ds) return;
+  dpState.view='day'; dpState.date=ds;
+  dpState.data=null; dpState.err=''; dpState.loading=true; dpState.time=''; dpState.bump=false;
   dayPickRender(); dayPickLoad();
 }
+function dpBackToMonth(){
+  if(!dpState) return;
+  const m=dpMonthOf(dpState.date);
+  dpState.view='month';
+  if(m!==dpState.month){ dpState.month=m; dpState.mdata=null; dpState.mloading=true; dayPickRender(); dpMonthLoad(); return; }
+  dayPickRender();
+}
+
+/* ---- screen two: the day ----------------------------------------------------------------- */
 function dpShift(n){ if(!dpState) return; const d=new Date(dpState.date+'T12:00:00');
   d.setDate(d.getDate()+n); dpSetDate(dpDateStr(d)); }
 function dpSetDate(v){ if(!dpState||!v) return;
+  // Stepping off the end of the month leaves the grid behind it stale, so drop it.
+  if(dpMonthOf(v)!==dpState.month){ dpState.month=dpMonthOf(v); dpState.mdata=null; }
   dpState.date=v; dpState.data=null; dpState.err=''; dpState.loading=true; dpState.time=''; dpState.bump=false;
   dayPickRender(); dayPickLoad(); }
 async function dayPickLoad(){
@@ -5825,13 +5913,14 @@ function dpVerdict(){
 function dpTime(v){ if(!dpState) return; dpState.time=v; dpState.bump=false; dpVerdict(); }
 function dpHours(v){ if(!dpState) return; dpState.hours=Math.max(0.25,Math.min(12,Number(v)||1)); dpState.bump=false; dpVerdict(); }
 function dpBump(on){ if(!dpState) return; dpState.bump=!!on; dpVerdict(); }
-function dayPickRender(){
+function dpDayRender(){
   const d=dpState; if(!d) return;
   const data=d.data, evs=(data&&data.events)||[];
   const clash=dpClash(), jobs=clash.filter(x=>x.isJob), other=clash.filter(x=>!x.isJob);
   const flags=data?[data.weekend?'Weekend':'',data.holiday||'',data.leave?('you are off — '+data.leave):''].filter(Boolean):[];
   sheet(`<h2>${esc(d.title)}</h2>
     ${d.sub?`<p class="small muted" style="margin-top:-4px">${esc(d.sub)}</p>`:''}
+    <button class="ghost" style="margin-bottom:6px" onclick="dpBackToMonth()">‹ The whole month</button>
     <div class="row" style="align-items:flex-end;gap:6px">
       <button class="ghost" style="flex:none;min-width:44px" onclick="dpShift(-1)">‹</button>
       <div class="grow"><input id="dpDate" type="date" value="${esc(d.date)}" onchange="dpSetDate(this.value)"></div>
@@ -5858,7 +5947,7 @@ function dayPickRender(){
     <p class="small muted" style="margin-top:4px">Any time you like — after hours, a weekend, or a slot that already has a job in it.</p>
     <div id="dpVerdict">${dpVerdictHtml(jobs,other)}</div>
     <div class="row" style="margin-top:12px">
-      <button class="secondary grow" onclick="${d.back?esc(d.back):'closeSheet()'}">Back</button>
+      <button class="secondary grow" onclick="dpBackToMonth()">‹ Back</button>
       <button class="grow" id="dpGo" ${(d.time&&(!jobs.length||d.bump))?'':'disabled'} onclick="dayPickGo(this)">${(jobs.length&&d.bump)?('Book it and move '+(jobs.length===1?'that job':'those jobs')):'Book it'}</button>
     </div>`);
 }
@@ -5873,7 +5962,7 @@ function dpShow(j){
     ${x.location?`<div class="small" style="margin-top:2px">📍 ${esc(x.location)}</div>`:''}
     <div style="margin-top:8px">${x.isJob?'<span class="pill live">A job — booking over it sends it back to Requests</span>':'<span class="pill">Not a job — it stays where it is</span>'}</div>
     ${x.detail?`<pre class="small muted" style="white-space:pre-wrap;word-break:break-word;margin-top:10px">${esc(x.detail)}</pre>`:''}
-    <button class="secondary" style="width:100%;margin-top:12px" onclick="dayPickRender()">‹ Back to the day</button>`);
+    <button class="secondary" style="width:100%;margin-top:12px" onclick="dpDayRender()">‹ Back to the day</button>`);
 }
 async function dayPickGo(btn){
   const d=dpState; if(!d||!d.time||!d.onConfirm) return;
