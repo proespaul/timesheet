@@ -2099,84 +2099,146 @@ function openJobDetail(k){
       <button style="width:100%;margin-top:4px" onclick="openInvoiceList('${pk}')">🧾 Build Initial Draft</button>
       <button class="secondary" style="width:100%;margin-top:6px" onclick="reqInvoice('${pk}','final',this)">✅ Build Final Draft</button>
       <p class="small muted" style="margin:6px 0 0">Initial: you confirm the quantity of each part first, then Claude bills that list at cost and adds the hours. Final rolls them up and applies the markup. Neither is ever sent to the customer.</p>`:''}
-    <button class="secondary" style="width:100%;margin-top:${S.me&&S.me.role==='admin'?'6':'10'}px" onclick="openJobEntries('${pk}')">📆 Day-by-day breakdown</button>
-    <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobPOs('${pk}')">📦 Materials &amp; supplier POs</button>
-    <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobPhotos('${pk}')">📷 View job photos</button>
+    <button class="secondary" style="width:100%;margin-top:${S.me&&S.me.role==='admin'?'6':'10'}px" onclick="openJobAll('${pk}')">📋 Job details</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
 }
 
-/* Everything bought for the job, grouped by supplier PO — with costs and the Drive link
-   to the PDFs. Data comes from the Job Inventory tab (app scans + the daily email sweep). */
-async function openJobPOs(pk){
-  const ref=dereg(pk); if(!ref) return;
-  if(!S.online) return toast('You need signal to load the materials.');
-  sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center" style="margin:22px 0"><span class="spin"></span></p>`);
-  const mine=S._sheet;
-  try{
-    const r=await apiBg('jobMaterials',{jobSite:ref.jobSite, poNumber:ref.po||'', withFolder:1});
-    if(S._sheet!==mine) return;
-    const bought=r.bought||[], used=r.used||[];
-    const showP=bought.some(b=>b.price!=null)||used.some(u=>u.price!=null);
-    // Bought, grouped by the supplier PO it came on
-    const byInv={};
-    bought.forEach(it=>{ const k=(it.supplier||'Supplier')+' · '+(it.invoice||'—');
-      (byInv[k]=byInv[k]||{date:'',doc:'',list:[]}); byInv[k].list.push(it);
-      if(it.date) byInv[k].date=it.date; if(it.doc) byInv[k].doc=it.doc; });
-    let boughtCost=0;
-    const boughtHtml=Object.keys(byInv).map(k=>{
-      const g=byInv[k];
-      const cost=g.list.reduce((sum,it)=>sum+(it.price!=null?it.price*it.qty:0),0);
-      boughtCost+=cost;
+
+
+/* ---------------------------------------------------------------------------------------------
+ * JOB DETAILS — one page (v57)
+ * The day-by-day hours, everything bought and used, and the job's photos used to be three
+ * separate screens behind three buttons, so seeing the whole job meant opening and closing each
+ * one in turn and holding the three halves in your head. Now they are three sections of one
+ * page you scroll. The three section builders below are the ONLY place each is rendered.
+ * Each section loads independently: one that fails says so and the other two still show.
+ * ------------------------------------------------------------------------------------------ */
+
+/* Day by day — newest first, with who, the times, and any note on the shift. */
+function jobDaysHtml(rows){
+  rows = rows || [];
+  if(!rows.length) return '<p class="muted small">No shifts logged against this job yet.</p>';
+  const byDate={};
+  rows.forEach(x=>{ (byDate[x.date]=byDate[x.date]||[]).push(x); });
+  const days=Object.keys(byDate).sort().reverse();
+  const total=rows.reduce((s,x)=>s+(Number(x.hours)||0),0);
+  return `<p class="small muted" style="margin:0 0 6px">${rows.length} shift${rows.length===1?'':'s'} ·
+      <b>${total.toFixed(2)} hrs</b>, newest first${rows.length>=400?' (most recent 400)':''}</p>` +
+    days.map(d=>{
+      const list=byDate[d];
+      const dayTotal=list.reduce((s,x)=>s+(Number(x.hours)||0),0);
+      const lbl=schedDayLabel(d);
       return `<div class="list-item">
-        <div class="row between"><b>${esc(k)}</b><span class="small muted">${esc(g.date||'')}</span></div>
-        ${g.list.map(it=>`<div class="row between small" style="margin-top:2px">
-            <span>${esc(it.desc)} <span class="muted">${esc(it.sku||'')}</span></span>
-            <span style="white-space:nowrap">×${it.qty}${it.price!=null?' · $'+(it.price*it.qty).toFixed(2):''}</span>
-          </div>`).join('')}
-        ${showP?`<div class="row between small" style="margin-top:4px;border-top:1px solid var(--line);padding-top:4px"><b>PO total (cost)</b><b>$${cost.toFixed(2)}</b></div>`:''}
-        ${g.doc?`<a class="small" href="${esc(g.doc)}" target="_blank" style="color:var(--accent2)">📄 open this PO</a>`:''}
-      </div>`; }).join('');
-    // Used — this is what the customer actually gets charged for
-    const realUsed=used.filter(u=>u.status!=='to return — awaiting credit note');
-    const bySku={};
-    realUsed.forEach(u=>{ const k=u.sku||u.desc;
-      (bySku[k]=bySku[k]||{desc:u.desc,sku:u.sku,qty:0,price:u.price}); bySku[k].qty+=u.qty; });
-    let usedCost=0;
-    const usedHtml=Object.keys(bySku).map(k=>{
-      const u=bySku[k]; if(u.price!=null) usedCost+=u.price*u.qty;
-      return `<div class="row between small" style="margin-top:3px">
-        <span>${esc(u.desc)} <span class="muted">${esc(u.sku||'')}</span></span>
-        <span style="white-space:nowrap">×${u.qty}${u.price!=null?' · $'+(u.price*u.qty).toFixed(2):''}</span>
-      </div>`; }).join('');
-    const pendingReturns=used.filter(u=>u.status==='to return — awaiting credit note');
-    // v24: the documents themselves. Older jobs have their POs only in Paul's archive folder and
-    // nothing on the Job POs tab, so before this the card was blank AND there was no button to
-    // tap — the backend looked in one folder, found nothing, and rendered neither. The backend
-    // now searches both roots and hands back a deduped list, so a PO filed twice shows once.
-    const docs=r.docs||[], folders=r.folders||[];
-    const docsHtml = docs.length ? `<div style="margin-top:${boughtHtml?'10px':'0'}">
-        ${boughtHtml?'<div class="small muted" style="margin-bottom:4px">Documents on file</div>':''}
-        ${docs.map(d=>`<a class="list-item row between" href="${esc(d.url)}" target="_blank"
-            style="text-decoration:none;color:inherit">
-            <span>${d.kind==='photo'?'📷':'📄'} ${esc(d.name)}</span>
-            <span class="small muted" style="white-space:nowrap">${esc(d.date||'')}</span>
-          </a>`).join('')}</div>` : '';
-    const foldersHtml = folders.length
-      ? folders.map(f=>`<a href="${esc(f.url)}" target="_blank" style="text-decoration:none">
-           <button class="secondary" style="width:100%;margin-top:8px">📁 ${esc(f.name)} in Drive</button></a>`).join('')
-      : (docs.length?'':'<p class="small muted" style="margin-top:8px">No Drive folder found for this job yet.</p>');
-    sheet(`<h2>${esc(ref.jobSite)} — materials</h2>
-      <p class="small muted" style="margin-top:-4px">The invoice charges what was <b>used</b>. Anything bought and not used stays in inventory.</p>
-      <div class="card" style="margin:8px 0"><h3>Used on this job${showP?` — $${usedCost.toFixed(2)} at cost`:''}</h3>
-        ${usedHtml||'<p class="muted small">Nothing recorded yet. Crew add this from the Clock tab → Materials used.</p>'}</div>
-      <div class="card" style="margin:8px 0"><h3>Bought for this job${showP?` — $${boughtCost.toFixed(2)} at cost`:''}</h3>
-        ${boughtHtml||''}
-        ${docsHtml}
-        ${(!boughtHtml&&!docsHtml)?'<p class="muted small">No supplier POs filed against this job yet.</p>':''}</div>
-      ${pendingReturns.length?`<div class="banner" style="background:#fef3c7;color:#92400e">↩ ${pendingReturns.length} item(s) flagged to go back to the supplier — they leave inventory when the credit note arrives.</div>`:''}
-      ${foldersHtml}
-      <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
-  }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
+        <div class="row between"><b>${esc(lbl!=='Today'&&lbl!=='Tomorrow'
+          ? new Date(d+'T12:00').toLocaleDateString([],{weekday:'short',month:'short',day:'numeric',year:'numeric'})
+          : lbl)}</b><b>${dayTotal.toFixed(2)} hrs</b></div>
+        ${list.map(x=>`<div class="row between small" style="margin-top:2px">
+          <span>${esc(x.who)}${x.in?` <span class="muted">${fmtTime(x.in)}–${x.out?fmtTime(x.out):'…'}</span>`:''}</span>
+          <span>${(Number(x.hours)||0).toFixed(2)}h ${x.status==='pending'?'<span class="pill pending">pending</span>':''}</span>
+        </div>${x.notes?`<div class="small muted" style="margin-left:2px">↳ ${esc(x.notes)}</div>`:''}`).join('')}
+      </div>`;
+    }).join('');
+}
+
+/* Materials: what was USED (what the customer is charged for) and what was BOUGHT, grouped by
+   the supplier PO it came on, plus the documents and the Drive folders. */
+function jobMatsHtml(r){
+  const bought=(r&&r.bought)||[], used=(r&&r.used)||[];
+  const showP=bought.some(b=>b.price!=null)||used.some(u=>u.price!=null);
+  const byInv={};
+  bought.forEach(it=>{ const k=(it.supplier||'Supplier')+' · '+(it.invoice||'—');
+    (byInv[k]=byInv[k]||{date:'',doc:'',list:[]}); byInv[k].list.push(it);
+    if(it.date) byInv[k].date=it.date; if(it.doc) byInv[k].doc=it.doc; });
+  let boughtCost=0;
+  const boughtHtml=Object.keys(byInv).map(k=>{
+    const g=byInv[k];
+    const cost=g.list.reduce((sum,it)=>sum+(it.price!=null?it.price*it.qty:0),0);
+    boughtCost+=cost;
+    return `<div class="list-item">
+      <div class="row between"><b>${esc(k)}</b><span class="small muted">${esc(g.date||'')}</span></div>
+      ${g.list.map(it=>`<div class="row between small" style="margin-top:2px">
+          <span>${esc(it.desc)} <span class="muted">${esc(it.sku||'')}</span></span>
+          <span style="white-space:nowrap">×${it.qty}${it.price!=null?' · $'+(it.price*it.qty).toFixed(2):''}</span>
+        </div>`).join('')}
+      ${showP?`<div class="row between small" style="margin-top:4px;border-top:1px solid var(--line);padding-top:4px"><b>PO total (cost)</b><b>$${cost.toFixed(2)}</b></div>`:''}
+      ${g.doc?`<a class="small" href="${esc(g.doc)}" target="_blank" style="color:var(--accent2)">📄 open this PO</a>`:''}
+    </div>`; }).join('');
+  const realUsed=used.filter(u=>u.status!=='to return — awaiting credit note');
+  const bySku={};
+  realUsed.forEach(u=>{ const k=u.sku||u.desc;
+    (bySku[k]=bySku[k]||{desc:u.desc,sku:u.sku,qty:0,price:u.price}); bySku[k].qty+=u.qty; });
+  let usedCost=0;
+  const usedHtml=Object.keys(bySku).map(k=>{
+    const u=bySku[k]; if(u.price!=null) usedCost+=u.price*u.qty;
+    return `<div class="row between small" style="margin-top:3px">
+      <span>${esc(u.desc)} <span class="muted">${esc(u.sku||'')}</span></span>
+      <span style="white-space:nowrap">×${u.qty}${u.price!=null?' · $'+(u.price*u.qty).toFixed(2):''}</span>
+    </div>`; }).join('');
+  const pendingReturns=used.filter(u=>u.status==='to return — awaiting credit note');
+  const docs=(r&&r.docs)||[], folders=(r&&r.folders)||[];
+  const docsHtml = docs.length ? `<div style="margin-top:${boughtHtml?'10px':'0'}">
+      ${boughtHtml?'<div class="small muted" style="margin-bottom:4px">Documents on file</div>':''}
+      ${docs.map(d=>`<a class="list-item row between" href="${esc(d.url)}" target="_blank"
+          style="text-decoration:none;color:inherit">
+          <span>${d.kind==='photo'?'📷':'📄'} ${esc(d.name)}</span>
+          <span class="small muted" style="white-space:nowrap">${esc(d.date||'')}</span>
+        </a>`).join('')}</div>` : '';
+  const foldersHtml = folders.length
+    ? folders.map(f=>`<a href="${esc(f.url)}" target="_blank" style="text-decoration:none">
+         <button class="secondary" style="width:100%;margin-top:8px">📁 ${esc(f.name)} in Drive</button></a>`).join('')
+    : (docs.length?'':'<p class="small muted" style="margin-top:8px">No Drive folder found for this job yet.</p>');
+  return `<p class="small muted" style="margin:0 0 8px">The invoice charges what was <b>used</b>. Anything bought and not used stays in inventory.</p>
+    <div style="margin-bottom:10px"><b>Used on this job${showP?` — $${usedCost.toFixed(2)} at cost`:''}</b>
+      ${usedHtml||'<p class="muted small">Nothing recorded yet. Crew add this from the Clock tab → Materials used.</p>'}</div>
+    <div><b>Bought for this job${showP?` — $${boughtCost.toFixed(2)} at cost`:''}</b>
+      ${boughtHtml||''}${docsHtml}
+      ${(!boughtHtml&&!docsHtml)?'<p class="muted small">No supplier POs filed against this job yet.</p>':''}</div>
+    ${pendingReturns.length?`<div class="banner" style="background:#fef3c7;color:#92400e;margin-top:8px">↩ ${pendingReturns.length} item(s) flagged to go back to the supplier — they leave inventory when the credit note arrives.</div>`:''}
+    ${foldersHtml}`;
+}
+
+/* Photos: the quick look. The Drive folder stays the permanent home. */
+function jobPhotosHtml(r){
+  const files=(r&&r.files)||[];
+  const grid=files.map(f=>`<a href="${esc(f.url)}" target="_blank" style="width:31%;text-decoration:none">
+      ${f.isVideo
+        ? `<div style="width:100%;aspect-ratio:1;border-radius:12px;background:var(--panel2);display:flex;align-items:center;justify-content:center;font-size:1.8rem">🎬</div>`
+        : `<img src="https://drive.google.com/thumbnail?id=${esc(f.id)}&sz=w300" loading="lazy"
+             style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:12px;background:var(--panel2)"
+             onerror="this.replaceWith(Object.assign(document.createElement('div'),{textContent:'📷',style:'font-size:1.8rem;text-align:center'}))">`}
+      <div class="small muted" style="text-align:center">${fmtDay(f.date)}${f.by?(' · '+esc(String(f.by).split('@')[0])):''}</div>
+    </a>`).join('');
+  return `<p class="small muted" style="margin:0 0 8px">${files.length} photo/video${files.length===1?'':'s'}
+      ${r&&r.folderUrl?` · <a href="${esc(r.folderUrl)}" target="_blank" style="color:var(--accent2)">open folder in Drive ↗</a>`:''}</p>
+    ${files.length? `<div class="row" style="flex-wrap:wrap;gap:8px;align-items:flex-start">${grid}</div>`
+      : '<p class="muted small">No photos for this job yet — they show up here when the crew attaches them to entries.</p>'}`;
+}
+
+/* The whole job on one page. The three fetches run together, and each section renders on its
+   own as soon as its answer lands, so a slow photo folder never holds up the hours. */
+async function openJobAll(pk){
+  const ref=dereg(pk); if(!ref) return;
+  if(!S.online) return toast('You need signal to load the job details.');
+  const title=esc(ref.jobSite||ref.po||'Job');
+  const sec=(id,icon,label)=>`<div class="card" style="margin:8px 0">
+      <h3 style="margin-top:0">${icon} ${label}</h3>
+      <div id="${id}"><p class="center" style="margin:14px 0"><span class="spin"></span></p></div>
+    </div>`;
+  sheet(`<h2>${title}</h2>
+    <p class="small muted" style="margin-top:-4px">${ref.po?('PO '+esc(ref.po)):''}</p>
+    ${sec('jdDays','📆','Day by day')}
+    ${sec('jdMats','📦','Materials &amp; supplier POs')}
+    ${sec('jdPics','📷','Job photos')}
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+  const mine=S._sheet;
+  const put=(id,html)=>{ if(S._sheet!==mine) return; const el=document.getElementById(id); if(el) el.innerHTML=html; };
+  const fail=(id,e)=>put(id,`<p class="small" style="color:var(--bad)">Could not load this — ${esc(e&&e.message||'no answer')}</p>`);
+  apiBg('jobEntries',{jobSite:ref.jobSite, po:ref.po||''})
+    .then(r=>put('jdDays', jobDaysHtml(r&&r.rows))).catch(e=>fail('jdDays',e));
+  apiBg('jobMaterials',{jobSite:ref.jobSite, poNumber:ref.po||'', withFolder:1})
+    .then(r=>put('jdMats', jobMatsHtml(r))).catch(e=>fail('jdMats',e));
+  apiBg('jobMedia',{jobSite:ref.jobSite})
+    .then(r=>put('jdPics', jobPhotosHtml(r))).catch(e=>fail('jdPics',e));
 }
 
 /* 3.6: one tap → a structured request lands in admin@proes.ca's inbox, where Claude's
@@ -2311,63 +2373,9 @@ async function invListSave(){
   }
 }
 
-/* Day-by-day drill-down: every shift on the job — when, who, how long, status. */
-async function openJobEntries(pk){
-  const ref=dereg(pk); if(!ref) return;
-  if(!S.online) return toast('You need signal to load the breakdown.');
-  sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center"><span class="spin"></span> Loading shifts…</p>`);
-  const mine=S._sheet; // dismissed while loading? stay dismissed
-  try{
-    const r=await api('jobEntries',{jobSite:ref.jobSite, po:ref.po||''});
-    if (S._sheet!==mine) return;
-    const rows=r.rows||[];
-    const byDate={};
-    rows.forEach(x=>{ (byDate[x.date]=byDate[x.date]||[]).push(x); });
-    const days=Object.keys(byDate).sort().reverse();
-    const html=days.map(d=>{
-      const list=byDate[d];
-      const dayTotal=list.reduce((s,x)=>s+x.hours,0);
-      return `<div class="list-item">
-        <div class="row between"><b>${esc(schedDayLabel(d)!=='Today'&&schedDayLabel(d)!=='Tomorrow'?new Date(d+'T12:00').toLocaleDateString([],{weekday:'short',month:'short',day:'numeric',year:'numeric'}):schedDayLabel(d))}</b>
-          <b>${dayTotal.toFixed(2)} hrs</b></div>
-        ${list.map(x=>`<div class="row between small" style="margin-top:2px">
-          <span>${esc(x.who)}${x.in?` <span class="muted">${fmtTime(x.in)}–${x.out?fmtTime(x.out):'…'}</span>`:''}</span>
-          <span>${x.hours.toFixed(2)}h ${x.status==='pending'?'<span class="pill pending">pending</span>':''}</span>
-        </div>${x.notes?`<div class="small muted" style="margin-left:2px">↳ ${esc(x.notes)}</div>`:''}`).join('')}
-      </div>`; }).join('');
-    sheet(`<h2>${esc(ref.jobSite)}</h2>
-      <p class="small muted" style="margin-top:-4px">${rows.length} shift${rows.length===1?'':'s'}, newest first${rows.length>=400?' (showing the most recent 400)':''}</p>
-      ${html||'<p class="muted small">No shifts logged against this job yet.</p>'}
-      <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
-  }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
-}
 
-/* Job photo browser: a window into the job's Google Drive folder (the folder stays the
-   permanent home — this is just the quick look; the Drive link is there for bulk work). */
-async function openJobPhotos(pk){
-  const ref=dereg(pk); if(!ref) return;
-  sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center"><span class="spin"></span> Loading photos…</p>`);
-  const mine=S._sheet; // dismissed while loading? then stay dismissed (same guard as showClockinMsg)
-  try{
-    const r=await api('jobMedia',{jobSite:ref.jobSite});
-    if (S._sheet!==mine) return;
-    const files=r.files||[];
-    const grid=files.map(f=>`<a href="${esc(f.url)}" target="_blank" style="width:31%;text-decoration:none">
-        ${f.isVideo
-          ? `<div style="width:100%;aspect-ratio:1;border-radius:12px;background:var(--panel2);display:flex;align-items:center;justify-content:center;font-size:1.8rem">🎬</div>`
-          : `<img src="https://drive.google.com/thumbnail?id=${esc(f.id)}&sz=w300" loading="lazy"
-               style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:12px;background:var(--panel2)"
-               onerror="this.replaceWith(Object.assign(document.createElement('div'),{textContent:'📷',style:'font-size:1.8rem;text-align:center'}))">`}
-        <div class="small muted" style="text-align:center">${fmtDay(f.date)}${f.by?(' · '+esc(String(f.by).split('@')[0])):''}</div>
-      </a>`).join('');
-    sheet(`<h2>${esc(ref.jobSite)}</h2>
-      <p class="small muted" style="margin-top:-6px">${files.length} photo/video${files.length===1?'':'s'}
-        ${r.folderUrl?` · <a href="${esc(r.folderUrl)}" target="_blank" style="color:var(--accent2)">open folder in Drive ↗</a>`:''}</p>
-      ${files.length? `<div class="row" style="flex-wrap:wrap;gap:8px;align-items:flex-start">${grid}</div>`
-        : '<p class="muted small">No photos for this job yet — they show up here when the crew attaches them to entries.</p>'}
-      <button class="secondary" style="width:100%;margin-top:12px" onclick="closeSheet()">Close</button>`);
-  }catch(e){ toast(e.message); closeSheet(); }
-}
+
+
 
 /* ----- SCHEDULE TAB (everyone): the admin calendar, with per-event crew assignment -----
    Source of truth is admin@proes.ca's Google Calendar (the one the AI books). Crew see only
@@ -3654,11 +3662,13 @@ async function coRvFind(){
 function coRvPick(i){ const c=coState; if(!c) return; c.rv.picked=(c.rv.picked===i?null:i);
   if(c.rv.picked!=null && c.rv.custom){ c.rv.custom=null; const pl=document.getElementById('coRvOwnPlan'); if(pl) pl.innerHTML=''; }
   coRvSlotsRender(); }
-/* v52 — PICK MY OWN DAY & TIME. Paul chooses any day and time. A job already there moves to the
-   same time on the next work day; if that spot is taken by another job, that one moves on too,
-   and so on. Estimate calls and personal events never move. Nothing happens until he ticks the
-   box under the plan, and it is booked only when he hits Submit. Every moved customer lands on
-   "Call these customers" in Requests, and he gets the same list by email. */
+/* v52 — PICK MY OWN DAY & TIME. Paul chooses any day and time.
+   v51 — and a job already there no longer gets shuffled to the next work day. It comes OFF the
+   calendar and waits under "⚡ Needs a new time" at the top of Requests, keeping its job number,
+   where Paul rings or emails the customer and then picks a time or takes the next opening. If
+   that time is taken too, that job comes back the same way — one step at a time. Estimate calls
+   and personal events never move. Nothing happens until he ticks the box under the plan, and it
+   is booked only when he hits Submit. */
 async function coRvOwnCheck(){
   const c=coState; if(!c) return;
   const h=Number(c.rv.hours||0);
@@ -3686,15 +3696,17 @@ function bumpPlanHtml(plan){
   let h='<div class="card" style="margin:0;padding:10px">'
     + '<div class="small"><b>'+(m.kind==='new'?'Return visit':'This job')+':</b> '+esc(fmtDay(m.start))+' '+esc(fmtTime(m.start))+'–'+esc(fmtTime(m.end))+'</div>';
   if(plan.moves.length){
-    h+='<div class="small" style="margin-top:8px;font-weight:700">These jobs move to the next work day:</div>';
-    h+=plan.moves.map(x=>'<div class="small" style="margin-top:6px;padding-left:8px;border-left:3px solid var(--pending)">'
+    // v51 — a displaced job is NOT given another time. It comes off the calendar and waits in
+    // Requests, so the time it eventually gets is one Paul chose and the customer agreed.
+    h+='<div class="small" style="margin-top:8px;font-weight:700">'
+      +(plan.moves.length===1?'This job comes off the calendar:':'These '+plan.moves.length+' jobs come off the calendar:')+'</div>';
+    h+=plan.moves.map(x=>'<div class="small" style="margin-top:6px;padding-left:8px;border-left:3px solid var(--bad)">'
       + '<b>'+esc(x.customer||x.title)+'</b>'+(x.po?' <span class="muted">'+esc(x.po)+'</span>':'')
       + (x.job?'<br><span class="muted">'+esc(x.job)+'</span>':'')
-      + '<br>'+esc(fmtDay(x.from))+' '+esc(fmtTime(x.from))+' → <b>'+esc(fmtDay(x.to))+' '+esc(fmtTime(x.to))+'</b>'
+      + '<br>was '+esc(fmtDay(x.from))+' '+esc(fmtTime(x.from))+' → <b>waiting for a new time</b>'
       + (x.phone?'<br>📞 '+esc(x.phone):'<br><span style="color:var(--pending)">no phone on file</span>')
-      + (x.sitsOver&&x.sitsOver.length?'<br><span style="color:var(--pending)">⚠️ now sits over '+esc(x.sitsOver.join(', '))+'</span>':'')
       + '</div>').join('');
-    h+='<p class="small muted" style="margin:8px 0 0">They go on your "Call these customers" list and you get the same list by email.</p>';
+    h+='<p class="small muted" style="margin:8px 0 0">They land under "⚡ Needs a new time" at the top of Requests, job numbers unchanged — ring or email them there, then pick a time or take the next opening. You get the same list by email.</p>';
   } else h+='<div class="small" style="margin-top:6px;color:var(--good)">✓ Nothing needs to move.</div>';
   if(plan.warnings&&plan.warnings.length) h+=plan.warnings.map(w=>'<div class="small" style="margin-top:6px;color:var(--pending)">⚠️ '+esc(w)+'</div>').join('');
   return h+'</div>';
@@ -4006,8 +4018,8 @@ async function coCommit_(){
       const b = await api('bumpApply',{ start:k.start, hours:k.hours, po:c.poNumber||'', jobSite:c.jobSite||c.company||'',
         note:c.notes, notifyCustomer:!!c.rv.notify, hash:k.plan.hash },{timeout:120000});
       toast('Return visit booked — '+fmtDay(k.start)+', '+fmtTime(k.start)
-        + (b&&b.moved?' · '+b.moved+' job(s) moved — ring them from Requests › Call these customers':''), 7000);
-      if (b&&b.problems&&b.problems.length) setTimeout(()=>toast('Could not move: '+b.problems.join('; '), 8000), 7200);
+        + (b&&b.moved?' · '+b.moved+' job(s) came off the calendar — give them a new time in Requests › ⚡ Needs a new time':''), 8000);
+      if (b&&b.problems&&b.problems.length) setTimeout(()=>toast('Could not move: '+b.problems.join('; '), 8000), 8200);
       loadRequests();
     }catch(e){ coRvFailed_(e.message, {start:k.start}); }
   }
@@ -5375,10 +5387,12 @@ async function loadRequests(){
   if(canApprove()) loadApprovals();                 // v56 — hours / time off / allowances waiting
   try{
     const r=await apiBg('requestList',{});
-    S.requests=r.requests||[]; S.pendingRequests=S.requests.length;
+    S.requests=r.requests||[];
     S.reqEstimates=r.estimates||[];   // v46: estimate calls held but not yet turned into jobs
     S.reqBooked=r.booked||[];         // v46: booked jobs + whether the customer has confirmed
     S.reqCalls=r.calls||[];           // v52: customers to ring because their job was moved
+    S.reqCollateral=r.collateral||[]; // v51: jobs that lost their slot and need a new time
+    S.pendingRequests=S.requests.length+S.reqCollateral.length;
     if(S.tab==='requests') render();
   }catch(e){ S.reqErr=e.message; if(S.tab==='requests') render(); }
   S._reqLoading=false;
@@ -5469,8 +5483,12 @@ function requestsView(){
         <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>
       </div>
     </div>`; }).join('');
-  return `${approvalsHtml()}${callsCardHtml()}<h2>📨 Requests</h2>
+  return `${approvalsHtml()}${collateralCardHtml()}${callsCardHtml()}<h2>📨 Requests</h2>
     <p class="small muted" style="margin-top:-4px">Website leads waiting to go on the calendar. Nothing is booked until you say so.</p>
+    ${canApprove()?`<div class="row" style="margin:8px 0 10px">
+      <button class="secondary grow" onclick="openAddManual('job')">⚡ Add a job</button>
+      <button class="secondary grow" onclick="openAddManual('call')">📞 Schedule a call</button>
+    </div>`:''}
     ${S.reqErr?`<div class="banner ot">${esc(S.reqErr)}</div>`:''}
     <div class="card">${list||(S._reqLoading?'<p class="center"><span class="spin"></span></p>':'<p class="muted small">Nothing waiting. 🎉</p>')}</div>
     ${ests?`<h3 style="margin-top:18px">Quoted — waiting on the customer</h3>
@@ -5601,7 +5619,10 @@ function mnForSelect(){
    "Called ✓" when the new day works, "Reschedule" to put it where the customer wants (that can
    move other jobs too, and shows him the plan first). */
 function callsCardHtml(){
-  const L=S.reqCalls||[]; if(!L.length) return '';
+  // v51 — a job displaced now goes back to Requests with NO time, and its card is
+  // collateralCardHtml above. This list is only the ones that were given a new day under the
+  // old rule and are still waiting for the confirming phone call.
+  const L=(S.reqCalls||[]).filter(x=>x&&x.now); if(!L.length) return '';
   return `<h2>📞 Call these customers</h2>
     <p class="small muted" style="margin-top:-4px">Their job was moved to make room for another. Ring them to confirm the new day.</p>
     <div class="card" style="border-color:var(--pending)">${L.map((x,i)=>`<div class="list-item">
@@ -5654,13 +5675,302 @@ async function callMoveGo(i,btn){
   btn.disabled=true; btn.textContent='Moving…';
   try{
     const b=await api('bumpApply',{start:k.start, eventId:x.eventId, hash:k.plan.hash, callId:x.id},{timeout:120000});
-    toast('Moved to '+fmtDay(k.start)+' '+fmtTime(k.start)+(b&&b.moved?' · '+b.moved+' more job(s) moved — they are on the call list':''), 7000);
+    toast('Moved to '+fmtDay(k.start)+' '+fmtTime(k.start)+(b&&b.moved?' · '+b.moved+' more job(s) came off the calendar — they are under "⚡ Needs a new time"':''), 8000);
     S._cmPlan=null; closeSheet(); loadRequests();
   }catch(e){
     toast(e.message, 7000); btn.disabled=false; btn.textContent='Confirm the move';
     if(/changed/i.test(e.message||'')) callMoveCheck(i);        // show the fresh plan
   }
 }
+/* ============================================================================================
+ * v51 — NEEDS A NEW TIME  ·  ADD A JOB OR A CALL BY HAND  ·  THE DAY-VIEW PICKER
+ *
+ * Paul books an emergency on top of whatever is there. The job that was in that slot does NOT
+ * get quietly shuffled to tomorrow — it comes off the calendar and lands at the top of this tab
+ * under "Needs a new time", keeping its job number, its customer and its scope. From there Paul
+ * rings or emails them, then either picks a time himself or takes the next opening. If the time
+ * he picks is taken as well, THAT job comes back the same way. One step at a time, every time a
+ * decision he made rather than one the script made for him.
+ * ==========================================================================================*/
+
+/* ---- The jobs that lost their slot ------------------------------------------------------- */
+function collateralCardHtml(){
+  const L=S.reqCollateral||[]; if(!L.length) return '';
+  return `<h2>⚡ Needs a new time</h2>
+    <p class="small muted" style="margin-top:-4px">${L.length===1?'This job':'These '+L.length+' jobs'} came off the calendar to make room for something else. ${L.length===1?'It keeps its job number':'They keep their job numbers'} — only the time is gone. Tell the customer, then give it a new one.</p>
+    <div class="card" style="border-color:var(--bad)">${L.map((x,i)=>`<div class="list-item">
+      <div class="row between">
+        <div><b>${esc(x.customer||'—')}</b>${x.po?` <span class="muted small">${esc(x.po)}</span>`:''}</div>
+        ${x.told?`<span class="pill approved">✓ ${esc(x.told)}</span>`:`<span class="pill rejected">Not told yet</span>`}
+      </div>
+      ${(x.scope||x.job)?`<div class="small muted" style="margin-top:2px">${esc(x.scope||x.job)}</div>`:''}
+      <div class="small" style="margin-top:2px">Was <b>${esc(fmtDay(x.bumpedFrom))} ${esc(fmtTime(x.bumpedFrom))}</b>${x.bumpedBy?` <span class="muted">· ${esc(x.bumpedBy)} took the slot</span>`:''}</div>
+      <div class="small muted">${(x.bookedHours||x.hours)||'?'} hr${x.address?' · '+esc(x.address):''}</div>
+      <div class="row" style="margin-top:6px">
+        ${x.phone?`<a class="grow" href="tel:${esc(String(x.phone).replace(/[^0-9+]/g,''))}" style="text-decoration:none" onclick="collTold(${i},'called',null)"><button class="grow" style="width:100%">📞 ${esc(x.phone)}</button></a>`:'<span class="small" style="color:var(--pending)">No phone on file</span>'}
+        ${x.email?`<button class="secondary grow" onclick="collTold(${i},'email',this)">📧 Email them</button>`:''}
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="openCollPick(${i})">📅 Pick a time</button>
+        <button class="secondary grow" onclick="collNextOpen(${i},this)">⚡ Next opening</button>
+      </div>
+    </div>`).join('')}</div>`;
+}
+/* Rang them, or send the "we have had to move you" email. Either way the card stops nagging. */
+async function collTold(i,how,btn){
+  const x=(S.reqCollateral||[])[i]; if(!x) return;
+  if(!S.online){ if(how==='email') toast('You need signal to email them.'); return; }
+  if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
+  try{
+    await api('requestTellCustomer',{id:x.id,how});
+    x.told=(how==='email'?'emailed ':'called ')+todayStr();
+    toast(how==='email'?'Emailed ✓':'Marked as called ✓'); render();
+  }catch(e){ toast(e.message,7000); if(btn){ btn.disabled=false; btn.textContent='📧 Email them'; } }
+}
+/* The first opening long enough for the job — the same finder the return visits use. */
+async function collNextOpen(i,btn){
+  const x=(S.reqCollateral||[])[i]; if(!x) return;
+  if(!S.online) return toast('You need signal.');
+  const hrs=Number(x.bookedHours||x.hours)||1;
+  btn.disabled=true; btn.textContent='Finding…';
+  try{
+    const r=await api('visitSlots',{hours:hrs,count:1},{timeout:60000});
+    const s=r&&r.slots&&r.slots[0];
+    if(!s){ toast('No opening that long in the next few weeks — pick a time by hand.',8000);
+      btn.disabled=false; btn.textContent='⚡ Next opening'; return; }
+    await api('requestSchedule',{id:x.id,start:s.start,hours:hrs,type:'APPOINTMENT'},{timeout:120000});
+    toast((x.customer||'Booked')+' — '+fmtDay(s.start)+' '+fmtTime(s.start)+(x.po?' · '+x.po+' unchanged':''),7000);
+    loadRequests();
+  }catch(e){ toast(e.message,9000); btn.disabled=false; btn.textContent='⚡ Next opening'; }
+}
+function openCollPick(i){
+  const x=(S.reqCollateral||[])[i]; if(!x) return;
+  dayPickOpen({
+    title:'Pick a time — '+(x.customer||'job'),
+    sub:[x.po,x.scope||x.job,x.address].filter(Boolean).join(' · '),
+    hours:Number(x.bookedHours||x.hours)||1,
+    onConfirm:async(start,hours,bump)=>{
+      const r=await api('requestSchedule',{id:x.id,start,hours,type:'APPOINTMENT',
+        bump:!!bump,allowPast:true},{timeout:120000});
+      const back=(r&&r.bumped&&r.bumped.length)||0;
+      return (x.customer||'Booked')+' — '+fmtDay(start)+' '+fmtTime(start)
+        +(x.po?' · '+x.po+' unchanged':'')
+        +(back?' · '+back+' job(s) now need a new time':'');
+    }
+  });
+}
+
+/* ---- THE DAY-VIEW PICKER ----------------------------------------------------------------
+ * One day of Paul's calendar, the way Google shows it: what is on, who it is for, tap it for the
+ * detail. Underneath, a start time and a length that accept ANYTHING — 6 AM, a Sunday, a slot
+ * with a job already in it. If a job is in the way the card says whose it is and what happens to
+ * it, and the booking does not go through until Paul ticks the box. =========================*/
+let dpState=null;
+function dpDateStr(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function dayPickOpen(o){
+  dpState={ date:o.date||todayStr(), hours:Math.max(0.25,Number(o.hours)||1),
+            title:o.title||'Pick a time', sub:o.sub||'', back:o.back||'', onConfirm:o.onConfirm,
+            data:null, err:'', loading:true, time:'', bump:false };
+  dayPickRender(); dayPickLoad();
+}
+function dpShift(n){ if(!dpState) return; const d=new Date(dpState.date+'T12:00:00');
+  d.setDate(d.getDate()+n); dpSetDate(dpDateStr(d)); }
+function dpSetDate(v){ if(!dpState||!v) return;
+  dpState.date=v; dpState.data=null; dpState.err=''; dpState.loading=true; dpState.time=''; dpState.bump=false;
+  dayPickRender(); dayPickLoad(); }
+async function dayPickLoad(){
+  const want=dpState&&dpState.date; if(!want) return;
+  if(!S.online){ dpState.loading=false; dpState.err='You need signal to see the calendar.'; dayPickRender(); return; }
+  try{
+    const r=await apiBg('schedDay',{date:want});
+    if(!dpState||dpState.date!==want) return;
+    dpState.data=r; dpState.loading=false; dpState.err='';
+  }catch(e){ if(!dpState||dpState.date!==want) return; dpState.loading=false; dpState.err=e.message||'Could not read the calendar.'; }
+  dayPickRender();
+}
+/* Everything the chosen window lands on. A JOB would be sent back to Requests; anything else
+   (an estimate call, a dentist appointment, a reminder) stays exactly where it is. */
+function dpClash(){
+  const d=dpState; if(!d||!d.data||!d.time) return [];
+  const s=new Date(d.date+'T'+d.time).getTime();
+  if(isNaN(s)) return [];
+  const e=s+(Number(d.hours)||1)*3600000;
+  return (d.data.events||[]).filter(x=>!x.allDay&&x.start&&
+    new Date(x.start).getTime()<e && new Date(x.end).getTime()>s);
+}
+function dpVerdictHtml(jobs,other){
+  const d=dpState;
+  if(!d.time) return '';
+  if(jobs.length) return `<div class="banner ot" style="margin-top:8px">
+    <b>That slot has ${jobs.length===1?'a job on it':jobs.length+' jobs on it'}.</b>
+    ${jobs.map(x=>`<div class="small" style="margin-top:4px">• ${esc(x.title)}${x.customer?' — '+esc(x.customer):''} <span class="muted">(${esc(fmtTime(x.start))}–${esc(fmtTime(x.end))})</span></div>`).join('')}
+    <div class="small" style="margin-top:6px">Booking here takes ${jobs.length===1?'it':'them'} off the calendar and puts ${jobs.length===1?'it':'them'} under <b>⚡ Needs a new time</b> at the top of the Requests tab. The job number${jobs.length===1?'':'s'} do${jobs.length===1?'es':''} not change, and nobody is given a time you have not agreed — you pick it, or take the next opening.</div>
+    <label class="row" style="gap:10px;align-items:center;margin-top:8px;cursor:pointer">
+      <input type="checkbox" ${d.bump?'checked':''} onchange="dpBump(this.checked)" style="width:20px;height:20px;flex:none;margin:0">
+      <span class="small"><b>Yes — take the slot and send ${jobs.length===1?'that job':'those jobs'} back</b></span></label>
+  </div>`;
+  if(other.length) return `<div class="small" style="margin-top:8px;color:var(--pending)">⚠️ Sits over ${esc(other.map(x=>x.title).join(', '))} — ${other.length===1?'that is not a job, so it stays':'those are not jobs, so they stay'} where ${other.length===1?'it is':'they are'}.</div>`;
+  return '<div class="small" style="margin-top:8px;color:var(--good)">✓ That slot is free.</div>';
+}
+function dpVerdict(){
+  const d=dpState; if(!d) return;
+  const clash=dpClash(), jobs=clash.filter(x=>x.isJob), other=clash.filter(x=>!x.isJob);
+  const box=document.getElementById('dpVerdict'); if(box) box.innerHTML=dpVerdictHtml(jobs,other);
+  const go=document.getElementById('dpGo');
+  if(go){
+    go.disabled=!(d.time && (!jobs.length || d.bump));
+    go.textContent=(jobs.length&&d.bump)?('Book it and move '+(jobs.length===1?'that job':'those jobs')):'Book it';
+  }
+}
+function dpTime(v){ if(!dpState) return; dpState.time=v; dpState.bump=false; dpVerdict(); }
+function dpHours(v){ if(!dpState) return; dpState.hours=Math.max(0.25,Math.min(12,Number(v)||1)); dpState.bump=false; dpVerdict(); }
+function dpBump(on){ if(!dpState) return; dpState.bump=!!on; dpVerdict(); }
+function dayPickRender(){
+  const d=dpState; if(!d) return;
+  const data=d.data, evs=(data&&data.events)||[];
+  const clash=dpClash(), jobs=clash.filter(x=>x.isJob), other=clash.filter(x=>!x.isJob);
+  const flags=data?[data.weekend?'Weekend':'',data.holiday||'',data.leave?('you are off — '+data.leave):''].filter(Boolean):[];
+  sheet(`<h2>${esc(d.title)}</h2>
+    ${d.sub?`<p class="small muted" style="margin-top:-4px">${esc(d.sub)}</p>`:''}
+    <div class="row" style="align-items:flex-end;gap:6px">
+      <button class="ghost" style="flex:none;min-width:44px" onclick="dpShift(-1)">‹</button>
+      <div class="grow"><input id="dpDate" type="date" value="${esc(d.date)}" onchange="dpSetDate(this.value)"></div>
+      <button class="ghost" style="flex:none;min-width:44px" onclick="dpShift(1)">›</button>
+    </div>
+    ${flags.length?`<div class="banner ot" style="margin-top:6px">${esc(flags.join(' · '))}</div>`:''}
+    <div class="card" style="margin:8px 0;padding:8px">
+      <div class="small muted">${esc(fmtDay(d.date+'T12:00:00'))}${data&&data.day?` · you work ${esc(fmtTime(data.day.start))}–${esc(fmtTime(data.day.end))}`:''}</div>
+      ${d.loading?'<p class="center" style="margin:10px 0"><span class="spin"></span></p>'
+        : d.err?`<p class="small" style="color:var(--bad)">${esc(d.err)}</p>`
+        : evs.length?evs.map((x,j)=>`<div class="list-item" style="cursor:pointer;padding:6px 0" onclick="dpShow(${j})">
+            <div class="row between">
+              <div><b>${x.allDay?'All day':esc(fmtTime(x.start))+'–'+esc(fmtTime(x.end))}</b> <span class="small">${esc(x.title)}</span></div>
+              <span class="small" style="color:var(--accent2)">${x.isJob?'job ›':'›'}</span>
+            </div>
+            ${(x.customer||x.location)?`<div class="small muted">${esc([x.customer,x.location].filter(Boolean).join(' · '))}</div>`:''}
+          </div>`).join('')
+        :'<p class="small muted" style="margin:6px 0">Nothing booked — the day is clear.</p>'}
+    </div>
+    <div class="row">
+      <div class="grow"><label>Start</label><input id="dpTime" type="time" value="${esc(d.time)}" onchange="dpTime(this.value)"></div>
+      <div class="grow"><label>Hours</label><input id="dpHours" type="number" step="0.25" min="0.25" value="${d.hours}" onchange="dpHours(this.value)"></div>
+    </div>
+    <p class="small muted" style="margin-top:4px">Any time you like — after hours, a weekend, or a slot that already has a job in it.</p>
+    <div id="dpVerdict">${dpVerdictHtml(jobs,other)}</div>
+    <div class="row" style="margin-top:12px">
+      <button class="secondary grow" onclick="${d.back?esc(d.back):'closeSheet()'}">Back</button>
+      <button class="grow" id="dpGo" ${(d.time&&(!jobs.length||d.bump))?'':'disabled'} onclick="dayPickGo(this)">${(jobs.length&&d.bump)?('Book it and move '+(jobs.length===1?'that job':'those jobs')):'Book it'}</button>
+    </div>`);
+}
+/* Tap an event on the day — the same thing Google Calendar gives you. */
+function dpShow(j){
+  const d=dpState, x=((d&&d.data&&d.data.events)||[])[j]; if(!x) return;
+  sheet(`<h2>${esc(x.title)}</h2>
+    <p class="small muted" style="margin-top:-4px">${x.allDay?'All day':esc(fmtDay(x.start))+' · '+esc(fmtTime(x.start))+'–'+esc(fmtTime(x.end))}</p>
+    ${x.po?`<div class="small" style="margin-top:2px"><b>${esc(x.po)}</b></div>`:''}
+    ${x.customer?`<div class="small" style="margin-top:4px">👤 ${esc(x.customer)}</div>`:''}
+    ${x.phone?`<div class="small" style="margin-top:2px">📞 <a href="tel:${esc(String(x.phone).replace(/[^0-9+]/g,''))}">${esc(x.phone)}</a></div>`:''}
+    ${x.location?`<div class="small" style="margin-top:2px">📍 ${esc(x.location)}</div>`:''}
+    <div style="margin-top:8px">${x.isJob?'<span class="pill live">A job — booking over it sends it back to Requests</span>':'<span class="pill">Not a job — it stays where it is</span>'}</div>
+    ${x.detail?`<pre class="small muted" style="white-space:pre-wrap;word-break:break-word;margin-top:10px">${esc(x.detail)}</pre>`:''}
+    <button class="secondary" style="width:100%;margin-top:12px" onclick="dayPickRender()">‹ Back to the day</button>`);
+}
+async function dayPickGo(btn){
+  const d=dpState; if(!d||!d.time||!d.onConfirm) return;
+  if(!S.online) return toast('You need signal to book.');
+  const start=new Date(d.date+'T'+d.time);
+  if(isNaN(start)) return toast('That time did not read properly.');
+  btn.disabled=true; btn.textContent='Booking…';
+  try{
+    const msg=await d.onConfirm(start.toISOString(), Number(d.hours)||1, !!d.bump);
+    dpState=null; closeSheet(); toast(msg||'Booked ✓',8000); loadRequests();
+  }catch(e){ toast(e.message,10000); dayPickRender(); dayPickLoad(); }
+}
+
+/* ---- ADD A JOB OR A PHONE CALL BY HAND --------------------------------------------------
+ * A JOB burns the next job number and fills the PO Log row, exactly as scheduling a website lead
+ * does. A CALL does not — nothing is sold yet, so it goes on the Estimate tab like any other
+ * quote call. Either can be saved with no time at all and picked up from the list later. ====*/
+let amState=null;
+function openAddManual(kind){
+  amState={ kind:kind==='call'?'call':'job', emergency:kind!=='call', customer:'', phone:'', email:'',
+            address:'', scope:'', company:'', hours:kind==='call'?0.5:2, notifyCustomer:true };
+  addManualRender();
+}
+function amSave(){
+  const a=amState; if(!a) return;
+  a.customer=val('amCust').trim(); a.phone=val('amPhone').trim(); a.email=val('amEmail').trim();
+  a.address=val('amAddr').trim(); a.scope=val('amScope').trim(); a.company=val('amCo').trim();
+  a.hours=Math.max(0.25,Math.min(12,Number(val('amHours'))||a.hours));
+  const em=document.getElementById('amEmg'); if(em) a.emergency=em.checked;
+  const nc=document.getElementById('amNotify'); if(nc) a.notifyCustomer=nc.checked;
+}
+function addManualRender(){
+  const a=amState; if(!a) return;
+  const isCall=a.kind==='call';
+  sheet(`<h2>${isCall?'📞 Schedule a phone call':'⚡ Add a job by hand'}</h2>
+    <p class="small muted" style="margin-top:-4px">${isCall
+      ? 'Blocks the call on the calendar and files it on the Estimate tab. No job number is used — nothing is sold yet.'
+      : 'Gets the next job number and a full PO Log row, the same as scheduling a website lead.'}</p>
+    <label>Customer / company <span class="muted">(needed)</span></label>
+    <input id="amCust" value="${esc(a.customer)}" placeholder="Who is it for?">
+    <div class="row">
+      <div class="grow"><label>Phone</label><input id="amPhone" type="tel" value="${esc(a.phone)}"></div>
+      <div class="grow"><label>Email</label><input id="amEmail" type="email" value="${esc(a.email)}"></div>
+    </div>
+    <label>Address</label><input id="amAddr" value="${esc(a.address)}">
+    <label>What is the ${isCall?'call about':'job'}?</label>
+    <textarea id="amScope" rows="3" placeholder="${isCall?'What do they want quoted?':'What needs doing?'}">${esc(a.scope)}</textarea>
+    <div class="row">
+      <div class="grow"><label>Billed to (company)</label><input id="amCo" value="${esc(a.company)}"></div>
+      <div class="grow"><label>How long? (hours)</label><input id="amHours" type="number" step="0.25" min="0.25" value="${a.hours}"></div>
+    </div>
+    ${isCall?'':`<label class="row" style="gap:10px;align-items:center;margin-top:10px;cursor:pointer">
+      <input type="checkbox" id="amEmg" ${a.emergency?'checked':''} style="width:20px;height:20px;flex:none;margin:0">
+      <span class="small"><b>Emergency</b> — may go after hours, today, or on top of a job already there</span></label>
+    <label class="row" style="gap:10px;align-items:center;margin-top:6px;cursor:pointer">
+      <input type="checkbox" id="amNotify" ${a.notifyCustomer!==false?'checked':''} style="width:18px;height:18px;flex:none;margin:0">
+      <span class="small">Email the customer to confirm the time</span></label>`}
+    <div class="row" style="margin-top:12px">
+      <button class="ghost grow" onclick="closeSheet()">Cancel</button>
+      <button class="secondary grow" onclick="amLater(this)">Save — no time yet</button>
+    </div>
+    <button class="grow" style="width:100%;margin-top:8px" onclick="amPickTime()">📅 Pick a time ›</button>`);
+}
+function amPickTime(){
+  amSave(); const a=amState; if(!a) return;
+  if(!a.customer) return toast('Who is it for? Give at least a name.');
+  dayPickOpen({
+    title:(a.kind==='call'?'When is the call? — ':'When is the job? — ')+a.customer,
+    sub:[a.scope,a.address].filter(Boolean).join(' · '),
+    hours:a.hours, date:todayStr(), back:'addManualRender()',
+    onConfirm:async(start,hours,bump)=>{
+      const r=await api('requestAddManual',{ kind:a.kind, customer:a.customer, phone:a.phone,
+        email:a.email, address:a.address, scope:a.scope, company:a.company, hours:hours,
+        start:start, bump:!!bump, emergency:!!a.emergency,
+        notifyCustomer:a.notifyCustomer!==false },{timeout:120000});
+      amState=null;
+      const back=(r&&r.bumped&&r.bumped.length)||0;
+      return (a.kind==='call'?'Call booked — ':'Job booked — ')+fmtDay(start)+' '+fmtTime(start)
+        +((r&&r.po)?' · '+r.po:'')
+        +(back?' · '+back+' job(s) now need a new time':'');
+    }
+  });
+}
+async function amLater(btn){
+  amSave(); const a=amState; if(!a) return;
+  if(!a.customer) return toast('Who is it for? Give at least a name.');
+  if(!S.online) return toast('You need signal.');
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    await api('requestAddManual',{ kind:a.kind, customer:a.customer, phone:a.phone, email:a.email,
+      address:a.address, scope:a.scope, company:a.company, hours:a.hours, emergency:!!a.emergency });
+    amState=null; closeSheet();
+    toast((a.kind==='call'?'Call':'Job')+' saved — it is waiting at the top of Requests.',7000);
+    loadRequests();
+  }catch(e){ toast(e.message,9000); btn.disabled=false; btn.textContent='Save — no time yet'; }
+}
+
 function openReqSchedule(i){
   const q=(S.requests||[])[i]; if(!q) return;
   const sug=q.suggested&&!isNaN(new Date(q.suggested))?new Date(q.suggested):new Date(Date.now()+86400000);
