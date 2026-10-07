@@ -2829,12 +2829,16 @@ async function jhaSubmitSign(k,btn){
    Drive/YouTube links embedded IN the app — the new hire never leaves it. Nag-not-block: they
    can clock in from day one, but a banner sits on the Clock tab until they finish and sign.
    Completion files a signed PDF training record in Drive (Onboarding Records folder). */
-async function loadOnboarding(){
+async function loadOnboarding(force){
   if (S._obLoading) return;
-  if (!S.onboard){ const c=await DB.getCache('onboard'); if(c){ S.onboard=c; if(S.tab==='clock') render(); } }
+  if (!S.onboard){ const c=await DB.getCache('onboard'); if(c){ S.onboard=c; S.onboardAt=c._at||0; if(S.tab==='clock') render(); } }
   if (!S.online) return;
+  // v60 — every other loader skips the call when its cache is fresh; this one refetched on every
+  // single app open. The checklist changes when someone edits the Onboarding sheet, not hourly.
+  if (!force && S.onboard && (Date.now()-(S.onboardAt||0)) < CUST_TTL) return;
   S._obLoading=true;
-  try{ S.onboard = await apiBg('onboardingGet',{}); DB.setCache('onboard',S.onboard); if(S.tab==='clock') render(); }
+  try{ S.onboard = await apiBg('onboardingGet',{}); S.onboardAt=Date.now();
+       DB.setCache('onboard', Object.assign({_at:S.onboardAt}, S.onboard)); if(S.tab==='clock') render(); }
   catch(e){ /* non-critical — banner just won't show */ }
   S._obLoading=false;
 }
@@ -5385,19 +5389,34 @@ async function runStatPay(btn){
 /* ============================ WEBSITE REQUESTS ===============================================
  * The ball-park sequence files leads here instead of booking Paul's calendar itself. He checks
  * the AI's hours, picks the slot, assigns the crew — and only then does it hit the calendar. */
+/* v60 — THE REQUESTS TAB NO LONGER WAITS ON THE OFFICE.
+ * Every other tab in this app paints from what the phone already has and refreshes behind it —
+ * jobs, materials, customers, onboarding all do. Requests did not: it had no cache at all, so
+ * every single visit sat on a spinner for the whole round trip, and an Apps Script round trip is
+ * seconds. Now it paints the last answer immediately and quietly replaces it when the new one
+ * lands. The data is a few seconds stale for a moment, which for a list of leads is nothing. */
+function applyRequests(r){
+  S.requests=r.requests||[];
+  S.reqEstimates=r.estimates||[];   // v46: estimate calls held but not yet turned into jobs
+  S.reqBooked=r.booked||[];         // v46: booked jobs + whether the customer has confirmed
+  S.reqCalls=r.calls||[];           // v52: customers to ring because their job was moved
+  S.reqCollateral=r.collateral||[]; // v51: jobs that lost their slot and need a new time
+  S.pendingRequests=S.requests.length+S.reqCollateral.length;
+}
 async function loadRequests(){
-  if(S._reqLoading||!S.online) return; S._reqLoading=true;
+  if(S._reqLoading) return; S._reqLoading=true;
   if(canApprove()) loadApprovals();                 // v56 — hours / time off / allowances waiting
   try{
+    if(!S.requests){
+      const c=await DB.getCache('requests');
+      if(c){ applyRequests(c); if(S.tab==='requests') render(); }
+    }
+    if(!S.online){ S._reqLoading=false; return; }
     const r=await apiBg('requestList',{});
-    S.requests=r.requests||[];
-    S.reqEstimates=r.estimates||[];   // v46: estimate calls held but not yet turned into jobs
-    S.reqBooked=r.booked||[];         // v46: booked jobs + whether the customer has confirmed
-    S.reqCalls=r.calls||[];           // v52: customers to ring because their job was moved
-    S.reqCollateral=r.collateral||[]; // v51: jobs that lost their slot and need a new time
-    S.pendingRequests=S.requests.length+S.reqCollateral.length;
+    applyRequests(r); S.reqErr='';
+    DB.setCache('requests', r);
     if(S.tab==='requests') render();
-  }catch(e){ S.reqErr=e.message; if(S.tab==='requests') render(); }
+  }catch(e){ if(!S.requests) S.reqErr=e.message; if(S.tab==='requests') render(); }
   S._reqLoading=false;
 }
 function openRequests(){ go('requests'); }   // from the pop-up and older call sites
@@ -5493,7 +5512,7 @@ function requestsView(){
       <button class="secondary grow" onclick="openAddManual('call')">📞 Schedule a call</button>
     </div>`:''}
     ${S.reqErr?`<div class="banner ot">${esc(S.reqErr)}</div>`:''}
-    <div class="card">${list||(S._reqLoading?'<p class="center"><span class="spin"></span></p>':'<p class="muted small">Nothing waiting. 🎉</p>')}</div>
+    <div class="card">${list||((S._reqLoading&&!S.requests)?'<p class="center"><span class="spin"></span></p>':'<p class="muted small">Nothing waiting. 🎉</p>')}</div>
     ${ests?`<h3 style="margin-top:18px">Quoted — waiting on the customer</h3>
       <p class="small muted" style="margin-top:-4px">Estimate calls you've held. Booking one here gets it a PO number and a PO Log row.</p>
       <div class="card">${ests}</div>`:''}
