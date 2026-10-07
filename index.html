@@ -2000,12 +2000,22 @@ function tabBar(){
   const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
   const t=(id,ic,label)=>`<button class="${S.tab===id?'active':''}" onclick="go('${id}')"><span class="ic">${ic}</span>${label}</button>`;
   const cal=`<span class="calic"><span class="calic-top"></span><span class="calic-num">${new Date().getDate()}</span></span>`;
+  // Waiting leads plus hours / time off / allowances to approve. Both of those live on the
+  // REQUESTS tab — the leads are the list itself, the approvals are the "Needs your OK" card at
+  // the top of it — so this count badges Requests and nothing else.
+  //
+  // v61 — it used to badge the More button as well. That dated from when Requests was still
+  // inside the More menu and a dot there was the only way to surface it; when Requests was
+  // promoted to a tab of its own the dot was copied rather than moved, and never unhooked. So
+  // More carried a red dot that pointed at a tab sitting right next to it, and opening the menu
+  // showed nothing marked — because nothing in it (JHA, Hours, Entries, Team, Admin, Price list)
+  // has anything waiting. Nothing in there is badged, so More no longer claims otherwise.
   const pend=(S.pendingRequests||0)+apvCount();
   const canReq=canApprove();
   // Paul's own bar (Sept 2026): the four things he actually works from, then More.
   // Crew get Entries in its place — they have no Requests or Jobs to look at.
   const moreTabs = canReq ? ['hours','team','admin','jha','entries'] : ['hours','jha'];
-  const more=`<button class="${moreTabs.includes(S.tab)?'active':''}" onclick="openMore()"><span class="ic">☰${pend?'<span class="dot"></span>':''}</span>More</button>`;
+  const more=`<button class="${moreTabs.includes(S.tab)?'active':''}" onclick="openMore()"><span class="ic">☰</span>More</button>`;
   return `<div class="tabbar">
     ${t('clock','⏱','Clock')}
     ${canReq?t('requests',`📨${pend?'<span class="dot"></span>':''}`,'Requests'):''}
