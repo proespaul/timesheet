@@ -2450,7 +2450,11 @@ function schedView(){
     <div class="seg" style="margin-bottom:10px">
       <button class="${mode==='list'?'on':''}" onclick="schedToggle('list')">☰ Next 2 weeks</button>
       <button class="${mode==='month'?'on':''}" onclick="schedToggle('month')">📅 Month</button>
-    </div>`;
+    </div>
+    ${canApprove()?`<div class="row" style="margin-bottom:10px">
+      <button class="secondary grow" onclick="openAddManual('job')">⚡ Add a job</button>
+      <button class="secondary grow" onclick="openAddManual('call')">📞 Schedule a call</button>
+    </div>`:''}`;
   if(mode==='month') return head + schedMonthHtml() + (d?timeOffSection():'');
   return head + `<div class="card">
       <p class="small muted" style="margin:0">${(S.sched&&S.sched.canAssign)
@@ -2619,6 +2623,21 @@ async function toDecide(k,approve,btn){
     toast((approve?'Approved':'Denied')+' — '+t.name+' has been emailed.'); schedRefreshAll();
   }catch(e){ toast(e.message); btn.disabled=false; }
 }
+/* v57 — WHICH JOB IS THIS CALENDAR EVENT?
+   Until now a booking on the Schedule tab was a dead end: you could see it and assign crew to it,
+   and that was all. Move it and Cancel job lived only on the Requests tab, under "Booked jobs",
+   which is not where you look when you have just realised you booked the wrong day. The event
+   now carries its own eventId (v57 server side) so it can be matched back to the job, and the
+   same two actions — plus the customer's original website enquiry — open right here. */
+function schedJobFor(ev){
+  const id=String((ev&&ev.id)||'');
+  if(!id) return null;
+  const bk=(S.reqBooked||[]);
+  for(let i=0;i<bk.length;i++) if(String(bk[i].eventId||'')===id) return {q:bk[i], i:i, kind:'booked'};
+  const es=(S.reqEstimates||[]);
+  for(let j=0;j<es.length;j++) if(String(es[j].eventId||'')===id) return {q:es[j], i:j, kind:'estimate'};
+  return null;
+}
 async function openSchedDetail(k){
   const ev=dereg(k); if(!ev) return;
   const d=S.sched||{};
@@ -2627,12 +2646,26 @@ async function openSchedDetail(k){
   if(d.canAssign && !(S.employees&&S.employees.length) && S.online){
     try{ const r=await api('listEmployees'); S.employees=r.employees||[]; }catch(e){}
   }
+  // v57 — the booked list is what carries the job behind the event. Load it if this session
+  // has not opened the Requests tab yet, otherwise the actions would be missing for no reason.
+  if(d.canAssign && !S.reqBooked && S.online){ try{ await loadRequests(); }catch(e){} }
+  const job=d.canAssign?schedJobFor(ev):null;
+  const q=job?job.q:null;
   const when=`${schedDayLabel(localDateStr(new Date(ev.start)))} · ${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}`;
   const asg=new Set(ev.assigned.map(a=>a.email));
   sheet(`<h2>${esc(ev.title)}</h2>
-    <p class="small muted" style="margin-top:-4px">${esc(when)}</p>
+    <p class="small muted" style="margin-top:-4px">${esc(when)}${(q&&q.po)?' · '+esc(q.po):''}</p>
     ${ev.location?`<p class="small">📍 <a href="https://maps.google.com/?q=${encodeURIComponent(ev.location)}" target="_blank" style="color:var(--accent2)">${esc(ev.location)}</a></p>`:''}
+    ${(q&&q.phone)?`<p class="small" style="margin:4px 0">📞 <a href="tel:${esc(String(q.phone).replace(/[^0-9+]/g,''))}" style="color:var(--accent2)">${esc(q.phone)}</a>${q.customer?' · '+esc(q.customer):''}</p>`:''}
+    ${(q&&q.detail)?`<details style="margin:8px 0"><summary class="small" style="color:var(--accent2);cursor:pointer">📨 See the original enquiry from the customer</summary>${reqDetailHtml(q.detail)}${reqPhotoStrip(q)}</details>`:''}
     ${ev.desc?`<div class="card" style="margin:8px 0"><div class="small" style="white-space:pre-wrap">${esc(ev.desc)}</div></div>`:''}
+    ${(job&&job.kind==='booked')?`<div class="row" style="margin:10px 0 0">
+        <button class="secondary grow" onclick="closeSheetDom();openReqMove(${job.i})">📅 Move it</button>
+        <button class="danger grow" onclick="closeSheetDom();openReqCancel(${job.i})">Cancel job</button>
+      </div>
+      <p class="small muted" style="margin:6px 0 0">Moving it re-dates the PO Log and asks the customer again. Cancelling frees the slot and marks ${q&&q.po?esc(q.po):'the job'} Cancelled — the job number is kept, never reused.</p>`
+      : (job&&job.kind==='estimate')?`<p class="small muted" style="margin:10px 0 0">This is an estimate call, not a booked job. Move or cancel it from Requests › Quoted.</p>`
+      : (d.canAssign&&S.reqBooked)?`<p class="small muted" style="margin:10px 0 0">This booking did not come from a website enquiry — it was added straight to the calendar or booked as a return visit — so there is no job behind it to move or cancel here. Change it in Google Calendar.</p>`:''}
     <h3 style="margin:10px 0 4px">${d.canAssign?'Assign the crew':'Who\'s on this job'}</h3>
     ${d.canAssign
       ? `${(S.employees||[]).filter(e=>e.active&&e.role!=='bookkeeper').map(e=>`<div class="perm">
@@ -6453,7 +6486,7 @@ async function reqMove(i,btn){
     const r=await api('requestReschedule',{id:q.id, start:start.toISOString(), hours, notify:notifyCustomer},{timeout:120000});
     toast('Moved ✓'+(notifyCustomer?' — customer emailed':''));
     if(r&&r.note&&/NOT notified|unavailable|no customer email/i.test(r.note)) setTimeout(()=>toast(r.note),2600);
-    closeSheetDom(); loadRequests(); render();
+    closeSheetDom(); loadRequests(); if(S.sched) schedRefreshAll(); render();   // v57
   }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='📅 Move it'; }
 }
 /* v46 — cancel a booked job. Frees the calendar slot and marks the PO Log row Cancelled.
@@ -6486,7 +6519,7 @@ async function reqCancel(i,btn){
     S.reqBooked=(S.reqBooked||[]).filter(x=>x.id!==q.id);
     toast('Cancelled ✓'+(r&&r.po?(' — '+r.po+' marked Cancelled'):''));
     if(r&&r.note&&/NOT /.test(r.note)) setTimeout(()=>toast(r.note),2600);
-    closeSheetDom(); loadRequests(); render();
+    closeSheetDom(); loadRequests(); if(S.sched) schedRefreshAll(); render();   // v57
   }catch(e){
     /* v47 — the cancel often lands even when its answer never makes it back to the phone (weak
        signal, a slow Google reply). Before leaving the person stuck on this screen, ask the
