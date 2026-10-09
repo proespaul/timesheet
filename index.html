@@ -1060,7 +1060,7 @@ async function apiRaw_(action, payload, timeoutMs){
   } catch(e){
     // Nothing came back. Whatever the browser calls it, this is a transport failure, never a
     // rejection — the request may or may not have run, and the backend dedupes a replay.
-    if (e && e.name === 'AbortError') throw apiErr_('No answer from the server — check your signal and try again.', 'network');
+    if (e && e.name === 'AbortError') throw apiErr_('No answer from the office in 30 seconds. Usually it is the Google script being slow to wake up, not your signal — try once more.', 'network');
     throw apiErr_((e && e.message) ? 'Network error — ' + e.message : 'Network error', 'network');
   } finally { clearTimeout(killer); }
   let json;
@@ -2670,13 +2670,20 @@ async function openSchedDetail(k){
   sheet(shell('<p class="center small muted" style="margin:14px 0"><span class="spin"></span> looking up the job…</p>'));
   const mine=S._sheet;
   let info=null, err='';
-  try{ info=await apiBg('eventInfo',{eventId:ev.id}); }
+  // v65 — this one reads the calendar AND the Requests tab, so on a cold Apps Script start it
+  // can take well past the usual 30 s. Given longer rather than failing on a slow morning.
+  try{ info=await api('eventInfo',{eventId:ev.id},{bg:true, timeout:75000}); }
   catch(e){ err=e.message||'Could not reach the office.'; }
   if(S._sheet!==mine) return;                       // they moved on while it loaded
 
   if(!info){ sheet(shell(`<p class="small" style="color:var(--bad);margin:10px 0">${esc(err)}</p>`)); return; }
   const key=reg(info);
-  const bi=info.kind==='request'?schedBookedIndex(info.requestId):-1;
+  let bi=info.kind==='request'?schedBookedIndex(info.requestId):-1;
+  // The booked list is what the Move / Cancel / Correct buttons index into. If this session has
+  // not opened the Requests tab yet it is empty, and the job would wrongly look unactionable.
+  if(info.kind==='request' && bi<0 && S.online){
+    try{ await loadRequests(); if(S._sheet!==mine) return; bi=schedBookedIndex(info.requestId); }catch(e){}
+  }
   const who=[info.customer, info.po].filter(Boolean).join(' · ');
   const mid=`
     ${who?`<p class="small" style="margin:6px 0 0"><b>${esc(info.customer||'')}</b>${info.po?` <span class="muted">${esc(info.po)}</span>`:''}</p>`:''}
