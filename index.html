@@ -2692,33 +2692,441 @@ async function openSchedDetail(k){
     ${info.scope?`<div class="banner" style="background:var(--panel2);margin-top:8px">${esc(info.scope)}</div>`:''}
     ${info.detail?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openSchedEnquiry('${key}')">📨 See the original enquiry</button>`:''}
     ${info.kind==='visit'?`<p class="small muted" style="margin:8px 0 0">This is a <b>return visit</b> — it continues ${info.po?esc(info.po):'an earlier job'}, so the details above are the original job's.</p>`:''}
-    ${info.kind==='request'&&bi>=0?`<div class="row" style="margin:10px 0 0">
-        <button class="secondary grow" onclick="closeSheetDom();openReqMove(${bi})">📅 Move it</button>
-        <button class="danger grow" onclick="closeSheetDom();openReqCancel(${bi})">Cancel job</button>
-      </div>
-      <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheetDom();openReqEdit('bk',${bi})">✏️ Change the details</button>
-      <p class="small muted" style="margin:6px 0 0">Moving it re-dates the PO Log and asks the customer again. Cancelling frees the slot and marks ${info.po?esc(info.po):'the job'} Cancelled — the job number is kept, never reused.</p>`
-     :info.kind==='request'?`<p class="small muted" style="margin:10px 0 0">This job is on the Requests tab under “Booked jobs” — open it there to move or cancel it.</p>`
-     :info.isJob?`<div class="row" style="margin:10px 0 0">
-        <button class="secondary grow" onclick="openVisitMove('${key}')">📅 Move it</button>
-        <button class="danger grow" onclick="openVisitCancel('${key}')">Call it off</button>
-      </div>
-      <p class="small muted" style="margin:6px 0 0">${info.kind==='visit'
-        ? 'Moving or calling off a return visit does <b>not</b> cancel the job — '+(info.po?esc(info.po):'it')+' stays open and still gets invoiced under the same number. Only this trip changes.'
-        : 'This was added straight to the calendar, so there is no job record behind it — moving or removing it changes the calendar only.'}</p>`
-     :`<p class="small muted" style="margin:10px 0 0">Not a job — nothing to move or cancel here.</p>`}`;
+    ${info.isJob
+      ? `<button style="width:100%;margin-top:12px" onclick="openSchedModify('${key}',${bi})">✏️ Modify this booking</button>`
+      : `<p class="small muted" style="margin:10px 0 0">Not a job — nothing to change here.</p>`}`;
   sheet(shell(mid));
 }
-/* The customer's own words, as they came in off the website form. */
-function openSchedEnquiry(key){
+/* v67 — ONE DOOR, NOT FOUR.
+   The sheet used to carry Move it / Cancel / Change the details side by side, and a return visit
+   got only two of them — so the one booking on a quiet calendar was also the one you could not
+   correct. Everything you can do to a booking now lives behind one Modify button, the same list
+   whatever created the booking, with each entry saying plainly what it will and will not touch. */
+function openSchedModify(key,bi){
   const info=dereg(key); if(!info) return;
-  sheet(`<h2>📨 The original enquiry</h2>
-    <p class="small muted" style="margin-top:-4px">${esc([info.customer,info.po,info.entryNo?('#'+info.entryNo):''].filter(Boolean).join(' · '))}</p>
-    ${info.address?`<p class="small">📍 ${esc(info.address)}</p>`:''}
-    ${reqDetailHtml(info.detail)}
-    ${reqPhotoStrip(info)}
-    <button class="secondary" style="width:100%;margin-top:12px" onclick="closeSheet()">Close</button>`);
+  const isReq=info.kind==='request' && bi>=0;
+  const isVisit=info.kind==='visit';
+  const row=(icon,label,sub,onclick,cls)=>`<button class="${cls||'secondary'}" style="width:100%;margin-top:8px;text-align:left;padding:14px"
+      onclick="${onclick}"><div style="font-size:1.02rem">${icon}&nbsp;&nbsp;${label}</div>
+      ${sub?`<div class="small muted" style="margin-top:2px;white-space:normal">${sub}</div>`:''}</button>`;
+  sheet(`<h2>Modify</h2>
+    <p class="small muted" style="margin-top:-4px">${esc([info.customer,info.po,fmtDay(info.start)+' '+fmtTime(info.start)].filter(Boolean).join(' · '))}</p>
+    ${row('📅','Date &amp; time',
+        isReq?'Moves the calendar event and the PO Log start date, and asks the customer to confirm again.'
+             :'Moves this visit only. '+(info.po?esc(info.po)+' keeps its start date.':'Calendar only.'),
+        isReq?`closeSheetDom();openReqMove(${bi})`:`openVisitMove('${key}')`)}
+    ${info.jobRequestId
+      ? row('👤','Customer &amp; job details',
+          'Name, phone, email, address, scope, materials, hours and the quoted range.'
+          +(isVisit?' These belong to the job, so they change on '+(info.po?esc(info.po):'the original booking')+' too.':'')
+          +' Goes through to the PO Log.',
+          `openSchedEditJob('${key}')`)
+      : row('👤','Customer &amp; job details','No job record behind this booking — nothing to correct.','toast(\'This booking has no job record behind it.\')','ghost')}
+    ${info.jobRequestId && !isVisit
+      ? row('🔁','What it is — appointment or estimate',
+          info.po?('This already has job number '+esc(info.po)+', so it cannot go back to being an estimate. Tap to see why.')
+                 :'Switch between an estimate call and a booked job.',
+          `openSchedSetType('${key}')`)
+      : ''}
+    ${row('📨','The original enquiry', info.detail?'What the customer wrote, with their photos.':'Nothing on file for this one.',
+        info.detail?`openSchedEnquiry('${key}')`:`toast('No enquiry on file for this one.')`, info.detail?'secondary':'ghost')}
+    ${isReq
+      ? row('❌','Cancel the job','Frees the slot and marks '+(info.po?esc(info.po):'the job')+' Cancelled. The job number is kept, never reused.',
+          `closeSheetDom();openReqCancel(${bi})`,'danger')
+      : row('❌','Call off this visit',
+          isVisit?('Removes this trip only. '+(info.po?esc(info.po):'The job')+' stays open and still gets invoiced.')
+                 :'Removes it from the calendar.',
+          `openVisitCancel('${key}')`,'danger')}
+    <button class="ghost" style="width:100%;margin-top:12px" onclick="closeSheet()">Back</button>`);
 }
+/* Correct the job behind a booking — the same editor the Requests tab uses, reached from the
+   calendar. For a return visit this edits the job it continues, which is the right row: a phone
+   number is a fact about the customer, not about one trip out to them. */
+function openSchedEditJob(key){
+  const info=dereg(key); if(!info) return;
+  const q={ id:info.jobRequestId, customer:info.customer, company:info.company, phone:info.phone,
+            email:info.email, address:info.address, scope:info.scope, materials:info.materials,
+            hours:info.estHours, bookedHours:info.estHours,
+            priceLow:info.priceLow, priceHigh:info.priceHigh, po:info.po };
+  const k=reg(q);
+  sheet(`<h2>Correct ${esc(info.customer||'this job')}</h2>
+    <p class="small muted" style="margin-top:-4px">${info.po?esc(info.po)+' · ':''}Goes to the request, the calendar title and the PO Log. Use “Date &amp; time” to change when it happens.</p>
+    <label>Customer name</label><input id="edCustomer" value="${esc(q.customer||'')}">
+    <label>Company (blank for a homeowner)</label><input id="edCompany" value="${esc(q.company||'')}">
+    <div class="row"><div class="grow"><label>Phone</label><input id="edPhone" type="tel" value="${esc(q.phone||'')}"></div>
+      <div class="grow"><label>Email</label><input id="edEmail" type="email" value="${esc(q.email||'')}"></div></div>
+    <label>Address</label><input id="edAddress" value="${esc(q.address||'')}">
+    <label>Scope</label><textarea id="edScope" rows="3">${esc(q.scope||'')}</textarea>
+    <label>Materials</label><textarea id="edMaterials" rows="2">${esc(q.materials||'')}</textarea>
+    <div class="row">
+      <div class="grow"><label>Job length (hours)</label><input id="edHours" type="number" step="0.25" min="0" value="${q.hours||''}"></div>
+      <div class="grow"><label>Quoted from ($)</label><input id="edLow" type="number" step="1" min="0" value="${q.priceLow||''}"></div>
+      <div class="grow"><label>to ($)</label><input id="edHigh" type="number" step="1" min="0" value="${q.priceHigh||''}"></div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Back</button>
+      <button class="grow" onclick="schedSaveJob('${k}',this)">💾 Save</button>
+    </div>`);
+}
+async function schedSaveJob(k,btn){
+  const q=dereg(k); if(!q) return;
+  if(!S.online) return toast('You need signal to save.');
+  const p={id:q.id, customer:val('edCustomer'), company:val('edCompany'), phone:val('edPhone'),
+    email:val('edEmail'), address:val('edAddress'), scope:val('edScope'), materials:val('edMaterials'),
+    hours:val('edHours'), bookedHours:val('edHours'), priceLow:val('edLow'), priceHigh:val('edHigh')};
+  if(!String(p.customer).trim()) return toast('The customer needs a name.');
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const r=await api('requestUpdate',p,{timeout:120000});
+    toast(r&&r.changed&&r.changed.length?('Saved ✓ — '+r.changed.join(', ')):'Nothing changed');
+    if(r&&r.note&&/NOT |failed|not found/i.test(r.note)) setTimeout(()=>toast(r.note),2600);
+    closeSheet(); schedRefreshAll(); loadRequests();
+  }catch(e){ toast(e.message,8000); btn.disabled=false; btn.textContent='💾 Save'; }
+}
+/* Estimate call or booked job. The server refuses the two changes that would cost a PO number;
+   the refusal explains itself, so it is shown as-is rather than second-guessed here. */
+function openSchedSetType(key){
+  const info=dereg(key); if(!info) return;
+  const now=info.type==='ESTIMATE'?'an estimate call':'a booked job';
+  const want=info.type==='ESTIMATE'?'APPOINTMENT':'ESTIMATE';
+  sheet(`<h2>What is this?</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(info.customer||'')}${info.po?' · '+esc(info.po):''}</p>
+    <div class="banner" style="background:var(--panel2)">Right now it is <b>${now}</b>.</div>
+    <p class="small muted">An estimate call is a 15–120 minute phone call with no job number. A booked job burns the next job number, which becomes its QuickBooks invoice number.</p>
+    <button style="width:100%;margin-top:10px" onclick="schedSetTypeGo('${key}','${want}',this)">Change it to ${want==='ESTIMATE'?'an estimate call':'a booked job'}</button>
+    <button class="ghost" style="width:100%;margin-top:8px" onclick="closeSheet()">Leave it as it is</button>`);
+}
+async function schedSetTypeGo(key,want,btn){
+  const info=dereg(key); if(!info) return;
+  if(!S.online) return toast('You need signal.');
+  btn.disabled=true; btn.textContent='Changing…';
+  try{
+    await api('requestSetType',{id:info.jobRequestId, type:want},{timeout:90000});
+    toast('Changed to '+want+' ✓');
+    closeSheet(); schedRefreshAll(); loadRequests();
+  }catch(e){ toast(e.message,12000); btn.disabled=false; btn.textContent='Change it'; }
+}
+
+/* v68 — AFTER A CHANGE, TELL THEM OR DON'T.
+   Every screen that changes a booking had the customer email buried as a tick-box you had to
+   notice before you hit the button, and nothing at all for ringing them. Now the change happens
+   first and the choice comes after, in plain words, with "nothing for now" as a real option —
+   because a date moved by ten minutes needs no phone call and the app should not imply it does.
+   The phone makes the call; this only records that it happened, so weeks later there is an
+   answer to "did anyone actually ring them". */
+function afterChange(who, what, already){
+  const k=reg(who||{});
+  const tel=String((who&&who.phone)||'').replace(/[^0-9+]/g,'');
+  const mail=String((who&&who.email)||'').trim();
+  sheet(`<h2>Tell ${esc((who&&who.customer)||'the customer')}?</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(what||'')}</p>
+    ${already?`<div class="banner" style="background:var(--panel2)">✉️ ${esc(already)}</div>`:''}
+    ${tel?`<a href="tel:${esc(tel)}" style="text-decoration:none" onclick="tellCustomer('${k}','called',null)">
+        <button class="secondary" style="width:100%;margin-top:10px;padding:15px;text-align:left;font-size:1.02rem">📞&nbsp;&nbsp;Call ${esc(who.phone)}</button></a>`
+      :'<p class="small muted" style="margin-top:10px">No phone number on file for them.</p>'}
+    ${(mail&&!already)?`<button class="secondary" style="width:100%;margin-top:8px;padding:15px;text-align:left;font-size:1.02rem"
+        onclick="tellCustomer('${k}','email',this)">📧&nbsp;&nbsp;Email ${esc(mail)}</button>`:''}
+    ${(!mail&&!already)?'<p class="small muted" style="margin-top:8px">No email address on file for them.</p>':''}
+    <button class="ghost" style="width:100%;margin-top:12px;padding:14px" onclick="closeSheet()">Nothing for now</button>`);
+}
+async function tellCustomer(k,how,btn){
+  const who=dereg(k); if(!who||!who.eventId){ if(how==='called') closeSheetDom(); return; }
+  if(how==='called'){
+    try{ await api('eventTell',{eventId:who.eventId, how:'called'},{timeout:90000});
+         toast('Noted — marked as called'); loadRequests(); }
+    catch(e){ /* the call itself matters more than the record of it */ }
+    setTimeout(()=>closeSheetDom(),400);
+    return;
+  }
+  // v69 — read it before it goes. Fetch the letter, show it, let Paul rewrite the one paragraph
+  // that is his to write, and only then send.
+  if(!S.online) return toast('You need signal to email them.');
+  if(btn){ btn.disabled=true; btn.textContent='Opening…'; }
+  try{
+    const pv=await api('eventTell',{eventId:who.eventId, how:'email', preview:true},{timeout:90000});
+    openEmailDraft(k, pv);
+  }catch(e){
+    toast(e.message,8000);
+    if(btn){ btn.disabled=false; btn.textContent='📧  Email'; }
+  }
+}
+/* The letter, before it posts. The message box is Paul's; everything under it is built by the
+   script and shown read-only, because the Yes / Reschedule / Cancel links carry one-off tokens
+   and an edited link is a link that no longer works. */
+function openEmailDraft(k, pv){
+  sheet(`<h2>Email ${esc(pv.customer||'the customer')}</h2>
+    <p class="small muted" style="margin-top:-4px">To ${esc(pv.to)}</p>
+    <label>Subject <span class="muted">(set by the app)</span></label>
+    <input value="${esc(pv.subject)}" readonly style="opacity:.75">
+    <label>Your message — change it to whatever fits</label>
+    <textarea id="emMsg" rows="4">${esc(pv.suggestion||'')}</textarea>
+    <p class="small muted" style="margin-top:-2px">This is the only part that is yours. The time, the address${pv.buttons?', and the Yes / Reschedule / Cancel buttons':''} are filled in below it.</p>
+    <label>How it will look</label>
+    <div class="card" style="margin:0"><pre class="small" style="white-space:pre-wrap;word-break:break-word;margin:0">${esc(pv.body)}</pre></div>
+    ${pv.buttons?'<p class="small muted">The three buttons are live links. Tapping Yes turns the job green in the app; Reschedule turns it red and puts them on your list to ring.</p>':''}
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Don't send</button>
+      <button class="grow" onclick="sendEmailDraft('${k}',this)">📧 Send it</button>
+    </div>`);
+}
+async function sendEmailDraft(k,btn){
+  const who=dereg(k); if(!who) return;
+  if(!S.online) return toast('You need signal to send.');
+  const message=val('emMsg');
+  btn.disabled=true; btn.textContent='Sending…';
+  try{
+    const r=await api('eventTell',{eventId:who.eventId, how:'email', message},{timeout:120000});
+    toast('Emailed ✓'+(r&&r.note&&!/^emailed$/i.test(r.note)?' — '+r.note:''),6000);
+    closeSheet(); loadRequests();
+  }catch(e){ toast(e.message,9000); btn.disabled=false; btn.textContent='📧 Send it'; }
+}
+
+/* v70/v71 — THE ENQUIRY IN THREE LAYERS.
+   What is stored on a lead is the ball-park block: Claude's tidy write-up of the form, the
+   scenario pricing, and the swing question. The customer's OWN words are not in it — and the
+   phrasing matters, because "the breaker keeps going" and "replace the panel" get written up the
+   same way and are very different jobs. So:
+     1. what they sent      — fetched from the form email, plus their photos
+     2. the numbers         — the scenarios, the totals, the open question
+     3. everything          — the whole block, untouched
+   The email is fetched only when this sheet opens, and its absence is normal for a job Paul
+   typed in himself, so it says so rather than looking broken. */
+/* v71 — pull a priced figure off the lines of a scenario that talk about one thing.
+   The shapes these blocks actually use, all four seen in live data:
+       Labour (RSJ Red Seal): 3.0 hrs @ $105/hr = $315.00
+       Total Labour + Travel (4.0 hrs): $420.00
+       Materials - 2x extension ring, connectors: $215.00
+       - Material: ~$18.50  (cost ~$14.80 + 25% markup)
+   Three rules, in this order, and all four come out right:
+     - throw away anything in brackets, or the last dollar figure on the Material line is the
+       SUPPLIER's cost, which is not what the customer is being charged;
+     - throw away a rate, so "@ $105/hr" is never mistaken for a total;
+     - an "= $x" wins; otherwise the last figure on the line; and a line whose own label says
+       "Total" replaces the sum rather than adding to it. */
+/* v71 — reading the printed figures off a ball-park block.
+   Every one of these is here because the obvious version got a real lead wrong:
+     - the GRAND total was being read as "Total labour: $367.50" on Dawn Lewis #45 and
+       "Total Labour + Travel: $420.00" on Barry Toker #48, because "Total" matched first;
+     - hours were coming out as 1.5 instead of 3.5 because the blocks write "1.5 hrs × $105/hr"
+       with a multiplication sign, and the old pattern only knew "@" and the letter x;
+     - the parts list was coming out as ": ~" because on half these lines the list of parts is
+       inside the brackets, which had been thrown away to protect the prices.
+   So: tested against five live blocks (#41, #45, #46, #48, #49), not against the template. */
+function bpTidy(s){
+  return String(s||'').replace(/\$\s*[\d,.]+(?:\s*\/\s*h(?:r|our)?)?/gi,'')
+    .replace(/\b(?:estimated|est|e\.g|i\.e|approx)\b\.?,?/gi,'')
+    .replace(/\s{2,}/g,' ')
+    .replace(/^[\s:;—–\-•*.,~]+/,'')
+    .replace(/[\s:;—–\-=~.,]+$/,'')
+    .trim();
+}
+/* The grand total. A line whose own label says Total but ALSO says labour, travel, materials
+   or parts is a sub-line, not the total — and "Subtotal" is the pre-GST figure, which the
+   \b in \btotals?\b already excludes since there is no word break inside the word.
+   The last qualifying line wins, because the grand total is written last. A line carrying two
+   figures is a range ("estimated $2,968-$4,552") and is shown as one. */
+function bpTotal(body){
+  var pick=null;
+  String(body||'').split('\n').forEach(function(ln){
+    var head=ln.split(':')[0]||ln;
+    if(!/\btotals?\b/i.test(head)) return;
+    if(/labou?r|travel|material|part/i.test(head)) return;
+    var clean=ln.replace(/\$\s*[\d,.]+\s*\/\s*h(?:r|our)?\b/gi,' '), m, got=[];
+    var re=/\$\s*([\d,]+(?:\.\d{2})?)/g;
+    while((m=re.exec(clean))) got.push(m[1]);
+    if(got.length) pick=got;
+  });
+  if(!pick) return '';
+  var a=pick[0], b=pick[pick.length-1];
+  return a===b ? ('$'+b) : ('$'+a+'–$'+b);
+}
+/* Field hours. A "Total ... N hrs" line wins; otherwise add up the hours on the lines that
+   actually carry a price, so an aside like "~0.5 hr each way" is not counted twice. The LAST
+   hours figure on a line is the one that counts: "~0.5 hr each way = 1.0 hr" means 1.0. */
+function bpHours(body){
+  var stated=0, sum=0;
+  String(body||'').split('\n').forEach(function(ln){
+    if(!/labou?r|travel|drive time|on[- ]site/i.test(ln)) return;
+    var m, h=0, re=/([\d.]+)\s*hrs?\b/gi;
+    while((m=re.exec(ln))) h=Number(m[1])||h;
+    if(!h) return;
+    var head=ln.split(/[:—–]/)[0]||ln;
+    if(/\btotals?\b/i.test(head)) stated=h; else if(/\$/.test(ln)) sum+=h;
+  });
+  var hrs=stated||sum;
+  return hrs ? Math.round(hrs*10)/10 : '';
+}
+/* What the parts actually are. Bracketed text is the list more often than not, so it is tried
+   first; a bracket holding nothing but "estimated" falls through to the text after the label. */
+function bpPartsText(body){
+  var out=[];
+  String(body||'').split('\n').forEach(function(ln){
+    if(!/materials?\b|parts\b/i.test(ln)) return;
+    var head=ln.split('=')[0], br=/\(([^)]{8,})\)/.exec(head), txt=br?bpTidy(br[1]):'';
+    if(txt.length<6) txt=bpTidy(head.replace(/\([^)]*\)/g,' ')
+      .replace(/^[\s\-•*]*(?:additional\s+|extra\s+)?(?:materials?|parts)\b/i,''));
+    if(txt && txt.length>4 && out.indexOf(txt)<0) out.push(txt);
+  });
+  return out.join('; ');
+}
+function bpLineMoney(body,rx){
+  var sum=0, stated=0, got=false, lines=0, extras=0;
+  String(body||'').split('\n').forEach(function(ln){
+    if(!rx.test(ln)) return;
+    var clean=ln.replace(/\([^)]*\)/g,' ').replace(/\$\s*[\d,.]+\s*\/\s*h(?:r|our)?\b/gi,' ');
+    var v='', eq=/=\s*~?\$\s*([\d,]+(?:\.\d{2})?)/.exec(clean);
+    if(eq) v=eq[1];
+    else { var m2, re2=/\$\s*([\d,]+(?:\.\d{2})?)/g; while((m2=re2.exec(clean))) v=m2[1]; }
+    if(!v) return;
+    var n=Number(String(v).replace(/,/g,'')); if(!isFinite(n)) return;
+    var head=(clean.split(/[:\u2014\u2013-]/)[0]||clean);
+    if(/\btotals?\b/i.test(head)) stated=n; else sum+=n;
+    got=true; lines++;
+    if(/\badditional\b|\bextra\b/i.test(head)) extras++;
+  });
+  var amt=stated||sum;
+  return { amount: got&&amt ? amt : 0, extra: lines>0 && extras===lines };
+}
+function bpMoney(n){ return '$'+Number(n||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
+function bpParse(detail){
+  const t=String(detail||'').replace(/\r/g,''), out={scope:'',scenarios:[],flag:'',travel:'',sizing:''};
+  const HEAD='SCENARIO|FLAG|RFI|PHOTOS|TRAVEL|SIZING|NOTE:|Fixtures|Source:|PROVISIONAL';
+  const block=(name)=>{
+    const re=new RegExp('(?:^|\\n)'+name+'[^\\n]*\\n([\\s\\S]*?)(?=\\n(?:'+HEAD+')|$)','i');
+    const m=re.exec(t); return m?m[1].trim():'';
+  };
+  out.scope=block('SCOPE');
+  out.sizing=block('SIZING');
+  // Scenarios: "Scenario A — Straightforward (…):" and "SCENARIO A - {assumption} (ASSUMED):"
+  const re=/(?:^|\n)\s*SCENARIO\s+([A-Z])\s*[-–—:]+\s*([^\n]*)\n([\s\S]*?)(?=\n\s*SCENARIO\s+[A-Z]\s*[-–—:]|\n(?:FLAG|RFI|PHOTOS|TRAVEL|SIZING|NOTE:|Fixtures|Source:)|$)/gi;
+  let m;
+  while((m=re.exec(t))){
+    const body=(m[3]||'').trim();
+    const mny=bpLineMoney(body,/labou?r|travel|drive time|on[- ]site/i),
+          prt=bpLineMoney(body,/materials?\b|parts\b/i),
+          prm=bpLineMoney(body,/permit/i);
+    out.scenarios.push({ letter:m[1].toUpperCase(), label:(m[2]||'').replace(/[:\s]+$/,'').trim(),
+      total:bpTotal(body), hours:bpHours(body), body:body,
+      labour:mny.amount, parts:prt.amount, partsText:bpPartsText(body), permit:prm.amount,
+      labourExtra:mny.extra, partsExtra:prt.extra });
+  }
+  // FLAG, either as its own heading or inline after a colon
+  let f=/(?:^|\n)(?:FLAG|RFI)[^\n]*?:\s*([^\n][\s\S]*?)(?=\n(?:PHOTOS|TRAVEL|SIZING|Source:)|$)/i.exec(t);
+  if(!f) f=/(?:^|\n)(?:FLAG|RFI)[^\n]*\n([\s\S]*?)(?=\n(?:PHOTOS|TRAVEL|SIZING|Source:)|$)/i.exec(t);
+  out.flag=f?f[1].trim():'';
+  let tr=/(?:^|\n)TRAVEL:\s*([^\n]+)/i.exec(t);
+  if(!tr) tr=/(?:^|\n)TRAVEL[^\n]*\n([^\n]+)/i.exec(t);
+  out.travel=tr?tr[1].trim():'';
+  return out;
+}
+/* v71 — the website form, as the customer filled it in.
+   Verbatim: not one word is rewritten. What is thrown away is the plugin's own packaging -
+   the "You have a new website form submission:" line, the numbering, the asterisks, the
+   "sent from proes.ca" footer - and what is left is the questions with their answers under
+   them, with what they wrote about the job itself given room to breathe. */
+function formEmailHtml(raw){
+  let t=String(raw||'').replace(/\r/g,'');
+  t=t.replace(/^[\s\S]*?new website form submission:[ \t]*\n?/i,'')
+     .replace(/\n-{3,}[ \t]*\nThis message was sent from[\s\S]*$/i,'');
+  const fields=[]; let cur=null;
+  t.split('\n').forEach(ln=>{
+    const h=/^\s*\d+\.\s*\*(.+?)\*\s*$/.exec(ln);
+    if(h){ cur={label:h[1].trim(), lines:[]}; fields.push(cur); return; }
+    if(cur) cur.lines.push(ln.replace(/^[ \t]{0,4}/,''));
+  });
+  const filled=fields.filter(f=>f.lines.join('').trim());
+  // Not a form email at all (Paul forwarding a customer's note, say) - show it as it came.
+  if(!filled.length) return `<pre class="small" style="white-space:pre-wrap;word-break:break-word;margin:0">${esc(t.trim())}</pre>`;
+  return filled.map(f=>{
+    const v=f.lines.join('\n').replace(/\*([^*]*?)[ \t]*:[ \t]*\*[ \t]*/g,'$1: ')
+      .replace(/\n{3,}/g,'\n\n').trim();
+    const big=/^tell us about|^describe|^what.{0,12}(need|job|problem)/i.test(f.label);
+    return `<div style="margin:0 0 10px">
+      <div class="small muted" style="font-weight:700">${esc(f.label)}</div>
+      <div class="${big?'':'small'}" style="white-space:pre-wrap;word-break:break-word;margin-top:2px${big?';padding:7px 9px;background:var(--panel2);border-radius:8px;border-left:3px solid var(--accent2)':''}">${esc(v)}</div>
+    </div>`;
+  }).join('');
+}
+/* v71 — the whole ball park on a button of its own, not sitting open on the card.
+   It used to be a <details> on every lead, which made the Requests tab a wall of pricing
+   working you had to scroll past to reach the next customer. Same text, same renderer, one tap
+   away. `back` sends the Back button to wherever this was opened from. */
+function openBallPark(key,backKind,backArg){
+  const q=dereg(key); if(!q) return;
+  const back = backKind==='enq' ? `openSchedEnquiry('${backArg}')`
+             : backKind ? `openReqDetail('${backKind}',${backArg})`
+             : 'closeSheet()';
+  sheet(`<h2 style="margin-bottom:2px">📋 The whole ball park</h2>
+    <p class="small muted" style="margin-top:0">${esc([q.customer,q.po].filter(Boolean).join(' · '))} — as filed, nothing left out</p>
+    ${reqDetailHtml(q.detail)}
+    <p class="small muted" style="margin:10px 0 0">Provisional. Priced from the Materials Price List before anyone saw the job.</p>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="${back}">Back</button>`);
+}
+function ballParkBtn(q,backKind,backArg){
+  if(!q||!q.detail) return '';
+  const key=reg({detail:q.detail, customer:q.customer, po:q.po});
+  const args=backKind?`'${key}','${backKind}',${typeof backArg==='string'?`'${backArg}'`:backArg}`:`'${key}'`;
+  return `<button class="secondary" style="width:100%;margin-top:6px"
+    onclick="event.stopPropagation();openBallPark(${args})">📋 See the full ball park</button>`;
+}
+async function openSchedEnquiry(key){
+  const info=dereg(key); if(!info) return;
+  const bp=bpParse(info.detail);
+  const head=`<h2>📨 The enquiry</h2>
+    <p class="small muted" style="margin-top:-4px">${esc([info.customer,info.po,info.entryNo?('form #'+info.entryNo):''].filter(Boolean).join(' · '))}</p>
+    ${info.address?`<p class="small">📍 ${esc(info.address)}</p>`:''}`;
+  // What the parts are: the scenario's own materials line if it has one, otherwise the
+  // Requests row's Materials column, which is the list the picker and the invoice both use.
+  const partsList=(x)=>x.partsText||info.materials||'';
+  const short=(s)=>{ s=String(s||''); return s.length>38 ? s.replace(/\s*\([^)]*\)\s*$/,'').trim()||s : s; };
+  const line=(label,v)=>v?`<div class="row between" style="padding:1px 0"><span class="small muted">${label}</span><span class="small">${esc(v)}</span></div>`:'';
+  const money=bp.scenarios.length?`<div class="card" style="margin:8px 0">
+      <h3 style="margin-top:0">💰 What it comes to</h3>
+      ${bp.scenarios.map(x=>`<div class="list-item" style="padding:7px 0">
+        <div class="row between" style="gap:10px"><b>Scenario ${esc(x.letter)}${x.label?' — '+esc(short(x.label)):''}</b>
+          <span><b>${esc(x.total||'—')}</b></span></div>
+        ${line((x.labourExtra?'Extra labour':'Labour')+(x.hours?' · '+esc(x.hours)+' hrs':''), x.labour?bpMoney(x.labour):'')}
+        ${line(x.partsExtra?'Extra parts':'Parts', x.parts?bpMoney(x.parts):'')}
+        ${line('Permit', x.permit?bpMoney(x.permit):'')}
+        ${partsList(x)?`<div class="small" style="margin-top:3px"><span class="muted">Parts needed: </span>${esc(partsList(x))}</div>`:''}
+      </div>`).join('')}
+      ${bp.scenarios.some(x=>x.labour||x.parts)?`<p class="small muted" style="margin:6px 0 0">The total also carries GST, and the truck charge where there is one.</p>`:''}
+      ${bp.flag?`<div class="banner ot" style="margin-top:8px"><b>Open question</b><div class="small" style="margin-top:2px;white-space:pre-wrap">${esc(bp.flag)}</div></div>`:''}
+      ${bp.travel?`<div class="small muted" style="margin-top:6px">🚚 ${esc(bp.travel)}</div>`:''}
+      <p class="small muted" style="margin:8px 0 0">Provisional — priced from the Materials Price List before anyone saw the job.</p>
+    </div>`:(info.materials?`<div class="card" style="margin:8px 0">
+      <h3 style="margin-top:0">🔧 Parts needed</h3><div class="small">${esc(info.materials)}</div></div>`:'');
+  const full=ballParkBtn(info,'enq',key);
+  const render=(mail)=>sheet(`${head}
+    <div class="card" style="margin:8px 0">
+      <h3 style="margin-top:0">✍️ What the customer sent, word for word</h3>
+      <div id="leadMail">${mail}</div>
+      ${reqPhotoStrip(info)}
+    </div>
+    ${money}
+    ${full}
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  // Coming Back from the full ball park re-opens this sheet, and the email has already been
+  // fetched once — a second 75-second wait for the same text is not worth it.
+  if(info._mail){ render(info._mail); return; }
+  render('<p class="center small muted" style="margin:10px 0"><span class="spin"></span> fetching their email…</p>');
+  const mine=S._sheet;
+  try{
+    const r=await api('leadEmail',{id:info.jobRequestId||'', detail:info.detail||''},{bg:true,timeout:75000});
+    if(S._sheet!==mine) return;
+    info._mail = r&&r.found
+      ? `<p class="small muted" style="margin:0 0 8px">${esc(r.from)} · ${esc(fmtDay(r.date))}</p>
+         ${formEmailHtml(r.body)}`
+      : `<p class="small muted" style="margin:0">${esc((r&&r.why)||'Could not fetch it.')}</p>
+         ${bp.scope?`<p class="small" style="margin-top:8px"><b>What it was taken to mean:</b></p><pre class="small" style="white-space:pre-wrap;margin:0">${esc(bp.scope)}</pre>`:''}`;
+    render(info._mail);
+  }catch(e){
+    if(S._sheet!==mine) return;
+    render(`<p class="small" style="color:var(--bad);margin:0">Could not fetch it — ${esc(e.message||'no answer')}</p>
+      ${bp.scope?`<pre class="small" style="white-space:pre-wrap;margin:8px 0 0">${esc(bp.scope)}</pre>`:''}`);
+  }
+}
+
 /* Move a return visit (or any bare calendar job). Its own event only — no PO Log re-dating. */
 function openVisitMove(key){
   const info=dereg(key); if(!info) return;
@@ -2754,8 +3162,10 @@ async function visitMoveGo(key,btn){
     const back=(r&&r.bumped&&r.bumped.length)||0;
     toast('Moved to '+fmtDay(start.toISOString())+' '+fmtTime(start.toISOString())
       +(back?' · '+back+' job(s) now need a new time':''),7000);
-    if(r&&r.note&&/not notified|failed/i.test(r.note)) setTimeout(()=>toast(r.note),2600);
-    closeSheet(); schedRefreshAll(); loadRequests();
+    schedRefreshAll(); loadRequests();
+    afterChange({customer:info.customer, phone:info.phone, email:info.email, eventId:info.eventId},
+      'Moved to '+fmtDay(start.toISOString())+' '+fmtTime(start.toISOString()),
+      (notifyCustomer && r && r.note && /emailed at/i.test(r.note)) ? r.note : '');
   }catch(e){ toast(e.message,8000); btn.disabled=false; btn.textContent='📅 Move it'; }
 }
 function openVisitCancel(key){
@@ -2781,7 +3191,10 @@ async function visitCancelGo(key,btn){
   try{
     const r=await api('eventCancel',{eventId:info.eventId, reason, notifyCustomer},{timeout:120000});
     toast('Called off ✓'+(r&&r.poNote?' — '+r.poNote:''),7000);
-    closeSheet(); schedRefreshAll(); loadRequests();
+    schedRefreshAll(); loadRequests();
+    afterChange({customer:info.customer, phone:info.phone, email:info.email, eventId:''},
+      'Called off — nothing is booked for them now',
+      (notifyCustomer && r && r.note && /emailed at/i.test(r.note)) ? r.note : '');
   }catch(e){ toast(e.message,8000); btn.disabled=false; btn.textContent='Call it off'; }
 }
 async function schedSave(k,btn){
@@ -5604,7 +6017,7 @@ function requestsView(){
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
       <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> estimated${price?` · ${price} provisional`:''}</div>
       ${reqPhotoStrip(q)}
-      ${q.detail?`<details style="margin-top:4px"><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary>${reqDetailHtml(q.detail)}</details>`:''}
+      ${ballParkBtn(q)}
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="openReqSchedule(${i})">📅 Schedule it</button>
         <button class="ghost" onclick="reqDismiss(${i})">Dismiss</button>
@@ -5625,7 +6038,7 @@ function requestsView(){
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
       <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> job${price?` · ${price} quoted`:''}</div>
       ${reqPhotoStrip(q)}
-      ${q.detail?`<details style="margin-top:4px"><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary>${reqDetailHtml(q.detail)}</details>`:''}
+      ${ballParkBtn(q)}
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="openReqBook(${i})">🔧 They said yes — book the job</button>
         <button class="ghost" onclick="reqNotProceeding(${i})">Didn't go ahead</button>
@@ -6526,7 +6939,7 @@ function openReqDetail(k,i){
       ${row('Crew', esc(crewNames.join(', ')))}
     </div>
     ${reqPhotoStrip(q)}
-    ${q.detail?`<details><summary class="small" style="color:var(--accent2);cursor:pointer">See the full estimate</summary>${reqDetailHtml(q.detail)}</details>`:''}
+    ${ballParkBtn(q,k,i)}
     <div class="row" style="margin-top:14px;flex-wrap:wrap">${acts}</div>
     <div class="row" style="margin-top:8px">
       <button class="secondary grow" onclick="closeSheetDom();render()">Close</button>
@@ -6599,6 +7012,7 @@ function openReqMove(i,k){
     <div class="row"><div class="grow"><label>New date</label><input id="mvDate" type="date" value="${d}"></div>
       <div class="grow"><label>New start</label><input id="mvTime" type="time" value="${t}"></div></div>
     <div class="perm"><input type="checkbox" id="mvNotify" ${isEst?'':'checked'}><label for="mvNotify" style="margin:0">Email the customer the new time</label></div>
+    <div class="perm"><input type="checkbox" id="mvBump"><label for="mvBump" style="margin:0">Let it take a slot that already has a job in it</label></div>
     <p class="small muted">${isEst
       ? 'Moves the estimate call on the calendar. No PO number is involved — nothing is booked yet.'
       : 'Moves the calendar event and the PO Log start date. Goes back to 🟠 until they answer.'}</p>
@@ -6622,11 +7036,17 @@ async function reqMove(i,btn,k){
   const callMinutes=Number(val('mvCallMin'))||0;
   btn.disabled=true; btn.textContent='Moving…';
   try{
+    const bump=(document.getElementById('mvBump')||{checked:false}).checked===true;
     const r=await api('requestReschedule',{id:q.id, start:start.toISOString(), hours,
-      callMinutes:callMinutes||undefined, notify:notifyCustomer},{timeout:120000});
-    toast('Moved ✓'+(notifyCustomer?' — customer emailed':''));
-    if(r&&r.note&&/NOT notified|unavailable|no customer email/i.test(r.note)) setTimeout(()=>toast(r.note),2600);
-    closeSheetDom(); loadRequests(); if(S.sched) schedRefreshAll(); render();   // v57
+      callMinutes:callMinutes||undefined, notify:notifyCustomer, bump},{timeout:120000});
+    const back=(r&&r.bumped&&r.bumped.length)||0;
+    toast('Moved ✓'+(notifyCustomer?' — customer emailed':'')
+      +(back?' · '+back+' job(s) now need a new time':''),back?7000:4000);
+    loadRequests(); if(S.sched) schedRefreshAll(); render();   // v57
+    afterChange({customer:q.customer, phone:q.phone, email:q.email, eventId:q.eventId},
+      'Moved to '+fmtDay(start.toISOString())+' '+fmtTime(start.toISOString()),
+      (notifyCustomer && r && r.note && !/NOT notified|unavailable|no customer email/i.test(r.note))
+        ? 'The customer has been emailed the new time, with Yes / No buttons to answer.' : '');
   }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='📅 Move it'; }
 }
 /* v46 — cancel a booked job. Frees the calendar slot and marks the PO Log row Cancelled.
