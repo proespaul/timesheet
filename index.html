@@ -2663,6 +2663,7 @@ async function openSchedDetail(k){
         <button class="secondary grow" onclick="closeSheetDom();openReqMove(${job.i})">📅 Move it</button>
         <button class="danger grow" onclick="closeSheetDom();openReqCancel(${job.i})">Cancel job</button>
       </div>
+      <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheetDom();openReqEdit('bk',${job.i})">✏️ Change the details</button>
       <p class="small muted" style="margin:6px 0 0">Moving it re-dates the PO Log and asks the customer again. Cancelling frees the slot and marks ${q&&q.po?esc(q.po):'the job'} Cancelled — the job number is kept, never reused.</p>`
       : (job&&job.kind==='estimate')?`<p class="small muted" style="margin:10px 0 0">This is an estimate call, not a booked job. Move or cancel it from Requests › Quoted.</p>`
       : (d.canAssign&&S.reqBooked)?`<p class="small muted" style="margin:10px 0 0">This booking did not come from a website enquiry — it was added straight to the calendar or booked as a return visit — so there is no job behind it to move or cancel here. Change it in Google Calendar.</p>`:''}
