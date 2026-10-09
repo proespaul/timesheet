@@ -2623,51 +2623,31 @@ async function toDecide(k,approve,btn){
     toast((approve?'Approved':'Denied')+' — '+t.name+' has been emailed.'); schedRefreshAll();
   }catch(e){ toast(e.message); btn.disabled=false; }
 }
-/* v57 — WHICH JOB IS THIS CALENDAR EVENT?
-   Until now a booking on the Schedule tab was a dead end: you could see it and assign crew to it,
-   and that was all. Move it and Cancel job lived only on the Requests tab, under "Booked jobs",
-   which is not where you look when you have just realised you booked the wrong day. The event
-   now carries its own eventId (v57 server side) so it can be matched back to the job, and the
-   same two actions — plus the customer's original website enquiry — open right here. */
-function schedJobFor(ev){
-  const id=String((ev&&ev.id)||'');
-  if(!id) return null;
+/* v59 — WHAT IS THIS BOOKING? Ask the office, don't guess.
+   v57 matched a calendar event to a job by looking through the Requests list already on the
+   phone. That only ever finds bookings that came from a website lead. A RETURN VISIT — the kind
+   Paul books standing in a customer's kitchen — is created as a calendar event with no Requests
+   row at all, so it matched nothing and showed "no job behind it", which on a quiet fortnight
+   described the only job on the calendar. The office now answers for any event: who it is for,
+   what the job is, and the original enquiry of the job a return visit continues. */
+function schedLinkify(s){
+  return esc(String(s||'')).replace(/https?:\/\/[^\s<>"']+/g,
+    u=>`<a href="${u}" target="_blank" rel="noopener" style="color:var(--accent2);word-break:break-all">${u}</a>`);
+}
+function schedBookedIndex(requestId){
   const bk=(S.reqBooked||[]);
-  for(let i=0;i<bk.length;i++) if(String(bk[i].eventId||'')===id) return {q:bk[i], i:i, kind:'booked'};
-  const es=(S.reqEstimates||[]);
-  for(let j=0;j<es.length;j++) if(String(es[j].eventId||'')===id) return {q:es[j], i:j, kind:'estimate'};
-  return null;
+  for(let i=0;i<bk.length;i++) if(String(bk[i].id)===String(requestId)) return i;
+  return -1;
 }
 async function openSchedDetail(k){
   const ev=dereg(k); if(!ev) return;
   const d=S.sched||{};
-  // Admins need the employee list for the assignment editor — fetch it if the Admin tab
-  // hasn't loaded it yet this session.
   if(d.canAssign && !(S.employees&&S.employees.length) && S.online){
     try{ const r=await api('listEmployees'); S.employees=r.employees||[]; }catch(e){}
   }
-  // v57 — the booked list is what carries the job behind the event. Load it if this session
-  // has not opened the Requests tab yet, otherwise the actions would be missing for no reason.
-  if(d.canAssign && !S.reqBooked && S.online){ try{ await loadRequests(); }catch(e){} }
-  const job=d.canAssign?schedJobFor(ev):null;
-  const q=job?job.q:null;
   const when=`${schedDayLabel(localDateStr(new Date(ev.start)))} · ${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}`;
   const asg=new Set(ev.assigned.map(a=>a.email));
-  sheet(`<h2>${esc(ev.title)}</h2>
-    <p class="small muted" style="margin-top:-4px">${esc(when)}${(q&&q.po)?' · '+esc(q.po):''}</p>
-    ${ev.location?`<p class="small">📍 <a href="https://maps.google.com/?q=${encodeURIComponent(ev.location)}" target="_blank" style="color:var(--accent2)">${esc(ev.location)}</a></p>`:''}
-    ${(q&&q.phone)?`<p class="small" style="margin:4px 0">📞 <a href="tel:${esc(String(q.phone).replace(/[^0-9+]/g,''))}" style="color:var(--accent2)">${esc(q.phone)}</a>${q.customer?' · '+esc(q.customer):''}</p>`:''}
-    ${(q&&q.detail)?`<details style="margin:8px 0"><summary class="small" style="color:var(--accent2);cursor:pointer">📨 See the original enquiry from the customer</summary>${reqDetailHtml(q.detail)}${reqPhotoStrip(q)}</details>`:''}
-    ${ev.desc?`<div class="card" style="margin:8px 0"><div class="small" style="white-space:pre-wrap">${esc(ev.desc)}</div></div>`:''}
-    ${(job&&job.kind==='booked')?`<div class="row" style="margin:10px 0 0">
-        <button class="secondary grow" onclick="closeSheetDom();openReqMove(${job.i})">📅 Move it</button>
-        <button class="danger grow" onclick="closeSheetDom();openReqCancel(${job.i})">Cancel job</button>
-      </div>
-      <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheetDom();openReqEdit('bk',${job.i})">✏️ Change the details</button>
-      <p class="small muted" style="margin:6px 0 0">Moving it re-dates the PO Log and asks the customer again. Cancelling frees the slot and marks ${q&&q.po?esc(q.po):'the job'} Cancelled — the job number is kept, never reused.</p>`
-      : (job&&job.kind==='estimate')?`<p class="small muted" style="margin:10px 0 0">This is an estimate call, not a booked job. Move or cancel it from Requests › Quoted.</p>`
-      : (d.canAssign&&S.reqBooked)?`<p class="small muted" style="margin:10px 0 0">This booking did not come from a website enquiry — it was added straight to the calendar or booked as a return visit — so there is no job behind it to move or cancel here. Change it in Google Calendar.</p>`:''}
-    <h3 style="margin:10px 0 4px">${d.canAssign?'Assign the crew':'Who\'s on this job'}</h3>
+  const crewHtml=`<h3 style="margin:12px 0 4px">${d.canAssign?'Assign the crew':'Who\'s on this job'}</h3>
     ${d.canAssign
       ? `${(S.employees||[]).filter(e=>e.active&&e.role!=='bookkeeper').map(e=>`<div class="perm">
            <input type="checkbox" class="sa-emp" value="${esc(e.email)}" id="sa_${esc(e.email)}" ${asg.has(e.email)?'checked':''}>
@@ -2676,8 +2656,126 @@ async function openSchedDetail(k){
          <button style="width:100%;margin-top:10px" onclick="schedSave('${k}',this)">Save assignments</button>`
       : (ev.assigned.length
           ? ev.assigned.map(a=>`<div class="list-item"><b>${esc(a.name)}</b></div>`).join('')
-          : '<p class="muted small">Just you so far.</p>')}
-    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+          : '<p class="muted small">Just you so far.</p>')}`;
+  const shell=(mid)=>`<h2>${esc(ev.title)}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(when)}</p>
+    ${ev.location?`<p class="small">📍 <a href="https://maps.google.com/?q=${encodeURIComponent(ev.location)}" target="_blank" style="color:var(--accent2)">${esc(ev.location)}</a></p>`:''}
+    ${mid}
+    ${ev.desc?`<details style="margin:10px 0"><summary class="small" style="color:var(--accent2);cursor:pointer">📋 Calendar notes</summary>
+       <div class="card" style="margin:6px 0 0"><div class="small" style="white-space:pre-wrap">${schedLinkify(ev.desc)}</div></div></details>`:''}
+    ${crewHtml}
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">Close</button>`;
+
+  if(!d.canAssign){ sheet(shell('')); return; }
+  sheet(shell('<p class="center small muted" style="margin:14px 0"><span class="spin"></span> looking up the job…</p>'));
+  const mine=S._sheet;
+  let info=null, err='';
+  try{ info=await apiBg('eventInfo',{eventId:ev.id}); }
+  catch(e){ err=e.message||'Could not reach the office.'; }
+  if(S._sheet!==mine) return;                       // they moved on while it loaded
+
+  if(!info){ sheet(shell(`<p class="small" style="color:var(--bad);margin:10px 0">${esc(err)}</p>`)); return; }
+  const key=reg(info);
+  const bi=info.kind==='request'?schedBookedIndex(info.requestId):-1;
+  const who=[info.customer, info.po].filter(Boolean).join(' · ');
+  const mid=`
+    ${who?`<p class="small" style="margin:6px 0 0"><b>${esc(info.customer||'')}</b>${info.po?` <span class="muted">${esc(info.po)}</span>`:''}</p>`:''}
+    ${info.phone?`<p class="small" style="margin:2px 0">📞 <a href="tel:${esc(String(info.phone).replace(/[^0-9+]/g,''))}" style="color:var(--accent2)">${esc(info.phone)}</a></p>`:''}
+    ${info.email?`<p class="small" style="margin:2px 0">✉️ <a href="mailto:${esc(info.email)}" style="color:var(--accent2)">${esc(info.email)}</a></p>`:''}
+    ${info.scope?`<div class="banner" style="background:var(--panel2);margin-top:8px">${esc(info.scope)}</div>`:''}
+    ${info.detail?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openSchedEnquiry('${key}')">📨 See the original enquiry</button>`:''}
+    ${info.kind==='visit'?`<p class="small muted" style="margin:8px 0 0">This is a <b>return visit</b> — it continues ${info.po?esc(info.po):'an earlier job'}, so the details above are the original job's.</p>`:''}
+    ${info.kind==='request'&&bi>=0?`<div class="row" style="margin:10px 0 0">
+        <button class="secondary grow" onclick="closeSheetDom();openReqMove(${bi})">📅 Move it</button>
+        <button class="danger grow" onclick="closeSheetDom();openReqCancel(${bi})">Cancel job</button>
+      </div>
+      <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheetDom();openReqEdit('bk',${bi})">✏️ Change the details</button>
+      <p class="small muted" style="margin:6px 0 0">Moving it re-dates the PO Log and asks the customer again. Cancelling frees the slot and marks ${info.po?esc(info.po):'the job'} Cancelled — the job number is kept, never reused.</p>`
+     :info.kind==='request'?`<p class="small muted" style="margin:10px 0 0">This job is on the Requests tab under “Booked jobs” — open it there to move or cancel it.</p>`
+     :info.isJob?`<div class="row" style="margin:10px 0 0">
+        <button class="secondary grow" onclick="openVisitMove('${key}')">📅 Move it</button>
+        <button class="danger grow" onclick="openVisitCancel('${key}')">Call it off</button>
+      </div>
+      <p class="small muted" style="margin:6px 0 0">${info.kind==='visit'
+        ? 'Moving or calling off a return visit does <b>not</b> cancel the job — '+(info.po?esc(info.po):'it')+' stays open and still gets invoiced under the same number. Only this trip changes.'
+        : 'This was added straight to the calendar, so there is no job record behind it — moving or removing it changes the calendar only.'}</p>`
+     :`<p class="small muted" style="margin:10px 0 0">Not a job — nothing to move or cancel here.</p>`}`;
+  sheet(shell(mid));
+}
+/* The customer's own words, as they came in off the website form. */
+function openSchedEnquiry(key){
+  const info=dereg(key); if(!info) return;
+  sheet(`<h2>📨 The original enquiry</h2>
+    <p class="small muted" style="margin-top:-4px">${esc([info.customer,info.po,info.entryNo?('#'+info.entryNo):''].filter(Boolean).join(' · '))}</p>
+    ${info.address?`<p class="small">📍 ${esc(info.address)}</p>`:''}
+    ${reqDetailHtml(info.detail)}
+    ${reqPhotoStrip(info)}
+    <button class="secondary" style="width:100%;margin-top:12px" onclick="closeSheet()">Close</button>`);
+}
+/* Move a return visit (or any bare calendar job). Its own event only — no PO Log re-dating. */
+function openVisitMove(key){
+  const info=dereg(key); if(!info) return;
+  const cur=new Date(info.start), pad=n=>String(n).padStart(2,'0');
+  sheet(`<h2>Move ${esc(info.customer||info.title||'this visit')}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc([info.po,info.scope].filter(Boolean).join(' · '))}</p>
+    <label>How long? (hours)</label>
+    <input id="vmHours" type="number" step="0.25" min="0.25" value="${info.hours||2}">
+    <div class="row"><div class="grow"><label>New date</label><input id="vmDate" type="date" value="${cur.getFullYear()}-${pad(cur.getMonth()+1)}-${pad(cur.getDate())}"></div>
+      <div class="grow"><label>New start</label><input id="vmTime" type="time" value="${pad(cur.getHours())}:${pad(cur.getMinutes())}"></div></div>
+    <div class="perm"><input type="checkbox" id="vmNotify" checked><label for="vmNotify" style="margin:0">Email the customer the new time</label></div>
+    <div class="perm"><input type="checkbox" id="vmBump"><label for="vmBump" style="margin:0">Let it take a slot that already has a job in it</label></div>
+    <p class="small muted">${info.po?esc(info.po)+' keeps its start date':'The calendar only'} — this moves the visit, not the job.</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Back</button>
+      <button class="grow" onclick="visitMoveGo('${key}',this)">📅 Move it</button>
+    </div>`);
+}
+async function visitMoveGo(key,btn){
+  const info=dereg(key); if(!info) return;
+  if(!S.online) return toast('You need signal.');
+  const date=val('vmDate'), time=val('vmTime');
+  if(!date||!time) return toast('Pick the date and the time.');
+  const start=new Date(date+'T'+time);
+  if(isNaN(start)) return toast('That date/time did not read properly.');
+  const hours=Math.max(0.25,Number(val('vmHours'))||info.hours||2);
+  const notifyCustomer=(document.getElementById('vmNotify')||{}).checked!==false;
+  const bump=(document.getElementById('vmBump')||{checked:false}).checked===true;
+  btn.disabled=true; btn.textContent='Moving…';
+  try{
+    const r=await api('eventMove',{eventId:info.eventId, start:start.toISOString(), hours,
+      notifyCustomer, bump, allowPast:true},{timeout:120000});
+    const back=(r&&r.bumped&&r.bumped.length)||0;
+    toast('Moved to '+fmtDay(start.toISOString())+' '+fmtTime(start.toISOString())
+      +(back?' · '+back+' job(s) now need a new time':''),7000);
+    if(r&&r.note&&/not notified|failed/i.test(r.note)) setTimeout(()=>toast(r.note),2600);
+    closeSheet(); schedRefreshAll(); loadRequests();
+  }catch(e){ toast(e.message,8000); btn.disabled=false; btn.textContent='📅 Move it'; }
+}
+function openVisitCancel(key){
+  const info=dereg(key); if(!info) return;
+  sheet(`<h2>Call off this visit?</h2>
+    <p class="small muted" style="margin-top:-4px">${esc([info.customer,info.po].filter(Boolean).join(' · '))} — ${esc(fmtDay(info.start))} ${esc(fmtTime(info.start))}</p>
+    ${info.scope?`<div class="banner" style="background:var(--panel2)">${esc(info.scope)}</div>`:''}
+    <label>Why? (optional — goes to the customer and the log)</label>
+    <input id="vcReason" type="text" placeholder="e.g. waiting on a part">
+    ${info.email?`<div class="perm"><input type="checkbox" id="vcCust" checked><label for="vcCust" style="margin:0">Email the customer</label></div>`:'<p class="small muted">No email on file — the customer will not be told automatically.</p>'}
+    <p class="small muted">${info.po?('This does <b>not</b> cancel '+esc(info.po)+'. The job stays open and still gets invoiced under the same number — only this trip is called off.'):'Removes it from the calendar.'}</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Keep it</button>
+      <button class="grow danger" onclick="visitCancelGo('${key}',this)">Call it off</button>
+    </div>`);
+}
+async function visitCancelGo(key,btn){
+  const info=dereg(key); if(!info) return;
+  if(!S.online) return toast('You need signal.');
+  const reason=val('vcReason')||'';
+  const notifyCustomer=(document.getElementById('vcCust')||{checked:false}).checked===true;
+  btn.disabled=true; btn.textContent='Calling it off…';
+  try{
+    const r=await api('eventCancel',{eventId:info.eventId, reason, notifyCustomer},{timeout:120000});
+    toast('Called off ✓'+(r&&r.poNote?' — '+r.poNote:''),7000);
+    closeSheet(); schedRefreshAll(); loadRequests();
+  }catch(e){ toast(e.message,8000); btn.disabled=false; btn.textContent='Call it off'; }
 }
 async function schedSave(k,btn){
   const ev=dereg(k); if(!ev) return;
@@ -5525,6 +5623,10 @@ function requestsView(){
         <button class="grow" onclick="openReqBook(${i})">🔧 They said yes — book the job</button>
         <button class="ghost" onclick="reqNotProceeding(${i})">Didn't go ahead</button>
       </div>
+      <div class="row" style="margin-top:6px">
+        <button class="secondary grow" onclick="openReqMove(${i},'est')">📅 Move the call</button>
+        <button class="secondary grow" onclick="openReqEdit('est',${i})">✏️ Change the details</button>
+      </div>
     </div>`; }).join('');
   /* v46 — booked jobs and where the customer stands on the time. Amber = waiting on them,
      green = confirmed, red = they want it moved. Same colours as the calendar event. */
@@ -6436,6 +6538,12 @@ function openReqEdit(k,i){
     ${f('edAddress','Address',q.address)}
     <label>Scope</label><textarea id="edScope" rows="3">${esc(q.scope||'')}</textarea>
     <label>Materials</label><textarea id="edMaterials" rows="2">${esc(q.materials||'')}</textarea>
+    <div class="row">
+      <div class="grow"><label>Job length (hours)</label><input id="edHours" type="number" step="0.25" min="0" value="${q.bookedHours||q.hours||''}"></div>
+      <div class="grow"><label>Quoted from ($)</label><input id="edLow" type="number" step="1" min="0" value="${q.priceLow||''}"></div>
+      <div class="grow"><label>to ($)</label><input id="edHigh" type="number" step="1" min="0" value="${q.priceHigh||''}"></div>
+    </div>
+    <p class="small muted" style="margin-top:-2px">The hours and the quote are what you tell the customer. Changing them here does not move anything on the calendar — use “Move it” for that.</p>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="openReqDetail('${k}',${i})">Back</button>
       <button class="grow" id="edGo" onclick="reqSaveEdit('${k}',${i},this)">💾 Save</button>
@@ -6444,47 +6552,71 @@ function openReqEdit(k,i){
 async function reqSaveEdit(k,i,btn){
   const q=reqList(k)[i]; if(!q) return;
   const p={id:q.id, customer:val('edCustomer'), company:val('edCompany'), phone:val('edPhone'),
-    email:val('edEmail'), address:val('edAddress'), scope:val('edScope'), materials:val('edMaterials')};
+    email:val('edEmail'), address:val('edAddress'), scope:val('edScope'), materials:val('edMaterials'),
+    hours:val('edHours'), bookedHours:val('edHours'), priceLow:val('edLow'), priceHigh:val('edHigh')};
   if(!String(p.customer).trim()) return toast('The customer needs a name.');
   btn.disabled=true; btn.textContent='Saving…';
   try{
     const r=await api('requestUpdate',p,{timeout:120000});
     ['customer','company','phone','address','scope','materials'].forEach(x=>q[x]=String(p[x]).trim());
     q.email=String(p.email).trim().toLowerCase();
+    if(r){ ['hours','priceLow','priceHigh','bookedHours'].forEach(x=>{ if(r[x]!=null) q[x]=r[x]; }); }
     toast(r&&r.changed&&r.changed.length?'Saved ✓':'Nothing changed');
     if(r&&r.note&&/NOT |not found/.test(r.note)) setTimeout(()=>toast(r.note),2600);
     openReqDetail(k,i); loadRequests();
   }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='💾 Save'; }
 }
-function openReqMove(i){
-  const q=(S.reqBooked||[])[i]; if(!q) return;
+/* v60 — Move it now serves the quoted estimates as well as the booked jobs. For an ESTIMATE it
+   is the CALL that moves, so it asks for the call length (15/30/60/120) rather than the job's
+   hours; the server used to block out the whole estimated job length, which turned a 30-minute
+   call about a 6-hour job into a lost day. `k` is 'bk' for a booked job, 'est' for a quote. */
+function openReqMove(i,k){
+  k=k||'bk';
+  const q=reqList(k)[i]; if(!q) return;
+  const isEst=k==='est';
   const cur=q.start&&!isNaN(new Date(q.start))?new Date(q.start):new Date(Date.now()+86400000);
   const pad=n=>String(n).padStart(2,'0');
   const d=`${cur.getFullYear()}-${pad(cur.getMonth()+1)}-${pad(cur.getDate())}`;
   const t=`${pad(cur.getHours())}:${pad(cur.getMinutes())}`;
-  sheet(`<h2>Move ${esc(q.customer||'this job')}</h2>
+  const mins=Math.max(15,Math.min(120,Math.round((new Date(q.end)-new Date(q.start))/60000)||30));
+  sheet(`<h2>Move ${esc(q.customer||(isEst?'this call':'this job'))}</h2>
     <p class="small muted" style="margin-top:-4px">${q.po?esc(q.po)+' · ':''}${esc(q.scope||'')}</p>
-    <label>How long is the job? (hours)</label>
+    ${isEst?`<label>How long is the call?</label>
+      <div class="seg" id="mvCallSeg" style="margin-bottom:8px">
+        ${[[15,'15 min'],[30,'30 min'],[60,'1 h'],[120,'2 h']].map(([m,lbl])=>`<button type="button" data-m="${m}" class="${m===mins?'on':''}" onclick="mvSetCall(${m})">${lbl}</button>`).join('')}
+      </div>
+      <input type="hidden" id="mvCallMin" value="${mins}">
+      <label>How long is the job itself? (hours — for the quote)</label>`
+     :`<label>How long is the job? (hours)</label>`}
     <input id="mvHours" type="number" step="0.25" min="0.25" value="${q.bookedHours||q.hours||1}">
     <div class="row"><div class="grow"><label>New date</label><input id="mvDate" type="date" value="${d}"></div>
       <div class="grow"><label>New start</label><input id="mvTime" type="time" value="${t}"></div></div>
-    <div class="perm"><input type="checkbox" id="mvNotify" checked><label for="mvNotify" style="margin:0">Email the customer the new time</label></div>
-    <p class="small muted">Moves the calendar event and the PO Log start date. Goes back to 🟠 until they answer.</p>
+    <div class="perm"><input type="checkbox" id="mvNotify" ${isEst?'':'checked'}><label for="mvNotify" style="margin:0">Email the customer the new time</label></div>
+    <p class="small muted">${isEst
+      ? 'Moves the estimate call on the calendar. No PO number is involved — nothing is booked yet.'
+      : 'Moves the calendar event and the PO Log start date. Goes back to 🟠 until they answer.'}</p>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="closeSheetDom();render()">Back</button>
-      <button class="grow" id="mvGo" onclick="reqMove(${i},this)">📅 Move it</button>
+      <button class="grow" id="mvGo" onclick="reqMove(${i},this,'${k}')">📅 Move it</button>
     </div>`);
 }
-async function reqMove(i,btn){
-  const q=(S.reqBooked||[])[i]; if(!q) return;
+function mvSetCall(m){
+  const h=document.getElementById('mvCallMin'); if(h) h.value=m;
+  document.querySelectorAll('#mvCallSeg button').forEach(b=>b.classList.toggle('on',Number(b.dataset.m)===m));
+}
+async function reqMove(i,btn,k){
+  k=k||'bk';
+  const q=reqList(k)[i]; if(!q) return;
   const date=val('mvDate'), time=val('mvTime'), hours=Number(val('mvHours'))||q.bookedHours||q.hours||1;
   if(!date||!time) return toast('Pick the date and time.');
   const start=new Date(date+'T'+time);
   if(isNaN(start)) return toast('That date/time did not read properly.');
   const notifyCustomer=(document.getElementById('mvNotify')||{}).checked!==false;
+  const callMinutes=Number(val('mvCallMin'))||0;
   btn.disabled=true; btn.textContent='Moving…';
   try{
-    const r=await api('requestReschedule',{id:q.id, start:start.toISOString(), hours, notify:notifyCustomer},{timeout:120000});
+    const r=await api('requestReschedule',{id:q.id, start:start.toISOString(), hours,
+      callMinutes:callMinutes||undefined, notify:notifyCustomer},{timeout:120000});
     toast('Moved ✓'+(notifyCustomer?' — customer emailed':''));
     if(r&&r.note&&/NOT notified|unavailable|no customer email/i.test(r.note)) setTimeout(()=>toast(r.note),2600);
     closeSheetDom(); loadRequests(); if(S.sched) schedRefreshAll(); render();   // v57
