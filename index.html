@@ -939,6 +939,46 @@ const DB = (() => {
   };
 })();
 
+/* v72 — KEEPING THE SESSION.
+   The session token lives in IndexedDB because the service worker reads it from there to deliver
+   punches while the app is shut. IndexedDB is also the first thing a browser throws away: iOS
+   clears it after seven unused days, and Android evicts it when the phone runs short of space.
+   That is what happened to Paul on 2026-10-13. His session had twenty-seven days left to run on
+   the server, but the phone no longer had the token, so the app had nothing to send and dropped
+   him back to the Google sign-in screen - which then would not cooperate.
+
+   So the token is written twice: IndexedDB for the service worker, localStorage as the copy that
+   outlives eviction. Whichever survives puts the other one back. Both are wrapped, because a
+   private window and blocked site data both make these throw rather than return empty. */
+const SESS_LS_KEY = 'pcwSession';
+async function saveSession_(sess){
+  try { await DB.setCache('session', sess); } catch(e){}
+  try {
+    if (sess) localStorage.setItem(SESS_LS_KEY, JSON.stringify(sess));
+    else localStorage.removeItem(SESS_LS_KEY);
+  } catch(e){}
+}
+async function loadSession_(){
+  let idb=null, ls=null;
+  try { idb = await DB.getCache('session'); } catch(e){}
+  try { const raw = localStorage.getItem(SESS_LS_KEY); if (raw) ls = JSON.parse(raw); } catch(e){}
+  const live = s => s && s.token && Date.now() < s.exp - 60000;
+  // Whichever copy is still good wins, and it repairs the other on the way past. The service
+  // worker can only read IndexedDB, so putting it back there is what keeps offline punches working.
+  if (live(idb) && !live(ls)) { try{ localStorage.setItem(SESS_LS_KEY, JSON.stringify(idb)); }catch(e){} return idb; }
+  if (live(ls) && !live(idb)) { try{ await DB.setCache('session', ls); }catch(e){} return ls; }
+  return live(idb) ? idb : (live(ls) ? ls : null);
+}
+/* Ask the browser to stop evicting us. An installed PWA is usually granted this; a tab usually
+   is not, and being refused costs nothing. */
+async function keepStorage_(){
+  try {
+    if (navigator.storage && navigator.storage.persist) {
+      if (!(await navigator.storage.persisted())) await navigator.storage.persist();
+    }
+  } catch(e){}
+}
+
 /* ============================================================================
  * API — POST to Apps Script with text/plain to avoid CORS preflight.
  * ==========================================================================*/
@@ -1365,8 +1405,9 @@ function onCredential(resp){
   S.me = S.me || { email:p.email, name:p.name, picture:p.picture };
   doLogin();
 }
-/* Trade the (1h) Google ID token for a 24h backend session. Login returns the full
-   bootstrap too, so first paint after sign-in costs a single round-trip. */
+/* Trade the (1h) Google ID token for a backend session that runs for CONFIG.SESSION_HOURS
+   (30 days at present) and renews on every use. Login returns the full bootstrap too, so first
+   paint after sign-in costs a single round-trip. */
 async function doLogin(){
   try {
     if (!S.booted) render(true);
@@ -1374,17 +1415,21 @@ async function doLogin(){
       method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
       body: JSON.stringify({ idToken:S.idToken, action:'login' }),
     });
-    const json = await res.json();
+    // v72 — a reply that is not JSON used to surface as a parser error, which tells a person
+    // nothing. Google's own busy page is the usual culprit.
+    let json; try { json = await res.json(); }
+    catch(_){ throw new Error('The server answered with something unreadable. Google is probably busy — try again in a moment.'); }
     if (!json.ok) throw new Error(json.error || 'Sign-in failed');
     S.session = { token: json.data.sessionToken, exp: json.data.exp };
-    await DB.setCache('session', S.session);
+    await saveSession_(S.session);
+    keepStorage_();
     applyBootstrap(json.data.boot);
     overlayQueued_(await DB.all()); // v42: punches still waiting on this phone stay visible
     S.booted = true; S._lastRefresh = Date.now();
     await DB.setCache('bootstrap', json.data.boot);
     flushQueue(); render();
     loadCustomers(); loadMaterials(); loadOnboarding();
-  } catch(e){ S.session=null; toast(e.message); render(); }
+  } catch(e){ S.session=null; toast(e.message, 10000); render(); }
 }
 
 function initAuth(){
@@ -1392,6 +1437,14 @@ function initAuth(){
     // Google's script not loaded yet (slow LTE / offline first open): show the sign-in
     // screen anyway instead of a blank white page; the button fills in when it arrives.
     if (!S.session && !S.booted && !S._authWait){ S._authWait = true; render(); }
+    // v72 — it used to retry silently for ever, so a blocked or unreachable Google script looked
+    // like an app with no sign-in button and no explanation. After ten seconds, say so.
+    S._authTries = (S._authTries || 0) + 1;
+    if (S._authTries === 34){
+      const h = document.getElementById('gbtn');
+      if (h) h.innerHTML = '<p class="small" style="color:var(--bad);margin:0">Google\'s sign-in script has not loaded.'
+        + ' Check the connection, and if you are on a network that blocks Google, try mobile data.</p>';
+    }
     setTimeout(initAuth, 300); return;
   }
   google.accounts.id.initialize({
@@ -1407,10 +1460,20 @@ function initAuth(){
     google.accounts.id.prompt(); // one-tap / auto
   }
 }
+/* v72 — the silent sign-in (auto_select) only fires when the browser has EXACTLY ONE Google
+   account signed in. With two, it gives up without a word and the user is left looking at a
+   button that seems to do nothing. This forces the account chooser back open. */
+function googleRetry(){
+  let ok = false;
+  try { google.accounts.id.disableAutoSelect(); ok = true; } catch(e){}
+  try { google.accounts.id.prompt(); } catch(e){}
+  toast(ok ? 'Pick the account you use for work.'
+           : 'Google sign-in has not loaded yet. Give it a moment and try again.', 7000);
+}
 function signOut(){
   if (S.session) { try{ api('logout',{sessionToken:S.session.token}).catch(()=>{}); }catch(e){} } // best-effort server invalidation (async — .catch stops an unhandled rejection)
   S.idToken=null; S.session=null; S.me=null; S.booted=false;
-  DB.setCache('session', null);
+  saveSession_(null);
   try{ google.accounts.id.disableAutoSelect(); }catch(e){}
   render();
   initAuth();
@@ -1648,7 +1711,10 @@ function signInView(){
     <div class="card">
       <p>Sign in with your work Google account to clock in.</p>
       <div id="gbtn" style="display:flex;justify-content:center"></div>
-      <p class="small muted" style="margin-top:14px">Your account must be added by an admin first.</p>
+      <p class="small" style="margin-top:12px">
+        <a href="#" onclick="googleRetry();return false" style="color:var(--accent2)">Use a different Google account</a>
+      </p>
+      <p class="small muted" style="margin-top:6px">Your account must be added by an admin first.</p>
     </div>
   </div>`;
 }
@@ -7286,9 +7352,12 @@ if ('serviceWorker' in navigator){
 }
 
 async function start(){
-  // restore the 24h session so a returning user doesn't have to tap sign-in every time
-  const sess = await DB.getCache('session');
-  if (sess && sess.token && Date.now() < sess.exp - 60000){ S.session=sess; await boot(); }
+  // Restore the session so a returning user never sees the sign-in screen. 30 days on the server,
+  // renewed on use — the only thing that should ever send somebody back to Google is a phone that
+  // genuinely lost the token, and loadSession_ now checks both places it could be.
+  keepStorage_();
+  const sess = await loadSession_();
+  if (sess){ S.session=sess; await boot(); }
   initAuth();
   if ('serviceWorker' in navigator){ try{ await navigator.serviceWorker.register('./sw.js'); }catch(e){} }
   // v43 — what the service worker needs to send punches on its own (it cannot see this script):
