@@ -1134,7 +1134,19 @@ let tempIdMap = {};           // tmp_ id -> real EntryID, learned from punch res
 /* v42 — the map survives a restart. It used to live only in memory, so an app killed between a
    clock-in landing and its clock-out being replayed forgot which real entry the tmp_ id meant. */
 function rememberId_(tmp, real){ if(!tmp||!real||tempIdMap[tmp]===real) return; tempIdMap[tmp]=real; DB.setCache('tempIdMap', tempIdMap).catch(()=>{}); }
-const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry|addManualEntry|useMaterial|returnMaterial)$/;
+/* v73 — what gets WRITE-AHEAD persistence: saved to this phone BEFORE the network is tried, so
+   the app being killed mid-request cannot lose it.
+   Two of the names on this list had stopped existing. It read `useMaterial|returnMaterial`, and
+   neither is an action any more — the live ones are `takeMaterial` and `logMaterials`. So the
+   materials typed into the clock-out review were the one thing on that screen with NO write-ahead
+   protection, while the hours they belong to had it. A phone pocketed mid clock-out kept the hours
+   and silently dropped the parts, which under-bills the job and nobody ever finds out. */
+const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry|addManualEntry|takeMaterial|logMaterials)$/;
+/* Actions that APPEND rather than overwrite, so sending one twice is not harmless: a repeat puts
+   a second set of material lines on the job and takes the shelf down again. Write-ahead makes a
+   repeat possible (an action whose answer was lost is sent again on the next open), so each of
+   these carries a submission id and the script remembers the first one for six hours. */
+const GUARDED = /^(takeMaterial|logMaterials|addManualEntry)$/;
 const PUNCH = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak)$/; // what the home-screen banner counts
 /* v43 — a punch that has waited on the phone this long is "stuck": the banner turns red, and
    the office is told as soon as it can be reached (stuckReport_), so an admin hears about a
@@ -1191,6 +1203,10 @@ async function apiMutate(action, payload, optimistic){
   // flushQueue delivers in order (the pending clock-in first) and remaps the id.
   const tempRef = payload && typeof payload.entryId==='string' && payload.entryId.indexOf('tmp_')===0;
   const tracked = MUTATING.test(action);
+  // Stamped once, here, BEFORE the queued copy is made — so a replay carries the same id and the
+  // script recognises it as the same submission rather than a new one.
+  if (GUARDED.test(action) && !(payload && payload.subId))
+    payload = { ...payload, subId: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2,8) };
   // Paint the busy state NOW. doClockIn/doSwitchSite render optimistically BEFORE calling this,
   // so without a second render the big button never learns a punch is in flight — and the big
   // button is the one that has to refuse a second tap, because it sits in the same place and
@@ -7355,14 +7371,27 @@ async function start(){
   // Restore the session so a returning user never sees the sign-in screen. 30 days on the server,
   // renewed on use — the only thing that should ever send somebody back to Google is a phone that
   // genuinely lost the token, and loadSession_ now checks both places it could be.
+  /* v73 — REGISTER THE SERVICE WORKER FIRST, AND DO NOT WAIT ON IT.
+     This line used to sit AFTER `await boot()`. boot() waits on a bootstrap call to Apps Script,
+     which takes 4-6 seconds warm and far longer cold, so the worker was only registered once the
+     office had answered. Anyone who opened the app, glanced at the clock and closed it inside that
+     window registered nothing — and on the open after a phone's storage had been cleared, that is
+     the difference between an app that opens in the truck and one that shows the browser's offline
+     page. No worker, no cached shell, nothing to open.
+     Registration needs no session and nothing from the server, so it goes first. It is not awaited
+     either: awaiting it would put the sw.js fetch in front of the first paint, and offline that
+     fetch fails, which is precisely the moment the screen has to come up regardless. */
+  if ('serviceWorker' in navigator){
+    try { navigator.serviceWorker.register('./sw.js').catch(()=>{}); } catch(e){}
+  }
+  // v43 — what the service worker needs to send punches on its own (it cannot see this script):
+  // the office's address; the session is already in the same cache ('session'). Written up here
+  // now, so it is in place before the first punch can possibly be taken.
+  DB.setCache('apiUrl', CONFIG.APPS_SCRIPT_URL).catch(()=>{});
   keepStorage_();
   const sess = await loadSession_();
   if (sess){ S.session=sess; await boot(); }
   initAuth();
-  if ('serviceWorker' in navigator){ try{ await navigator.serviceWorker.register('./sw.js'); }catch(e){} }
-  // v43 — what the service worker needs to send punches on its own (it cannot see this script):
-  // the office's address; the session is already in the same cache ('session').
-  DB.setCache('apiUrl', CONFIG.APPS_SCRIPT_URL).catch(()=>{});
   if (S.queued) registerSync_();
   // periodic background sync while app is open (flushQueue is a no-op when the queue is
   // empty); a full data refresh only every 5 min — it costs a 4-6s server call.
