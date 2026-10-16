@@ -15,6 +15,9 @@
     --bg:#eef2f8; --panel:#ffffff; --panel2:#e9eef6; --line:#d9e1ed;
     --text:#1a2947; --muted:#5b6b85; --navy:#1F3864; --accent:#2E75B6; --accent2:#2265ab;
     --pulse:#4DA3FF;
+    /* v75 - the PROJECT NAME on a job row. Paul asked for it as bold as the company name and in
+     * a different dark blue, so the two lines read as two different facts about the same job. */
+    --proj:#0E4C92;
     --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --pending:#ca8a04;
     /* --good was used in seven places and never defined, so every "✓ that is fine" line
      * rendered in the ordinary text colour. Same green as --ok. */
@@ -1126,9 +1129,10 @@ async function apiRaw_(action, payload, timeoutMs){
    snapshot that was read from the sheet BEFORE the mutation's write landed (the flicker bug:
    optimistic "Clock Out" state briefly overwritten by a pre-write snapshot). */
 let mutsInFlight = 0;
+let btnBusyN = 0;   // v75 - real punches only (see BTN_PUNCH)
 /* True while a punch is still being delivered. The big Clock In / Clock Out button reads this
    and disables itself, so the eleven-second double punch cannot happen even on a dead network. */
-function punchBusy(){ return mutsInFlight > 0; }
+function punchBusy(){ return btnBusyN > 0; }
 let inflightQids = new Set(); // queued copies currently being delivered — flushQueue must skip them
 let tempIdMap = {};           // tmp_ id -> real EntryID, learned from punch responses/replays
 /* v42 — the map survives a restart. It used to live only in memory, so an app killed between a
@@ -1141,13 +1145,18 @@ function rememberId_(tmp, real){ if(!tmp||!real||tempIdMap[tmp]===real) return; 
    materials typed into the clock-out review were the one thing on that screen with NO write-ahead
    protection, while the hours they belong to had it. A phone pocketed mid clock-out kept the hours
    and silently dropped the parts, which under-bills the job and nobody ever finds out. */
-const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry|addManualEntry|takeMaterial|logMaterials)$/;
+const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry|addManualEntry|takeMaterial|logMaterials|fixForgotClockout)$/;
 /* Actions that APPEND rather than overwrite, so sending one twice is not harmless: a repeat puts
    a second set of material lines on the job and takes the shelf down again. Write-ahead makes a
    repeat possible (an action whose answer was lost is sent again on the next open), so each of
    these carries a submission id and the script remembers the first one for six hours. */
 const GUARDED = /^(takeMaterial|logMaterials|addManualEntry)$/;
-const PUNCH = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak)$/; // what the home-screen banner counts
+/* v75 - fixForgotClockout joins this list: it is queued, counted on the banner, listed under
+   "not at the office yet" and kept alive past the page, exactly like a punch. It is NOT in
+   BTN_PUNCH below, because the big Clock In button must not sit disabled waiting for it - the
+   whole point of queueing the fix is that nobody waits for the network to clock in again. */
+const PUNCH = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|fixForgotClockout)$/; // what the home-screen banner counts
+const BTN_PUNCH = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak)$/; // what disables the big button
 /* v43 — a punch that has waited on the phone this long is "stuck": the banner turns red, and
    the office is told as soon as it can be reached (stuckReport_), so an admin hears about a
    day-old clock-out from the phone's side too, not only from the office's 24 h sweep. */
@@ -1207,12 +1216,22 @@ async function apiMutate(action, payload, optimistic){
   // script recognises it as the same submission rather than a new one.
   if (GUARDED.test(action) && !(payload && payload.subId))
     payload = { ...payload, subId: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2,8) };
+  /* v75 - ORDER MATTERS, EVEN ONLINE. A clock-in sent while the clock-out (or the forgotten
+     clock-out fix) that closes the previous shift is still sitting in the queue gets refused:
+     "You already have an open entry", because the shift it closes has not reached the sheet
+     yet. So it waits in the queue behind it instead - flushQueue delivers in tap order and the
+     chain resolves itself. Without this, closing yesterday's shift and clocking in for today
+     on a bad connection ends with the clock-in thrown away. */
+  let mustFollow = false;
+  if (/^(clockIn|switchJobSite)$/.test(action)){
+    try { mustFollow = (await DB.all()).some(x => /^(clockOut|fixForgotClockout)$/.test(x.action)); } catch(e){}
+  }
   // Paint the busy state NOW. doClockIn/doSwitchSite render optimistically BEFORE calling this,
   // so without a second render the big button never learns a punch is in flight — and the big
   // button is the one that has to refuse a second tap, because it sits in the same place and
   // only changes its label. That is how a Clock Out tap became a Clock In tap eleven seconds
   // later on 2026-09-10.
-  if (tracked){ mutsInFlight++; if (S.tab==='clock' && !S._sheet) render(); }
+  if (tracked){ mutsInFlight++; if (BTN_PUNCH.test(action)) btnBusyN++; if (S.tab==='clock' && !S._sheet) render(); }
   const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
   const item = { qid, action, payload, ts: Date.now(), tempId: optimistic && optimistic.tempId };
   let stored = false; // did the write-ahead copy make it into IndexedDB?
@@ -1227,7 +1246,7 @@ async function apiMutate(action, payload, optimistic){
       catch(e){ console.warn('write-ahead failed', e); } // storage trouble must not block the punch itself
       queueCount_();
     }
-    if (S.online && !tempRef){
+    if (S.online && !tempRef && !mustFollow){
       try {
         const data = await api(action, payload, { bg: true }); // silent: the UI already moved
         if (stored) await DB.del(qid); // delivered — clear the write-ahead copy
@@ -1245,13 +1264,13 @@ async function apiMutate(action, payload, optimistic){
       }
     }
     if (!tracked) await DB.enqueue(item); // non-punch actions queue only on network failure
-    if (tempRef && S.online) setTimeout(flushQueue, 50); // deliver the chain now, in order
+    if ((tempRef || mustFollow) && S.online) setTimeout(flushQueue, 50); // deliver the chain now, in order
     if (tracked && stored) registerSync_(); // v43: the browser sends it when there is a connection, app open or not
     return { queued:true, qid };
   } finally {
     // v42: render even under a sheet (sheets live outside #app) — otherwise the big button
     // could stay "Working…" behind the clock-out card.
-    if (tracked){ mutsInFlight--; if (!mutsInFlight && S.tab==='clock') render(); }
+    if (tracked){ mutsInFlight--; if (BTN_PUNCH.test(action)) btnBusyN--; if (!mutsInFlight && S.tab==='clock') render(); }
     inflightQids.delete(qid);
     queueCount_();
   }
@@ -1279,7 +1298,7 @@ async function requeue_(it, patch){
 }
 function describePunch_(it){
   const p=it.payload||{}; const when=p.at||new Date(it.ts).toISOString();
-  const what={clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start', endBreak:'break end'}[it.action]||it.action;
+  const what={clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start', endBreak:'break end', fixForgotClockout:'forgotten clock-out fix'}[it.action]||it.action;
   return what+' '+fmtDay(when)+' '+fmtTime(when)+(p.jobSite?' — '+p.jobSite:'');
 }
 async function flushQueue(){
@@ -1597,6 +1616,15 @@ function overlayQueued_(items){
       const id = tempIdMap[p.entryId]||p.entryId;
       if (S.openEntry.EntryID===id || S.openEntry.EntryID===p.entryId){
         upsertLocalEntry({ ...S.openEntry, ClockOut:p.at||new Date(it.ts).toISOString(), Source: p.paused?'paused':'live', _pending:true });
+        S.openEntry=null;
+      }
+    } else if (it.action==='fixForgotClockout' && S.openEntry){
+      // v75 - same for a forgotten clock-out closed on the phone but not yet at the office.
+      // Without this the next bootstrap put the open shift (and the red banner, and the "Fix
+      // it" sheet) straight back on screen, which is what Paul saw on 16 Oct.
+      const id = tempIdMap[p.entryId]||p.entryId;
+      if (S.openEntry.EntryID===id || S.openEntry.EntryID===p.entryId){
+        upsertLocalEntry({ ...S.openEntry, ClockOut:p.outISO||new Date(it.ts).toISOString(), Status:'pending', Source:'live', _pending:true });
         S.openEntry=null;
       }
     }
@@ -3898,31 +3926,68 @@ function dictate(btnId, targetId){
    One tap: "when did you actually stop working that day?" → that entry closes there
    (pending admin approval) and today starts clean. Prevents the two-days-merged-into-
    one-20-hour-entry problem. */
+/* v75 - TWO things Paul asked for on 16 Oct, both visible in his screenshots.
+   (1) A DAY as well as a time. The old sheet only asked for a time and pinned it to the
+       clock-in date, rolling it forward a day only if the time came out before the clock-in.
+       A shift left open for 48 hours could not be closed at the right moment at all.
+   (2) It queues. This used to refuse to run without signal and then sit on "Fixing..." for the
+       whole round trip - and when that trip timed out the sheet simply reset itself to "Fix it"
+       and the shift was still open, which is exactly the pair of screenshots he sent. Now the
+       entry is closed on the phone first and the correction is written to the queue BEFORE the
+       network is tried, like a punch: the person can clock in for today immediately, signal or
+       no signal, and the office gets the fix when the phone can reach it. */
 function openForgotFix(){
   const e=S.openEntry; if(!e) return;
   const inD=new Date(e.ClockIn);
+  const inDay=localDateStr(inD), today=localDateStr(new Date());
   sheet(`<h2>Forgot to clock out?</h2>
     <p class="small muted">You clocked in <b>${fmtDay(e.ClockIn)} at ${fmtTime(e.ClockIn)}</b>${e['Customer/Job Site']?` on <b>${esc(e['Customer/Job Site'])}</b>`:''} and never clocked out.</p>
-    <label>When did you actually stop working that day?</label>
-    <input id="ffTime" type="time" value="17:00">
-    <p class="small muted">That day's entry will close at this time and go to Paul for approval. Then you can clock in fresh for today.</p>
+    <label>When did you actually stop working?</label>
+    <div class="row">
+      <div class="grow"><label style="margin-top:0">Day</label>
+        <input id="ffDate" type="date" value="${esc(inDay)}" min="${esc(inDay)}" max="${esc(today)}"></div>
+      <div class="grow"><label style="margin-top:0">Time</label>
+        <input id="ffTime" type="time" value="17:00"></div>
+    </div>
+    <p class="small muted">The entry closes then and goes to Paul for approval — you can clock in for today straight away, even with no signal.</p>
     <button style="width:100%;margin-top:12px" onclick="submitForgotFix(this)">Fix it</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel — I really am still working</button>`);
 }
 async function submitForgotFix(btn){
   const e=S.openEntry; if(!e) return;
-  if(!S.online) return toast('You need signal to fix this — it updates the record right away.');
   const tv=val('ffTime'); if(!tv) return toast('Pick the time you stopped.');
   const inD=new Date(e.ClockIn);
-  let out=new Date(inD); const [hh,mm]=tv.split(':').map(Number); out.setHours(hh,mm,0,0);
-  if(out<=inD) out=new Date(out.getTime()+86400000); // stopped after midnight = next day
+  const dv=val('ffDate') || localDateStr(inD);
+  const out=new Date(dv+'T'+tv);
+  if(isNaN(out)) return toast('Pick the day and the time you stopped.');
+  if(out<=inD) return toast(`That is before you clocked in (${fmtDay(e.ClockIn)} ${fmtTime(e.ClockIn)}) — check the day.`);
+  if(out.getTime() > Date.now()+5*60000) return toast('That is still in the future — pick when you actually stopped.');
+  const gross=(out-inD)/3600000;
+  if(gross>16) return toast(`That would be ${gross.toFixed(1)} hours on one entry — pick the day and time you actually stopped.`, 6000);
   btn.disabled=true; btn.textContent='Fixing…';
-  try{
-    const r=await api('fixForgotClockout',{entryId:e.EntryID, outISO:out.toISOString()});
-    S.mutSeq++; S.openEntry=null; closeSheet(); render();
-    toast(`Fixed — ${r.hours} hrs sent for approval. You can clock in for today now.`);
-    refresh(true);
-  }catch(err){ toast(err.message); btn.disabled=false; btn.textContent='Fix it'; }
+  // Closed on the phone FIRST, sent after - nobody waits on the office to clock in again.
+  const brk=Math.min(breakHrsSoFar(out.toISOString())||0, gross);
+  const net=Math.max(0, Math.round((gross-brk)*100)/100);
+  const before={ ...e };
+  S.mutSeq++;
+  upsertLocalEntry({ ...e, ClockOut:out.toISOString(), Hours:net,
+    'Gross Hours':Math.round(gross*100)/100, 'Break Hrs':Math.round(brk*100)/100,
+    Status:'pending', Source:'live', _pending:true });
+  S.openEntry=null; closeSheet(); render();
+  saveBootCache();  // reopening the app mid-request must not resurrect the open shift
+  let r=null;
+  try { r = await apiMutate('fixForgotClockout', { entryId:e.EntryID, outISO:out.toISOString() }); }
+  catch(err){
+    if (/already clocked out/i.test(err.message||'')){ refresh(true); toast('That entry was already closed — you can clock in now.'); return; }
+    // Refused outright: put the running clock back, because the shift really is still open.
+    S.openEntry=before;
+    const i=(S.entries||[]).findIndex(x=>x.EntryID===before.EntryID); if(i>=0) S.entries.splice(i,1);
+    S.mutSeq++; render(); saveBootCache();
+    toast('Could not fix it: '+(err.message||'no answer from the office'), 9000);
+    return;
+  }
+  if (r && r.queued) toast(`Closed at ${fmtTime(out.toISOString())} — ${net} hrs will reach the office when you have signal. Clock in for today whenever you like.`, 8000);
+  else { toast(`Fixed — ${(r && r.hours!=null ? r.hours : net)} hrs sent for approval. You can clock in for today now.`); refresh(true); }
 }
 
 /* ---- Job / customer picker ---- */
@@ -3942,6 +4007,7 @@ function punchGuard_(){
 function openJobPicker(isSwitch){
   if (punchGuard_()) return;
   pickerState = { isSwitch, mode:null, company:'', jobSite:'', poNumber:'', isNew:false, newType:'', notes:'' };
+  custHydrateSync_();   // v75 - the saved list, read synchronously, BEFORE the first paint
   renderPicker(); // paints instantly from the cached list — nobody waits on the network
   // Stale-while-revalidate: ALWAYS re-fetch in the background (force=true skips the 10-min
   // TTL) so a PO row added by hand in the sheet shows up here within ~a minute, then swap
@@ -3966,14 +4032,19 @@ function openPOs(q){
    the clock-out review. The contact or company name leads because that is what the crew call the
    job; the PO number and the project name sit underneath it together. Before this the row was
    "R26191 · Brett Meston" and nothing said what the work was. */
+/* v75 - Paul: "the project name should be as bold as the company name but in a different dark
+   blue". Two identical rows reading "House on the Hill Renovation / PO C26197" and "... C26198"
+   is how you clock in to the wrong job. So: the name, then the project in its own weight and
+   colour, then the PO number small underneath. */
 function poRowHtml(c){
-  const sub = [c.po?('PO '+esc(c.po)):'', c.project?esc(c.project):''].filter(Boolean).join(' · ');
-  return `<b>${esc(c.name)}</b>${sub?`<div class="small muted" style="margin-top:1px">${sub}</div>`:''}`;
+  const proj = c.project ? `<div style="color:var(--proj);font-weight:700;line-height:1.25">${esc(c.project)}</div>` : '';
+  const po   = c.po ? `<div class="small muted" style="margin-top:1px">PO ${esc(c.po)}</div>` : '';
+  return `<b>${esc(c.name)}</b>${proj}${po}`;
 }
 function poListHtml(q){
   const pos=openPOs(q);
   poResults=pos;
-  if (!S.customers) return '<p class="small muted">Loading open jobs…</p>';
+  if (!S.customers) return `<p class="small muted">${S.online?'Loading open jobs…':'No job list saved on this phone yet — open the app once with signal and it will be here offline.'}</p>`;
   if (!pos.length) return `<p class="small muted">${q?'No open POs match — try the customer search below.':'No open POs found (only “In Progress” jobs are shown).'}</p>`;
   return pos.map((c,i)=>`<div class="list-item row between" onclick="pickPO(${i})" style="cursor:pointer">
       <div style="min-width:0">${poRowHtml(c)}</div>
@@ -4017,17 +4088,64 @@ let custResults=[];   // index-referenced by suggestion clicks (apostrophe-safe,
 /* Client-side customer cache: fetched once (10-min TTL), persisted in IndexedDB so
    autocomplete is instant — and works offline. Falls back to server search if not loaded. */
 const CUST_TTL = 10*60*1000;
+/* v75 - THE OPEN-JOB LIST HAS TO BE THERE AT THE TAP.
+ *
+ * It was already cached on the phone - but only in IndexedDB, which can only be read with an
+ * await. openJobPicker paints the sheet synchronously, so the first picker of a session painted
+ * while S.customers was still empty ("Loading open jobs..."), and the only thing that repainted
+ * it was the FORCED network fetch landing. On a slow connection that is a wait of seconds; on no
+ * connection it never repaints at all. That is Paul's 16 Oct screenshot, and it is also why the
+ * list felt like it needed the internet when the data was sitting on the phone the whole time.
+ *
+ * So the list is mirrored into localStorage, which reads synchronously, and every picker
+ * hydrates from it BEFORE it paints. IndexedDB stays the primary copy (bigger, and the service
+ * worker reads it); localStorage is the copy that can be read in time to draw a screen. */
+const CUST_LS_KEY = 'pcwCustomers';
+function custSave_(list, ts){
+  try { localStorage.setItem(CUST_LS_KEY, JSON.stringify({ list, ts })); }
+  catch(e){
+    // Over quota: keep the rows the pickers actually need - the open jobs with a PO number.
+    try { localStorage.setItem(CUST_LS_KEY, JSON.stringify({
+      list:(list||[]).filter(c=>c && c.po && poOpen(c.status)), ts, part:true })); }
+    catch(_){}
+  }
+}
+/* Synchronous: safe to call on the line before a picker paints. */
+function custHydrateSync_(){
+  if (S.customers && S.customers.length) return true;
+  try {
+    const o = JSON.parse(localStorage.getItem(CUST_LS_KEY) || 'null');
+    if (o && o.list && o.list.length){ S.customers=o.list; S.customersAt=o.ts||0; return true; }
+  }catch(e){}
+  return false;
+}
+/* Repaint whichever job list is on screen the moment a better one arrives - from the phone's
+   own storage or from the office. Keyed on the DOM, so it is right whatever sheet is open. */
+function custPaint_(){
+  try{
+    if (pickerState && document.getElementById('poList')) refreshPoList();
+    if (coState && document.getElementById('coJobList')) coJobFilter(val('coJobSearch'));
+    if (mnState && document.getElementById('mnJobList')) mnJobFilter(val('mnJobSearch'));
+    if (edState && document.getElementById('edJobList')) edJobFilter(val('edJobSearch'));
+  }catch(e){}
+}
 async function loadCustomers(force){
   // cache key v2: entries now carry PO Status for the open-jobs list
+  custHydrateSync_();
   if (!force && S.customers && (Date.now()-S.customersAt) < CUST_TTL) return;
   const cached = await DB.getCache('customers2');
-  if (cached && cached.list){ S.customers=cached.list; S.customersAt=cached.ts; }
+  if (cached && cached.list && cached.list.length){
+    S.customers=cached.list; S.customersAt=cached.ts;   // the fuller copy wins
+    custSave_(cached.list, cached.ts); custPaint_();
+  }
   if (!S.online) return;
   if (!force && cached && (Date.now()-cached.ts) < CUST_TTL) return;
   try{
     const r = await apiBg('customerList');
     S.customers = r.customers||[]; S.customersAt = Date.now();
     await DB.setCache('customers2', {list:S.customers, ts:S.customersAt});
+    custSave_(S.customers, S.customersAt);
+    custPaint_();
   }catch(e){ /* keep whatever we had */ }
 }
 function levJs(a,b){ const m=a.length,n=b.length,dp=[]; for(let i=0;i<=m;i++)dp[i]=[i]; for(let j=0;j<=n;j++)dp[0][j]=j;
@@ -4105,7 +4223,8 @@ async function createNewCustomer(type, force){
       return;
     }
     pickerState.jobSite=r.customer.name; pickerState.poNumber=r.customer.po; pickerState.isNew=false;
-    if (S.customers){ S.customers.push({name:r.customer.name, po:r.customer.po, status:'In Progress'}); DB.setCache('customers2',{list:S.customers,ts:S.customersAt||Date.now()}); }
+    if (S.customers){ S.customers.push({name:r.customer.name, po:r.customer.po, status:'In Progress'});
+      DB.setCache('customers2',{list:S.customers,ts:S.customersAt||Date.now()}); custSave_(S.customers, S.customersAt||Date.now()); }
     renderPicker(); toast(`New ${type} job — PO ${r.customer.po}`);
   }catch(e){ toast(e.message); }
 }
@@ -4128,6 +4247,13 @@ async function submitPicker(){
    instead of silently padding the day. */
 let coState=null, coSubmittedId=null, coJobResults=[], coMatResults=[], coTickT=null;
 const LONG_REVIEW_MIN = 15;
+/* v75 - how far ahead of the phone's own clock a TYPED clock-out time may be. Paul asked to be
+   able to round the finish up (type 5:30 at 5:20); the app used to refuse anything more than
+   five minutes ahead and the server quietly clamped it back to "now" as well. Two hours covers
+   rounding to the half hour and a finish written up a little early; past that it is a wrong day
+   or a wrong phone clock, not a rounded finish, so it is refused instead of silently changed.
+   CONFIG.CLOCKOUT_AHEAD_MIN in Code.gs is the same number - keep them in step. */
+const CLOCKOUT_AHEAD_MIN = 120;
 
 function openClockOut(){
   if (punchGuard_()) return;
@@ -4170,6 +4296,7 @@ function startClockOutReview(){
     // cancelled → drop the fix: the entry is still open and this is NOT its clock-out location
   });
   loadMaterials();
+  custHydrateSync_();   // v75 - "Change job" opens with the saved list, not a spinner
   // Force-refresh customers in the background (same stale-while-revalidate as the clock-in
   // picker) and update the "Change job" list if it's showing when the fresh data lands.
   loadCustomers(true).then(()=>{ if (coState) coJobFilter(val('coJobSearch')); });
@@ -4570,7 +4697,11 @@ async function submitClockOut(){
   }
   const gms=new Date(c.outAt)-new Date(c.inAt);
   if (!(gms>0)){ toast('Clock-out must be after clock-in — check the times.'); return; }
-  if (new Date(c.outAt).getTime() > Date.now()+5*60000){ toast("Clock-out time can't be in the future."); return; }
+  const ahead = new Date(c.outAt).getTime() - Date.now();
+  if (ahead > CLOCKOUT_AHEAD_MIN*60000){
+    toast(`That clock-out is ${Math.round(ahead/60000)} min ahead of this phone's clock — pick a time within ${CLOCKOUT_AHEAD_MIN/60} hours of now.`, 6000);
+    return;
+  }
   const bmin=Number(c.breakMin)||0;
   if (bmin*60000 > gms && !c.breakWarned){
     // Warn, don't hard-block: mistakes happen, but so do real short days. A second tap
@@ -4706,6 +4837,7 @@ function openManual(){
   const today=todayStr(); // LOCAL date — toISOString() is UTC and prefills tomorrow every evening
   mnState={ jobSite:'', poNumber:'', company:'', items:[] };
   loadMaterials();
+  custHydrateSync_();   // v75
   loadCustomers(true).then(()=>{ if (mnState) mnJobFilter(val('mnJobSearch')); }); // fresh open-PO list
   const isAdmin = S.me && S.me.role==='admin';
   // v56 — an admin can add time for anyone. Defaults to themself (or to whoever was passed in).
@@ -4754,7 +4886,7 @@ function mnJobFilter(q){
   const box=document.getElementById('mnJobList'); if(!box) return;
   mnJobResults=openPOs(q);
   box.innerHTML = mnJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="mnPickJob(${i})">${poRowHtml(c)}</div>`).join('')
-    || `<p class="small muted">${S.customers?'No open POs match.':'Loading open jobs…'}</p>`;
+    || `<p class="small muted">${S.customers?'No open POs match.':(S.online?'Loading open jobs…':'No job list saved on this phone yet.')}</p>`;
 }
 function mnPickJob(i){ const c=mnJobResults[i]; if(!c||!mnState) return;
   mnState.jobSite=c.name; mnState.poNumber=c.po; mnState.company='';
@@ -4873,6 +5005,7 @@ function openEditEntry(k){
     jobSite:e['Customer/Job Site']||'', poNumber:e['PO#']||'', company:e.Company||'',
     jobEdited:false, items:[] };
   loadMaterials();
+  custHydrateSync_();   // v75
   loadCustomers(true).then(()=>{ if (edState) edJobFilter(val('edJobSearch')); }); // fresh open-PO list here too
   const inT = e.ClockIn? fmtHM(e.ClockIn):'';
   const outT= e.ClockOut? fmtHM(e.ClockOut):'';
@@ -4913,7 +5046,7 @@ function edToggleJob(){ const d=document.getElementById('edJobPick'); if(!d) ret
 function edJobFilter(q){
   const box=document.getElementById('edJobList'); if(!box) return;
   edJobResults=openPOs(q);
-  box.innerHTML = edJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="edPickJob(${i})"><b>${esc(c.po)}</b> · ${esc(c.name)}</div>`).join('')
+  box.innerHTML = edJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="edPickJob(${i})">${poRowHtml(c)}</div>`).join('')
     || '<p class="small muted">No open POs match.</p>';
 }
 function edPickJob(i){ const c=edJobResults[i]; if(!c||!edState) return;
@@ -7401,6 +7534,7 @@ async function start(){
   // the office's address; the session is already in the same cache ('session'). Written up here
   // now, so it is in place before the first punch can possibly be taken.
   DB.setCache('apiUrl', CONFIG.APPS_SCRIPT_URL).catch(()=>{});
+  custHydrateSync_();   // v75 - the job list is in memory before the first screen is drawn
   keepStorage_();
   const sess = await loadSession_();
   if (sess){ S.session=sess; await boot(); }
