@@ -2153,8 +2153,9 @@ function jobsRowsHtml(){
   const archToggle = arch.length
     ? `<button class="ghost" style="width:100%;margin-top:6px" onclick="S.jobsShowArch=!S.jobsShowArch;jobsFilter(S.jobsQuery||'')">${S.jobsShowArch?'▾ Hide':'▸ Show'} ${arch.length} archived job${arch.length===1?'':'s'} (invoiced/closed)</button>` : '';
   let h=list.map(j=>{ const k=reg(j); return `<div class="list-item row between" style="cursor:pointer" onclick="openJobDetail('${k}')">
-      <div><b>${esc(j.name||j.po||'—')}</b>
-        <div class="small muted">${j.po?('PO '+esc(j.po)+' · '):''}${esc(j.status||'')}</div></div>
+      <div style="min-width:0"><b>${esc(j.name||j.po||'—')}</b>
+        <div class="small muted">${[j.po?('PO '+esc(j.po)):'', j.project?esc(j.project):''].filter(Boolean).join(' · ')}</div>
+        ${j.status?`<div class="small muted">${esc(j.status)}</div>`:''}</div>
       <div style="text-align:right"><b>${j.hours.toFixed(2)} hrs</b>
         ${j.pending?`<div class="small" style="color:var(--pending)">+ ${j.pending.toFixed(2)} pending</div>`:''}
         <div class="small muted">≈ $${j.cost.toFixed(2)} labour</div></div>
@@ -2183,6 +2184,7 @@ function openJobDetail(k){
   const j=dereg(k); if(!j) return;
   const pk=reg({jobSite:j.name, po:j.po||''});
   sheet(`<h2>${esc(j.name||j.po||'—')}</h2>
+    ${j.project?`<p class="small" style="margin:-6px 0 6px">${esc(j.project)}</p>`:''}
     <p class="small muted">${j.po?('PO '+esc(j.po)+' · '):''}${esc(j.status||'')} ·
       <b>${j.hours.toFixed(2)} hrs</b> ≈ $${j.cost.toFixed(2)} labour${j.pending?` · ${j.pending.toFixed(2)} hrs pending`:''}</p>
     ${(j.employees||[]).map(e=>`<div class="list-item row between">
@@ -3955,7 +3957,18 @@ function poArchived(status){ return /(done|closed|invoice)/i.test(String(status|
 function openPOs(q){
   q=(q||'').trim().toLowerCase();
   return (S.customers||[]).filter(c=>c.po && poOpen(c.status))
-    .filter(c=>!q || c.name.toLowerCase().includes(q) || c.po.toLowerCase().includes(q));
+    // v74 — the project name is searchable too, so "boathouse" or "panel" finds the job
+    // without anybody having to remember which number it was given.
+    .filter(c=>!q || c.name.toLowerCase().includes(q) || c.po.toLowerCase().includes(q)
+                  || String(c.project||'').toLowerCase().includes(q));
+}
+/* v74 — ONE row for a job, used by all three pickers: clock in, add time, and the job swap on
+   the clock-out review. The contact or company name leads because that is what the crew call the
+   job; the PO number and the project name sit underneath it together. Before this the row was
+   "R26191 · Brett Meston" and nothing said what the work was. */
+function poRowHtml(c){
+  const sub = [c.po?('PO '+esc(c.po)):'', c.project?esc(c.project):''].filter(Boolean).join(' · ');
+  return `<b>${esc(c.name)}</b>${sub?`<div class="small muted" style="margin-top:1px">${sub}</div>`:''}`;
 }
 function poListHtml(q){
   const pos=openPOs(q);
@@ -3963,8 +3976,8 @@ function poListHtml(q){
   if (!S.customers) return '<p class="small muted">Loading open jobs…</p>';
   if (!pos.length) return `<p class="small muted">${q?'No open POs match — try the customer search below.':'No open POs found (only “In Progress” jobs are shown).'}</p>`;
   return pos.map((c,i)=>`<div class="list-item row between" onclick="pickPO(${i})" style="cursor:pointer">
-      <div><b>${esc(c.po)}</b> · ${esc(c.name)}</div>
-      ${pickerState.poNumber===c.po?'<span style="color:var(--ok);font-weight:700">✓</span>':''}
+      <div style="min-width:0">${poRowHtml(c)}</div>
+      ${pickerState.poNumber===c.po?'<span style="color:var(--ok);font-weight:700;flex:0 0 auto">✓</span>':''}
     </div>`).join('');
 }
 function refreshPoList(){ const el=document.getElementById('poList'); if(el) el.innerHTML=poListHtml((document.getElementById('custSearch')||{}).value||''); }
@@ -4456,7 +4469,7 @@ function coToggleJob(){ const d=document.getElementById('coJobPick'); if(!d) ret
 function coJobFilter(q){
   const box=document.getElementById('coJobList'); if(!box) return;
   coJobResults=openPOs(q);
-  box.innerHTML = coJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="coPickJob(${i})"><b>${esc(c.po)}</b> · ${esc(c.name)}</div>`).join('')
+  box.innerHTML = coJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="coPickJob(${i})">${poRowHtml(c)}</div>`).join('')
     || '<p class="small muted">No open POs match.</p>';
 }
 function coPickJob(i){ const c=coJobResults[i]; if(!c||!coState) return;
@@ -4740,7 +4753,7 @@ function mnToggleJob(){ const d=document.getElementById('mnJobPick'); if(!d) ret
 function mnJobFilter(q){
   const box=document.getElementById('mnJobList'); if(!box) return;
   mnJobResults=openPOs(q);
-  box.innerHTML = mnJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="mnPickJob(${i})"><b>${esc(c.po)}</b> · ${esc(c.name)}</div>`).join('')
+  box.innerHTML = mnJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="mnPickJob(${i})">${poRowHtml(c)}</div>`).join('')
     || `<p class="small muted">${S.customers?'No open POs match.':'Loading open jobs…'}</p>`;
 }
 function mnPickJob(i){ const c=mnJobResults[i]; if(!c||!mnState) return;
