@@ -3174,6 +3174,23 @@ function openBallPark(key,backKind,backArg){
     <p class="small muted" style="margin:10px 0 0">Provisional. Priced from the Materials Price List before anyone saw the job.</p>
     <button class="secondary" style="width:100%;margin-top:10px" onclick="${back}">Back</button>`);
 }
+/* v77 - WHAT THE CUSTOMER ACTUALLY WROTE, on the Requests tab.
+ * This has existed since v65 and v71 - the email is fetched word for word, laid out question by
+ * question, with their photos - but only off the SCHEDULE tab, where it hangs on a booking. A
+ * lead sitting on the Requests tab, which is where it is read first and where it is decided,
+ * offered the ball park and nothing else. Charles, 21 Oct: "I thought we had asked to be able to
+ * see the information of the original form." He had, and it was built; it was in one place only.
+ * Same sheet, same leadEmail action, no server change: the ball-park text filed with the lead
+ * carries the link back to the email, and leadEmail can also find the row by its id.
+ * The LIVE request object is registered, not a copy, so the email fetched once (a 75-second call
+ * on a cold start) is still there when the sheet is reopened. */
+function enquiryBtn(q, backKind, backArg){
+  if (!q || !q.detail) return '';
+  if (!q.jobRequestId) q.jobRequestId = q.id || '';
+  const key = reg(q);
+  return `<button class="secondary" style="width:100%;margin-top:6px"
+    onclick="event.stopPropagation();openSchedEnquiry('${key}')">📨 What the customer sent, word for word</button>`;
+}
 function ballParkBtn(q,backKind,backArg){
   if(!q||!q.detail) return '';
   const key=reg({detail:q.detail, customer:q.customer, po:q.po});
@@ -6418,6 +6435,7 @@ function requestsView(){
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
       <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> estimated${price?` · ${price} provisional`:''}</div>
       ${reqPhotoStrip(q)}
+      ${enquiryBtn(q)}
       ${ballParkBtn(q)}
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="openReqSchedule(${i})">📅 Schedule it</button>
@@ -6439,6 +6457,7 @@ function requestsView(){
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
       <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> job${price?` · ${price} quoted`:''}</div>
       ${reqPhotoStrip(q)}
+      ${enquiryBtn(q)}
       ${ballParkBtn(q)}
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="openReqBook(${i})">🔧 They said yes — book the job</button>
@@ -6466,6 +6485,7 @@ function requestsView(){
       <div class="small" style="margin-top:2px"><b>${esc(w)}</b>${(q.bookedHours||q.hours)?` · ${q.bookedHours||q.hours} hr`:''}</div>
       ${reqPhotoStrip(q)}
       ${q.scope?`<div class="small muted" style="margin-top:2px">${esc(q.scope)}</div>`:''}
+      ${enquiryBtn(q)}
       <div class="row" style="margin-top:6px">
         <button class="grow secondary" onclick="openReqMove(${i})">📅 Move it</button>
         ${q.confirm==='waiting'?`<button class="ghost" onclick="reqRenotify(${i})">Ask again</button>`:(!q.confirm||q.confirm==='none')?`<button class="ghost" onclick="reqRenotify(${i})">📧 Email customer</button>`:''}
@@ -7340,6 +7360,7 @@ function openReqDetail(k,i){
       ${row('Crew', esc(crewNames.join(', ')))}
     </div>
     ${reqPhotoStrip(q)}
+    ${enquiryBtn(q,k,i)}
     ${ballParkBtn(q,k,i)}
     <div class="row" style="margin-top:14px;flex-wrap:wrap">${acts}</div>
     <div class="row" style="margin-top:8px">
