@@ -2564,7 +2564,7 @@ function schedView(){
       <button class="${mode==='month'?'on':''}" onclick="schedToggle('month')">📅 Month</button>
     </div>
     ${canApprove()?`<div class="row" style="margin-bottom:10px">
-      <button class="secondary grow" onclick="openAddManual('job')">⚡ Add a job</button>
+      <button class="secondary grow" onclick="openAddManual('job')">⚡ Schedule a job</button>
       <button class="secondary grow" onclick="openAddManual('call')">📞 Schedule a call</button>
     </div>`:''}`;
   if(mode==='month') return head + schedMonthHtml() + (d?timeOffSection():'');
@@ -4031,11 +4031,14 @@ function openJobPicker(isSwitch){
   // the fresh list into the open picker when it lands.
   loadCustomers(true).then(()=>{ if (S._sheet && pickerState) refreshPoList(); });
 }
-/* Open POs = rows in the PO Log whose Status is "In Progress". Done jobs are hidden. */
-/* Charles's status scheme (Sept 2026): a job is OPEN only when Status is "In progress" or
-   blank (new jobs whose status hasn't been set yet). Anything else — Invoice, Closed, legacy
-   Done, or an unexpected value — stays out of the picker. */
-function poOpen(status){ const st=String(status||'').trim(); return st==='' || /in.?progress/i.test(st); }
+/* Open POs = rows in the PO Log whose Status is "In progress". Done jobs are hidden.
+   v79 — and ONLY "In progress". It used to count a BLANK status as open too, from back when new
+   rows arrived with nothing in that column; the Status dropdown has been back on the PO Log since
+   v76 and the script writes "In progress" on every row it creates, so a blank is now an oversight
+   rather than a new job, and Charles asked for the Switch-to list to be just the jobs in progress.
+   A job whose status has been left blank is still reachable — the customer search underneath the
+   list does not filter on status — so nobody is stuck, and the fix is one tap in the dropdown. */
+function poOpen(status){ return /in.?progress/i.test(String(status||'').trim()); }
 function poArchived(status){ return /(done|closed|invoice)/i.test(String(status||'')); } // Jobs-tab archive bucket
 function openPOs(q){
   q=(q||'').trim().toLowerCase();
@@ -4144,6 +4147,7 @@ function custPaint_(){
     if (coState && document.getElementById('coJobList')) coJobFilter(val('coJobSearch'));
     if (mnState && document.getElementById('mnJobList')) mnJobFilter(val('mnJobSearch'));
     if (edState && document.getElementById('edJobList')) edJobFilter(val('edJobSearch'));
+    if (document.getElementById('sjList')) sjFilter(val('sjSearch'));
   }catch(e){}
 }
 async function loadCustomers(force){
@@ -6038,10 +6042,14 @@ function jpCached_(po, site){
 function jpPut_(po, site, list){
   if (!po && !site) return;
   try {
-    const all = jpStore_();
-    all[jpKey_(po, site)] = { list: list||[], ts: Date.now() };
-    const keep = Object.keys(all).sort((a,b)=>(all[b].ts||0)-(all[a].ts||0)).slice(0,8);
-    const out = {}; keep.forEach(k=>{ out[k]=all[k]; });
+    const all = jpStore_(), k = jpKey_(po, site);
+    all[k] = { list: list||[], ts: Date.now() };
+    // The one just written is ALWAYS kept, then the seven next most recent. Sorting on the
+    // timestamp alone decided ties arbitrarily, and two jobs opened in the same millisecond
+    // could drop the one being saved.
+    const keep = Object.keys(all).filter(x=>x!==k)
+      .sort((a,b)=>(all[b].ts||0)-(all[a].ts||0)).slice(0,7);
+    const out = {}; [k].concat(keep).forEach(x=>{ out[x]=all[x]; });
     localStorage.setItem(JP_LS_KEY, JSON.stringify(out));
   } catch(e){}
 }
@@ -6495,7 +6503,7 @@ function requestsView(){
   return `${approvalsHtml()}${collateralCardHtml()}${callsCardHtml()}<h2>📨 Requests</h2>
     <p class="small muted" style="margin-top:-4px">Website leads waiting to go on the calendar. Nothing is booked until you say so.</p>
     ${canApprove()?`<div class="row" style="margin:8px 0 10px">
-      <button class="secondary grow" onclick="openAddManual('job')">⚡ Add a job</button>
+      <button class="secondary grow" onclick="openAddManual('job')">⚡ Schedule a job</button>
       <button class="secondary grow" onclick="openAddManual('call')">📞 Schedule a call</button>
     </div>`:''}
     ${S.reqErr?`<div class="banner ot">${esc(S.reqErr)}</div>`:''}
@@ -6987,13 +6995,62 @@ async function dayPickGo(btn){
  * does. A CALL does not — nothing is sold yet, so it goes on the Estimate tab like any other
  * quote call. Either can be saved with no time at all and picked up from the list later. ====*/
 let amState=null;
-function openAddManual(kind){
-  amState={ kind:kind==='call'?'call':'job', emergency:kind!=='call', customer:'', phone:'', email:'',
+/* v79 — "Schedule a job" opens with the jobs already in progress, because most of the time the
+ * work being booked is for somebody who is already on the books, and retyping their name, phone
+ * and address is both slower and how a second record of one customer gets made. Picking one
+ * KEEPS ITS JOB NUMBER: a PO number becomes the QuickBooks invoice number, so it is minted once
+ * and never re-minted (requestSchedule_ already re-dates the existing PO Log row instead of
+ * taking the next number). A customer who is genuinely new is the last option on the list.
+ * A phone CALL skips all of this — nothing is sold yet, so there is no job to attach it to. */
+function openAddManual(kind, fresh){
+  if (kind !== 'call' && !fresh) return openScheduleJobPick();
+  amState={ kind:kind==='call'?'call':'job', emergency:kind!=='call', po:'', customer:'', phone:'', email:'',
             address:'', scope:'', company:'', hours:kind==='call'?0.5:2, notifyCustomer:true };
   addManualRender();
 }
+let sjResults=[];
+function openScheduleJobPick(){
+  custHydrateSync_();                               // the saved list, before the first paint
+  sheet(`<h2>⚡ Schedule a job</h2>
+    <p class="small muted" style="margin-top:-4px">Jobs in progress — pick the one this work belongs to and it keeps its job number.</p>
+    <input id="sjSearch" placeholder="Search the jobs in progress…" autocomplete="off" oninput="sjFilter(this.value)">
+    <div id="sjList" style="max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:0 12px;margin-top:6px">${sjListHtml('')}</div>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="openAddManual('job',true)">➕ New customer — not on the list</button>
+    <button class="ghost" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
+  loadCustomers(true);                              // and refresh it behind the screen
+}
+function sjListHtml(q){
+  const list=openPOs(q);
+  sjResults=list;
+  if (!S.customers) return `<p class="small muted">${S.online?'Loading the jobs in progress…':'No job list saved on this phone yet.'}</p>`;
+  if (!list.length) return `<p class="small muted">${q?'No job in progress matches — add the customer below.':'No jobs are in progress. Add the customer below.'}</p>`;
+  return list.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="sjPick(${i})">${poRowHtml(c)}</div>`).join('');
+}
+function sjFilter(q){ const el=document.getElementById('sjList'); if(el) el.innerHTML=sjListHtml(q||''); }
+/* The job's own contact details come off its PO Log row, so nothing is retyped and nothing
+   disagrees with what is already filed. The form opens straight away and fills in behind. */
+async function sjPick(i){
+  const c=sjResults[i]; if(!c) return;
+  amState={ kind:'job', emergency:false, po:c.po, customer:c.name, project:c.project||'',
+            phone:'', email:'', address:'', scope:'', company:'', hours:2, notifyCustomer:true };
+  addManualRender();
+  if (!S.online) return;
+  try{
+    const r=await api('poLogFind',{po:c.po},{bg:true});
+    const d=(r&&r.data)||{};
+    const get=(...names)=>{ for(const n of names){ for(const k of Object.keys(d)){ if(k.toLowerCase()===n) return String(d[k]||'').trim(); } } return ''; };
+    if (!amState || amState.po!==c.po) return;      // they moved on while this was in flight
+    amState.phone   = amState.phone   || get('phone number','phone');
+    amState.email   = amState.email   || get('email address','email');
+    amState.address = amState.address || get('job address','address');
+    amState.company = amState.company || get('company name','company');
+    amState.scope   = amState.scope   || get('project name','description of work');
+    if (!amState.customer) amState.customer = get('contact person','company name');
+    addManualRender();
+  }catch(e){ /* the form still works, it just has less typed in for you */ }
+}
 function amSave(){
-  const a=amState; if(!a) return;
+  const a=amState; if(!a) return;   // a.po and a.project are not form fields: they stay as picked
   a.customer=val('amCust').trim(); a.phone=val('amPhone').trim(); a.email=val('amEmail').trim();
   a.address=val('amAddr').trim(); a.scope=val('amScope').trim(); a.company=val('amCo').trim();
   a.hours=Math.max(0.25,Math.min(12,Number(val('amHours'))||a.hours));
@@ -7003,10 +7060,12 @@ function amSave(){
 function addManualRender(){
   const a=amState; if(!a) return;
   const isCall=a.kind==='call';
-  sheet(`<h2>${isCall?'📞 Schedule a phone call':'⚡ Add a job by hand'}</h2>
+  sheet(`<h2>${isCall?'📞 Schedule a phone call':'⚡ Schedule a job'}</h2>
+    ${a.po?`<div class="banner sync">On <b>${esc(a.po)}</b>${a.project?' · '+esc(a.project):''} — it keeps this job number.</div>`:''}
     <p class="small muted" style="margin-top:-4px">${isCall
       ? 'Blocks the call on the calendar and files it on the Estimate tab. No job number is used — nothing is sold yet.'
-      : 'Gets the next job number and a full PO Log row, the same as scheduling a website lead.'}</p>
+      : (a.po ? 'Books the time against the job that is already open. Its PO Log row is re-dated — no new number.'
+              : 'A new customer: this gets the next job number and a full PO Log row, the same as scheduling a website lead.')}</p>
     <label>Customer / company <span class="muted">(needed)</span></label>
     <input id="amCust" value="${esc(a.customer)}" placeholder="Who is it for?">
     <div class="row">
@@ -7040,7 +7099,7 @@ function amPickTime(){
     sub:[a.scope,a.address].filter(Boolean).join(' · '),
     hours:a.hours, date:todayStr(), back:'addManualRender()',
     onConfirm:async(start,hours,bump)=>{
-      const r=await api('requestAddManual',{ kind:a.kind, customer:a.customer, phone:a.phone,
+      const r=await api('requestAddManual',{ kind:a.kind, po:a.po||'', customer:a.customer, phone:a.phone,
         email:a.email, address:a.address, scope:a.scope, company:a.company, hours:hours,
         start:start, bump:!!bump, emergency:!!a.emergency,
         notifyCustomer:a.notifyCustomer!==false },{timeout:120000});
@@ -7058,7 +7117,7 @@ async function amLater(btn){
   if(!S.online) return toast('You need signal.');
   btn.disabled=true; btn.textContent='Saving…';
   try{
-    await api('requestAddManual',{ kind:a.kind, customer:a.customer, phone:a.phone, email:a.email,
+    await api('requestAddManual',{ kind:a.kind, po:a.po||'', customer:a.customer, phone:a.phone, email:a.email,
       address:a.address, scope:a.scope, company:a.company, hours:a.hours, emergency:!!a.emergency });
     amState=null; closeSheet();
     toast((a.kind==='call'?'Call':'Job')+' saved — it is waiting at the top of Requests.',7000);
