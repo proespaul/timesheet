@@ -2802,7 +2802,7 @@ async function openSchedDetail(k){
     ${info.phone?`<p class="small" style="margin:2px 0">📞 <a href="tel:${esc(String(info.phone).replace(/[^0-9+]/g,''))}" style="color:var(--accent2)">${esc(info.phone)}</a></p>`:''}
     ${info.email?`<p class="small" style="margin:2px 0">✉️ <a href="mailto:${esc(info.email)}" style="color:var(--accent2)">${esc(info.email)}</a></p>`:''}
     ${info.scope?`<div class="banner" style="background:var(--panel2);margin-top:8px">${esc(info.scope)}</div>`:''}
-    ${info.detail?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openSchedEnquiry('${key}')">📨 See the original enquiry</button>`:''}
+    ${info.detail?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openSchedEnquiry('${key}')">📨 Original inquiry</button>`:''}
     ${info.kind==='visit'?`<p class="small muted" style="margin:8px 0 0">This is a <b>return visit</b> — it continues ${info.po?esc(info.po):'an earlier job'}, so the details above are the original job's.</p>`:''}
     ${info.isJob
       ? `<button style="width:100%;margin-top:12px" onclick="openSchedModify('${key}',${bi})">✏️ Modify this booking</button>`
@@ -2840,7 +2840,7 @@ function openSchedModify(key,bi){
                  :'Switch between an estimate call and a booked job.',
           `openSchedSetType('${key}')`)
       : ''}
-    ${row('📨','The original enquiry', info.detail?'What the customer wrote, with their photos.':'Nothing on file for this one.',
+    ${row('📨','Original inquiry', info.detail?'What the customer wrote, with their photos.':'Nothing on file for this one.',
         info.detail?`openSchedEnquiry('${key}')`:`toast('No enquiry on file for this one.')`, info.detail?'secondary':'ghost')}
     ${isReq
       ? row('❌','Cancel the job','Frees the slot and marks '+(info.po?esc(info.po):'the job')+' Cancelled. The job number is kept, never reused.',
@@ -3189,7 +3189,7 @@ function enquiryBtn(q, backKind, backArg){
   if (!q.jobRequestId) q.jobRequestId = q.id || '';
   const key = reg(q);
   return `<button class="secondary" style="width:100%;margin-top:6px"
-    onclick="event.stopPropagation();openSchedEnquiry('${key}')">📨 What the customer sent, word for word</button>`;
+    onclick="event.stopPropagation();openSchedEnquiry('${key}')">📨 Original inquiry</button>`;
 }
 function ballParkBtn(q,backKind,backArg){
   if(!q||!q.detail) return '';
@@ -3201,7 +3201,7 @@ function ballParkBtn(q,backKind,backArg){
 async function openSchedEnquiry(key){
   const info=dereg(key); if(!info) return;
   const bp=bpParse(info.detail);
-  const head=`<h2>📨 The enquiry</h2>
+  const head=`<h2>📨 Original inquiry</h2>
     <p class="small muted" style="margin-top:-4px">${esc([info.customer,info.po,info.entryNo?('form #'+info.entryNo):''].filter(Boolean).join(' · '))}</p>
     ${info.address?`<p class="small">📍 ${esc(info.address)}</p>`:''}`;
   // What the parts are: the scenario's own materials line if it has one, otherwise the
