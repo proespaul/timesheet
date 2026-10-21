@@ -4296,6 +4296,7 @@ function startClockOutReview(){
     // cancelled → drop the fix: the entry is still open and this is NOT its clock-out location
   });
   loadMaterials();
+  jpLoad(coState.poNumber, coState.jobSite||coState.company, true);   // v76 - this job's own PO parts
   custHydrateSync_();   // v75 - "Change job" opens with the saved list, not a spinner
   // Force-refresh customers in the background (same stale-while-revalidate as the clock-in
   // picker) and update the "Change job" list if it's showing when the fresh data lands.
@@ -4355,7 +4356,9 @@ function renderClockOutReview(){
       <button class="secondary" id="coMicBtn" style="padding:6px 12px" onclick="dictate('coMicBtn','coNotes')">🎤 Talk</button></div>
     <textarea id="coNotes" rows="2" placeholder="e.g. changed light fixtures, wired panel — talk or type" oninput="coState&&(coState.notes=this.value)">${esc(c.notes)}</textarea>
     ${coRvCard(c)}
-    <label>Materials used</label>
+    <label>Bought for this job</label>
+    <div id="jp_co">${jpBlockHtml('co')}</div>
+    <label style="margin-top:14px">Anything else you used — search the inventory</label>
     <input id="coMatSearch" placeholder="Search… e.g. half inch EMT, wago" autocomplete="off" oninput="coMatSuggest(this.value)">
     <div id="coMatSug"></div>
     <div id="coMatList"></div>
@@ -4601,10 +4604,10 @@ function coJobFilter(q){
 }
 function coPickJob(i){ const c=coJobResults[i]; if(!c||!coState) return;
   coState.jobSite=c.name; coState.poNumber=c.po; coState.company=''; coState.jobEdited=true;
-  coJobHeader(); coToggleJob(); }
+  coJobHeader(); coToggleJob(); jpLoad(c.po, c.name, true); jpPaint_(); }
 function coPickCompany(x){ if(!coState) return;
   coState.company=x; coState.jobSite=''; coState.poNumber=''; coState.jobEdited=true;
-  coJobHeader(); coToggleJob(); }
+  coJobHeader(); coToggleJob(); jpLoad('', x, true); jpPaint_(); }
 function coJobHeader(){ const c=coState; if(!c) return;
   const n=document.getElementById('coJobName'), p=document.getElementById('coJobPo');
   if(n) n.textContent=c.jobSite||c.company||'—';
@@ -4626,7 +4629,7 @@ function coMatTyped(){ const q=val('coMatSearch').trim(); if(!q||!coState) retur
 function coMatClear(){ const i=document.getElementById('coMatSearch'); if(i){ i.value=''; i.focus(); }
   const b=document.getElementById('coMatSug'); if(b) b.innerHTML=''; }
 function coMatQty(i,v){ if(coState&&coState.items[i]) coState.items[i].qty=v; }
-function coMatRemove(i){ if(!coState) return; coState.items.splice(i,1); coUpdateMats(); }
+function coMatRemove(i){ if(!coState) return; coState.items.splice(i,1); coUpdateMats(); jpPaint_(); }
 function coUpdateMats(){
   const box=document.getElementById('coMatList'); const c=coState; if(!box||!c) return;
   box.innerHTML = c.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
@@ -4870,7 +4873,9 @@ function openManual(){
     <input id="mOut" type="time" oninput="mnCalc('out')">
     <p class="small muted" id="mnSummary" style="margin:2px 0 0"></p>
     <label>Notes</label><textarea id="mNotes" rows="2"></textarea>
-    <label>Materials used <span class="muted">(logged on the first day when several days are entered)</span></label>
+    <label>Bought for this job <span class="muted">(logged on the first day when several days are entered)</span></label>
+    <div id="jp_mn">${jpBlockHtml('mn')}</div>
+    <label style="margin-top:14px">Anything else you used — search the inventory</label>
     <input id="mnMatSearch" placeholder="Search materials…" autocomplete="off" oninput="mnMatSuggest(this.value)">
     <div id="mnMatSug"></div><div id="mnMatList"></div>
     <div class="row" style="margin-top:14px">
@@ -4890,10 +4895,10 @@ function mnJobFilter(q){
 }
 function mnPickJob(i){ const c=mnJobResults[i]; if(!c||!mnState) return;
   mnState.jobSite=c.name; mnState.poNumber=c.po; mnState.company='';
-  mnJobHeader(); mnToggleJob(); }
+  mnJobHeader(); mnToggleJob(); jpLoad(c.po, c.name, true); jpPaint_(); }
 function mnPickCompany(x){ if(!mnState) return;
   mnState.company=x; mnState.jobSite=''; mnState.poNumber='';
-  mnJobHeader(); mnToggleJob(); }
+  mnJobHeader(); mnToggleJob(); jpLoad('', x, true); jpPaint_(); }
 function mnJobHeader(){ const s=mnState; if(!s) return;
   const n=document.getElementById('mnJobName'), p=document.getElementById('mnJobPo');
   if(n) n.textContent=s.jobSite||s.company||'Pick a job';
@@ -4955,7 +4960,7 @@ function mnMatTyped(){ const q=val('mnMatSearch').trim(); if(!q||!mnState) retur
 function mnMatClear(){ const i=document.getElementById('mnMatSearch'); if(i){ i.value=''; i.focus(); }
   const b=document.getElementById('mnMatSug'); if(b) b.innerHTML=''; }
 function mnMatQty(i,v){ if(mnState&&mnState.items[i]) mnState.items[i].qty=v; }
-function mnMatRemove(i){ if(!mnState) return; mnState.items.splice(i,1); mnUpdateMats(); }
+function mnMatRemove(i){ if(!mnState) return; mnState.items.splice(i,1); mnUpdateMats(); jpPaint_(); }
 function mnUpdateMats(){
   const box=document.getElementById('mnMatList'); const s=mnState; if(!box||!s) return;
   box.innerHTML = s.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
@@ -5005,6 +5010,7 @@ function openEditEntry(k){
     jobSite:e['Customer/Job Site']||'', poNumber:e['PO#']||'', company:e.Company||'',
     jobEdited:false, items:[] };
   loadMaterials();
+  jpLoad(edState.poNumber, edState.jobSite||edState.company, true);   // v76 - this job's own PO parts
   custHydrateSync_();   // v75
   loadCustomers(true).then(()=>{ if (edState) edJobFilter(val('edJobSearch')); }); // fresh open-PO list here too
   const inT = e.ClockIn? fmtHM(e.ClockIn):'';
@@ -5033,7 +5039,9 @@ function openEditEntry(k){
       <div style="width:104px"><label>Break (min)</label><input id="eBreak" type="number" min="0" step="5" value="${brkMin}"></div></div>
     <p class="small muted" style="margin:2px 0 0">Out earlier than in = overnight shift (ends the next day).</p>
     <label>Notes</label><textarea id="eNotes" rows="2">${esc(e.Notes||'')}</textarea>
-    <label>Add materials to this entry</label>
+    <label>Bought for this job</label>
+    <div id="jp_ed">${jpBlockHtml('ed')}</div>
+    <label style="margin-top:14px">Anything else — search the inventory</label>
     <input id="edMatSearch" placeholder="Search materials…" autocomplete="off" oninput="edMatSuggest(this.value)">
     <div id="edMatSug"></div><div id="edMatList"></div>
     <div class="row" style="margin-top:14px">
@@ -5051,10 +5059,10 @@ function edJobFilter(q){
 }
 function edPickJob(i){ const c=edJobResults[i]; if(!c||!edState) return;
   edState.jobSite=c.name; edState.poNumber=c.po; edState.company=''; edState.jobEdited=true;
-  edJobHeader(); edToggleJob(); }
+  edJobHeader(); edToggleJob(); jpLoad(c.po, c.name, true); jpPaint_(); }
 function edPickCompany(x){ if(!edState) return;
   edState.company=x; edState.jobSite=''; edState.poNumber=''; edState.jobEdited=true;
-  edJobHeader(); edToggleJob(); }
+  edJobHeader(); edToggleJob(); jpLoad('', x, true); jpPaint_(); }
 function edJobHeader(){ const s=edState; if(!s) return;
   const n=document.getElementById('edJobName'), p=document.getElementById('edJobPo');
   if(n) n.textContent=s.jobSite||s.company||'—';
@@ -5074,7 +5082,7 @@ function edMatTyped(){ const q=val('edMatSearch').trim(); if(!q||!edState) retur
 function edMatClear(){ const i=document.getElementById('edMatSearch'); if(i){ i.value=''; i.focus(); }
   const b=document.getElementById('edMatSug'); if(b) b.innerHTML=''; }
 function edMatQty(i,v){ if(edState&&edState.items[i]) edState.items[i].qty=v; }
-function edMatRemove(i){ if(!edState) return; edState.items.splice(i,1); edUpdateMats(); }
+function edMatRemove(i){ if(!edState) return; edState.items.splice(i,1); edUpdateMats(); jpPaint_(); }
 function edUpdateMats(){
   const box=document.getElementById('edMatList'); const s=edState; if(!box||!s) return;
   box.innerHTML = s.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
@@ -5980,24 +5988,189 @@ async function flushScans(){
   S._fsBusy=false;
 }
 
-/* Materials used: search the whole company inventory (Paul buys per job, but common parts come
-   off the shelf), type the quantity, and it comes out of stock onto this job. */
+
+/* ======================= THE PARTS BOUGHT FOR THIS JOB (v76) ================================
+ * Charles, 21 Oct: clocked in to a job, the materials screen should open with the parts off that
+ * job's own supplier POs, so he ticks off what actually went in instead of searching the whole
+ * shelf for things he knows he bought for this job. The general-inventory search stays, below.
+ *
+ * Whatever is not logged needs no bookkeeping at all: every purchase is added to the count on
+ * hand when its invoice is swept in, and only logging a part as used takes it off again - so the
+ * leftover simply never leaves the shelf. That is what "if I do not use all of them, they go in
+ * the inventory" already means.
+ *
+ * Each row says bought / logged / left, and the quantity box starts at what is LEFT (Charles's
+ * choice), so one tap covers "I used the rest of it". The list is kept in localStorage per job -
+ * read synchronously, so the screen paints the parts the moment it opens, with no signal, for
+ * the same reason the open-job list does (v75). Eight jobs are kept; the oldest drops off.
+ * ========================================================================================== */
+const JP_TTL = 10*60*1000;
+const JP_LS_KEY = 'pcwJobParts';
+let jpResults = {};                 // mode -> the list the rendered rows are indexed against
+function jpKey_(po, site){
+  return String(po||'').trim().toUpperCase() || ('@' + String(site||'').trim().toLowerCase());
+}
+function jpStore_(){
+  try { return JSON.parse(localStorage.getItem(JP_LS_KEY) || '{}') || {}; } catch(e){ return {}; }
+}
+function jpCached_(po, site){
+  if (!po && !site) return null;
+  const o = jpStore_()[jpKey_(po, site)];
+  return (o && o.list) ? o : null;
+}
+function jpPut_(po, site, list){
+  if (!po && !site) return;
+  try {
+    const all = jpStore_();
+    all[jpKey_(po, site)] = { list: list||[], ts: Date.now() };
+    const keep = Object.keys(all).sort((a,b)=>(all[b].ts||0)-(all[a].ts||0)).slice(0,8);
+    const out = {}; keep.forEach(k=>{ out[k]=all[k]; });
+    localStorage.setItem(JP_LS_KEY, JSON.stringify(out));
+  } catch(e){}
+}
+/* Paint from the phone first, then refresh from the office and paint again. */
+async function jpLoad(po, site, force){
+  if (!po && !site) return null;
+  const cached = jpCached_(po, site);
+  if (cached) jpPaint_();
+  if (!S.online) return cached ? cached.list : null;
+  if (!force && cached && (Date.now()-cached.ts) < JP_TTL) return cached.list;
+  try {
+    const r = await apiBg('jobParts', { jobSite: site||'', poNumber: po||'' });
+    jpPut_(po, site, r.parts||[]);
+    jpPaint_();
+    return r.parts||[];
+  } catch(e){ jpPaint_(); return cached ? cached.list : null; }
+}
+/* Which job each screen is on, and where its picked items go. */
+function jpCtx_(mode){
+  if (mode==='co') return coState ? { po:coState.poNumber, site:coState.jobSite||coState.company, items:coState.items } : null;
+  if (mode==='mn') return mnState ? { po:mnState.poNumber, site:mnState.jobSite||mnState.company, items:mnState.items } : null;
+  if (mode==='ed') return edState ? { po:edState.poNumber, site:edState.jobSite||edState.company, items:edState.items } : null;
+  if (mode==='mu') return { po:(S.openEntry&&S.openEntry['PO#'])||'',
+                            site:(S.openEntry&&(S.openEntry['Customer/Job Site']||S.openEntry.Company))||'', items:null };
+  return null;
+}
+function jpPaint_(){
+  ['co','mn','ed','mu'].forEach(m=>{
+    const el = document.getElementById('jp_'+m);
+    if (el) el.innerHTML = jpBlockHtml(m);
+  });
+}
+function jpBlockHtml(mode){
+  const ctx = jpCtx_(mode); if (!ctx) return '';
+  if (!ctx.po && !ctx.site) return '<p class="small muted">Pick the job first — the parts bought for it show up here.</p>';
+  const c = jpCached_(ctx.po, ctx.site);
+  if (!c) return `<p class="small muted">${S.online?'Looking up what was bought for this job…':'No parts list saved on this phone for this job yet — it will be here once you have had signal on it.'}</p>`;
+  const list = c.list || [];
+  jpResults[mode] = list;
+  if (!list.length) return `<p class="small muted">Nothing has been bought against ${esc(ctx.po||ctx.site)} yet. Search the inventory below.</p>`;
+  const rows = list.map((x,i)=>({ left:Number(x.left)||0, html: jpRowHtml(mode, x, i) }));
+  const open = rows.filter(r=>r.left>0), done = rows.filter(r=>!(r.left>0));
+  return `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px">`
+    + (open.length ? open.map(r=>r.html).join('') : '<div class="list-item"><span class="small muted">Every part bought for this job is already logged.</span></div>')
+    + (done.length ? `<details><summary class="small muted" style="padding:8px 0;cursor:pointer">${done.length} already logged in full</summary>${done.map(r=>r.html).join('')}</details>` : '')
+    + `</div>`;
+}
+/* How much of this part is already sitting in this sheet's own list (so Add updates instead of
+   putting the same part on twice). */
+function jpInItems_(mode, x){
+  const ctx=jpCtx_(mode); if(!ctx||!ctx.items) return 0;
+  const it=ctx.items.find(y=>jpSame_(y,x));
+  return it ? (Number(it.qty)||0) : 0;
+}
+function jpSame_(it, x){
+  if (x.sku && it.sku) return String(it.sku)===String(x.sku);
+  return String(it.name||'').toLowerCase() === String(x.desc||'').toLowerCase();
+}
+function jpRowHtml(mode, x, i){
+  const u = x.unit ? (' '+esc(x.unit)) : '';
+  const already = jpInItems_(mode, x);
+  const bits = [`bought ${x.bought}${u}`];
+  if (x.used) bits.push(`${x.used} logged`);
+  bits.push(`<b>${x.left}${u} left</b>`);
+  const shelf = (x.onHand!=null) ? ` · ${x.onHand}${u} on the shelf` : '';
+  const btn = (mode==='mu')
+    ? `<button class="grow" onclick="jpUse('${mode}',${i})">Used</button>`
+    : `<button class="grow" onclick="jpAdd('${mode}',${i})">${already?'Update':'Add'}</button>`;
+  return `<div class="list-item">
+      <b>${esc(x.desc)}</b>${already?` <span class="pill approved">on the list: ${already}</span>`:''}
+      <div class="small muted">${bits.join(' · ')}${shelf}${x.supplier?' · '+esc(x.supplier):''}</div>
+      <div class="row" style="margin-top:6px">
+        <input id="jpq_${mode}_${i}" type="number" step="any" min="0" value="${esc(x.left)}" style="width:104px;margin:0;text-align:center">
+        ${btn}
+      </div>
+    </div>`;
+}
+/* Clock-out review / Add time / Edit entry: the part goes on that sheet's list and is written
+   when the sheet is submitted, so it queues offline like everything else on those screens. */
+function jpAdd(mode, i){
+  const ctx=jpCtx_(mode), x=(jpResults[mode]||[])[i];
+  if(!ctx||!x||!ctx.items) return;
+  const q=Number(val('jpq_'+mode+'_'+i));
+  if(!(q>0)) return toast('Type how many of it you used first.');
+  const same=ctx.items.find(y=>jpSame_(y,x));
+  if (same){ same.qty=q; }
+  else ctx.items.push({ name:x.desc, sku:x.sku||'', unit:x.unit||'', qty:q, matched:true,
+                        fromDoc:'PO '+(ctx.po||ctx.site), bought:x.bought });
+  if (mode==='co') coUpdateMats(); else if (mode==='mn') mnUpdateMats(); else edUpdateMats();
+  jpPaint_();
+  toast(same ? 'Updated to '+q : q+(x.unit?' '+x.unit:'')+' on the list');
+}
+/* The Materials used screen takes it off the shelf there and then, like its search box does. */
+async function jpUse(mode, i){
+  const ctx=jpCtx_(mode), list=jpResults[mode]||[], x=list[i];
+  if(!ctx||!x) return;
+  const q=Number(val('jpq_'+mode+'_'+i));
+  if(!(q>0)) return toast('Type how many of it you used first.');
+  if(!x.sku) return toast('That part has no stock number yet — search for it in the inventory below.');
+  const was={ used:x.used, left:x.left, onHand:x.onHand };
+  const r2=n=>Math.round((Number(n)||0)*100)/100;
+  x.used=r2(x.used+q); x.left=Math.max(0, r2(was.left-q));
+  if (x.onHand!=null) x.onHand=r2(x.onHand-q);
+  jpPut_(ctx.po, ctx.site, list); jpPaint_();
+  try{
+    const r=await apiMutate('takeMaterial',{ sku:x.sku, qty:q, jobSite:ctx.site,
+      poNumber:ctx.po||'', at:new Date().toISOString() });
+    toast((r&&r.queued) ? q+(x.unit?' '+x.unit:'')+' logged — will sync when you have signal'
+                        : q+(x.unit?' '+x.unit:'')+' used ✓');
+  }catch(e){
+    x.used=was.used; x.left=was.left; x.onHand=was.onHand;
+    jpPut_(ctx.po, ctx.site, list); jpPaint_();
+    toast('Not logged: '+e.message, 7000);
+  }
+}
+
+/* Materials used: the job's own PO parts first (v76), then the whole company inventory - Paul
+   buys per job, but common parts come off the shelf. */
 let muT=null;
 function openMatUse(){
   const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
+  const po=S.openEntry?(S.openEntry['PO#']||''):'';
   sheet(`<h2>🔩 Materials used</h2>
-    <p class="small muted">${site?`Going onto <b>${esc(site)}</b>. `:'Not clocked in — this will be recorded against Stock. '}Search what you used, type how many, tap Used.</p>
+    <p class="small muted">${site?`Going onto <b>${esc(site)}</b>${po?` · PO ${esc(po)}`:''}. `:'Not clocked in — this will be recorded against Stock. '}Type how many and tap Used. Anything you don't log stays in inventory.</p>
+    ${(po||site)?`<label style="margin-top:0">Bought for this job</label>
+    <div id="jp_mu">${jpBlockHtml('mu')}</div>`:''}
+    <label style="margin-top:14px">Anything else — search the whole inventory</label>
     <input id="muQ" placeholder="Search: breaker 15a, NMD90 14/2, EMT 1/2" oninput="muSearch()">
     <div class="perm" style="margin-top:4px"><input type="checkbox" id="muStock" checked onchange="muSearch()">
       <label for="muStock" style="margin:0" class="small">Only show what we have on hand</label></div>
     <div id="muList" style="margin-top:6px"><span class="spin"></span></div>
     <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  jpLoad(po, site, true);
   muSearch();
 }
 function muSearch(){
   clearTimeout(muT);
   muT=setTimeout(async ()=>{
     const box=document.getElementById('muList'); if(!box) return;
+    // v76 - with no signal, search the catalogue the phone already has instead of showing an
+    // error. The shelf count is not in that copy, so the row says so rather than inventing one.
+    if (!S.online){
+      const q=val('muQ');
+      S.muItems=(q.trim()?localMatSearch(q):[]).map(m=>({ sku:m.sku||'', desc:m.name, unit:m.unit||'', onHand:null, price:null }));
+      muRender(S.muItems.length, true); return;
+    }
     box.innerHTML='<span class="spin"></span>';
     try{
       const el=document.getElementById('muStock');
@@ -6006,18 +6179,18 @@ function muSearch(){
     }catch(e){ const b=document.getElementById('muList'); if(b) b.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
   },300);
 }
-function muRender(total){
+function muRender(total, offline){
   const box=document.getElementById('muList'); if(!box) return;
   box.innerHTML=(S.muItems||[]).map((it,i)=>`<div class="list-item">
       <b>${esc(it.desc)}</b>
-      <div class="small muted">${esc(it.sku)} · <b style="color:${it.onHand>0?'var(--accent2)':'var(--warn)'}">${it.onHand} ${esc(it.unit)}</b> on hand${it.price!=null?' · $'+Number(it.price).toFixed(2)+' ea':''}</div>
+      <div class="small muted">${esc(it.sku)} · ${it.onHand==null?'<span class="muted">count not on this phone</span>':`<b style="color:${it.onHand>0?'var(--accent2)':'var(--warn)'}">${it.onHand} ${esc(it.unit)}</b> on hand`}${it.price!=null?' · $'+Number(it.price).toFixed(2)+' ea':''}</div>
       <div class="row" style="margin-top:6px">
         <input id="muq_${i}" type="number" step="any" min="0" placeholder="how many" style="width:104px;margin:0;text-align:center">
         <button class="grow" onclick="muUse(${i},1)">Used</button>
         <button class="ghost" onclick="muUse(${i},-1)" title="Put some back">Undo</button>
         ${canPrice()?`<button class="ghost" onclick="muReturn(${i})" title="Going back to the supplier">Return</button>`:''}
       </div>
-    </div>`).join('') || '<p class="muted small">Nothing matches. Untick “only what we have on hand” to search everything, or scan the supplier PO first.</p>'
+    </div>`).join('') || `<p class="muted small">${offline?'Type what you are looking for — searching the copy on this phone.':'Nothing matches. Untick “only what we have on hand” to search everything, or scan the supplier PO first.'}</p>`
     + (total>40?`<p class="small muted">Showing 40 of ${total} — refine the search.</p>`:'');
 }
 async function muUse(i,sign){
