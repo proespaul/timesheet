@@ -5034,9 +5034,13 @@ function openEditEntry(k){
   jpLoad(edState.poNumber, edState.jobSite||edState.company, true);   // v76 - this job's own PO parts
   custHydrateSync_();   // v75
   loadCustomers(true).then(()=>{ if (edState) edJobFilter(val('edJobSearch')); }); // fresh open-PO list here too
-  const inT = e.ClockIn? fmtHM(e.ClockIn):'';
-  const outT= e.ClockOut? fmtHM(e.ClockOut):'';
+  /* v81 — each end of the shift carries its OWN day now, instead of one date and two bare
+     times with the out time silently rolled forward when it came out earlier than the in.
+     Charles, 26 Oct: a shift from 10:30 pm on the 23rd to 3:45 am on the 24th should be
+     something you can just type, and read back, without the app guessing. */
   const date= e.ClockIn? localDateStr(new Date(e.ClockIn)) : String(e.Date||'').slice(0,10);
+  const inDT = e.ClockIn ? dtLocal(e.ClockIn) : (date ? date+'T08:00' : '');
+  const outDT= e.ClockOut? dtLocal(e.ClockOut): '';
   const brkMin=Math.round((Number(e['Break Hrs'])||0)*60);
   const reflagNote = e.Status==='approved' && S.me.role!=='admin';
   sheet(`<h2>Edit entry</h2>
@@ -5054,11 +5058,13 @@ function openEditEntry(k){
         <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="edPickCompany(companyOptions()[${i}].c)">${o.noPO?esc(o.label):coFace(o.c)}</span>`).join('')}</div>
       </div>
     </div>
-    <label>Date (the day the shift started)</label><input id="eDate" type="date" value="${esc(date)}">
-    <div class="row"><div class="grow"><label>In</label><input id="eIn" type="time" value="${esc(inT)}"></div>
-      <div class="grow"><label>Out</label><input id="eOut" type="time" value="${esc(outT)}"></div>
-      <div style="width:104px"><label>Break (min)</label><input id="eBreak" type="number" min="0" step="5" value="${brkMin}"></div></div>
-    <p class="small muted" style="margin:2px 0 0">Out earlier than in = overnight shift (ends the next day).</p>
+    <label>Clocked in — day and time</label>
+    <input id="eIn" type="datetime-local" value="${esc(inDT)}" onchange="edCalc()">
+    <label>Clocked out — day and time</label>
+    <input id="eOut" type="datetime-local" value="${esc(outDT)}" onchange="edCalc()">
+    <div class="row"><div style="width:120px"><label>Break (min)</label>
+      <input id="eBreak" type="number" min="0" step="5" value="${brkMin}" oninput="edCalc()"></div></div>
+    <p class="small" id="edWorked" style="margin:4px 0 0"></p>
     <label>Notes</label><textarea id="eNotes" rows="2">${esc(e.Notes||'')}</textarea>
     <label>Why the change? <span class="muted">(whoever approves it sees this)</span></label>
     <input id="eReason" placeholder="e.g. forgot to clock out, finished at 5:30" autocomplete="off">
@@ -5071,6 +5077,33 @@ function openEditEntry(k){
       <button class="secondary grow" onclick="edState=null;closeSheet()">Cancel</button>
       <button class="grow" onclick="submitEdit()">Save</button>
     </div>`);
+  edCalc();
+}
+/* datetime-local wants LOCAL "YYYY-MM-DDTHH:MM" — an ISO string in there is read as UTC and the
+   box opens on the wrong hour. */
+function dtLocal(iso){
+  if(!iso) return '';
+  const d=new Date(iso); if(isNaN(d)) return '';
+  return localDateStr(d)+'T'+fmtHM(iso);
+}
+/* What the two ends add up to, under the boxes, as they are typed: the hours, the break, and
+   the day it ends on when that is not the day it started. Seeing it is the protection — the app
+   no longer has to guess, so it says plainly what it is about to save. */
+function edCalc(){
+  const box=document.getElementById('edWorked'); if(!box) return;
+  const iv=val('eIn'), ov=val('eOut');
+  const di=iv?new Date(iv):null, dout=ov?new Date(ov):null;
+  const brk=Math.max(0,Number(val('eBreak'))||0);
+  const bad=t=>`<span style="color:var(--bad)">${t}</span>`;
+  if(!di||isNaN(di)) return void(box.innerHTML=bad('Pick the day and time they clocked in.'));
+  if(!ov) return void(box.innerHTML='<span class="muted">No clock-out — this entry is still open.</span>');
+  if(!dout||isNaN(dout)) return void(box.innerHTML=bad('Pick the day and time they clocked out.'));
+  if(!(dout>di)) return void(box.innerHTML=bad('The clock-out is before the clock-in — check the days.'));
+  const gms=dout-di, net=Math.max(0,gms/3600000-brk/60);
+  const over=localDateStr(dout)!==localDateStr(di);
+  box.innerHTML=`${fmtDur(gms)}${brk?` − ${brk} min break`:''} → <b>${net.toFixed(2)} hrs</b>`
+    + (over?` <span class="pill pending">ends ${esc(fmtDay(dout.toISOString()))}</span>`:'')
+    + (gms>16*3600000?` ${bad('— over 16 hours on one entry')}`:'');
 }
 function edToggleJob(){ const d=document.getElementById('edJobPick'); if(!d) return;
   d.classList.toggle('hidden'); if(!d.classList.contains('hidden')) edJobFilter(val('edJobSearch')); }
@@ -5118,15 +5151,24 @@ function edUpdateMats(){
 async function submitEdit(){
   const st=edState; if(!st) return;
   const e=st.e;
-  const date=val('eDate'), inV=val('eIn'), outV=val('eOut');
-  if(!date){ toast('Date is required'); return; }
-  let inISO, outISO;
-  if (inV){ const t=new Date(date+'T'+inV); if(isNaN(t)){ toast('Bad clock-in time'); return; } inISO=t.toISOString(); }
-  if (outV){ let t=new Date(date+'T'+outV); if(isNaN(t)){ toast('Bad clock-out time'); return; }
-    if (inISO && t<=new Date(inISO)) t=new Date(t.getTime()+86400000); // overnight shift
-    outISO=t.toISOString(); }
+  /* v81 — both ends carry their own day, so there is nothing to infer: a shift typed as
+     10:30 pm on the 23rd to 3:45 am on the 24th is saved as exactly that. The old code took one
+     date and two times and rolled the out time forward a day whenever it came out earlier than
+     the in, which got the common case right and could not express anything else. */
+  const iv=val('eIn'), ov=val('eOut');
+  const di=iv?new Date(iv):null, dout=ov?new Date(ov):null;
+  if(!di||isNaN(di)){ toast('Pick the day and time they clocked in.'); return; }
+  if(ov&&(!dout||isNaN(dout))){ toast('Pick the day and time they clocked out.'); return; }
+  if(dout&&!(dout>di)){ toast('The clock-out is before the clock-in — check the days.'); return; }
+  if(dout&&(dout-di)>16*3600000&&!st.longOk){
+    st.longOk=true;
+    toast(`That is ${((dout-di)/3600000).toFixed(1)} hours on one entry — tap Save again if that is right.`, 8000);
+    return;
+  }
+  const date=localDateStr(di);          // the entry's date is the day the shift STARTED
   const p={ entryId:e.EntryID, employeeEmail:st.employeeEmail, date,
-    clockIn:inISO, clockOut:outISO, notes:val('eNotes'), breakMin:Number(val('eBreak'))||0,
+    clockIn:di.toISOString(), clockOut:dout?dout.toISOString():undefined,
+    notes:val('eNotes'), breakMin:Number(val('eBreak'))||0,
     reason:val('eReason') };   // v80 - travels to the Edit Log and onto the approvals card
   if (st.jobEdited){ p.jobSite=st.jobSite; p.poNumber=st.poNumber; p.company=st.company; }
   const mats=st.items.slice();
