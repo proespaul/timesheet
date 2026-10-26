@@ -5060,6 +5060,8 @@ function openEditEntry(k){
       <div style="width:104px"><label>Break (min)</label><input id="eBreak" type="number" min="0" step="5" value="${brkMin}"></div></div>
     <p class="small muted" style="margin:2px 0 0">Out earlier than in = overnight shift (ends the next day).</p>
     <label>Notes</label><textarea id="eNotes" rows="2">${esc(e.Notes||'')}</textarea>
+    <label>Why the change? <span class="muted">(whoever approves it sees this)</span></label>
+    <input id="eReason" placeholder="e.g. forgot to clock out, finished at 5:30" autocomplete="off">
     <label>Bought for this job</label>
     <div id="jp_ed">${jpBlockHtml('ed')}</div>
     <label style="margin-top:14px">Anything else — search the inventory</label>
@@ -5124,7 +5126,8 @@ async function submitEdit(){
     if (inISO && t<=new Date(inISO)) t=new Date(t.getTime()+86400000); // overnight shift
     outISO=t.toISOString(); }
   const p={ entryId:e.EntryID, employeeEmail:st.employeeEmail, date,
-    clockIn:inISO, clockOut:outISO, notes:val('eNotes'), breakMin:Number(val('eBreak'))||0 };
+    clockIn:inISO, clockOut:outISO, notes:val('eNotes'), breakMin:Number(val('eBreak'))||0,
+    reason:val('eReason') };   // v80 - travels to the Edit Log and onto the approvals card
   if (st.jobEdited){ p.jobSite=st.jobSite; p.poNumber=st.poNumber; p.company=st.company; }
   const mats=st.items.slice();
   edState=null; closeSheet();
@@ -6530,13 +6533,33 @@ async function loadApprovals(){
 }
 function empName(email){ const e=(S.employees||[]).find(x=>lc(x.email)===lc(email)); return (e&&e.name)||String(email||'').split('@')[0]; }
 function lc(x){ return String(x||'').trim().toLowerCase(); }
+/* v80 — WHAT CHANGED, ON THE CARD.
+ * An edited entry came back for approval showing only its new numbers, so saying yes to one
+ * meant taking it on trust. The script now records every changed field when the edit is saved
+ * (the Edit Log tab), and this puts the old value beside the new one, with the reason the person
+ * gave. Charles, 26 Oct: "we would also like to see what is the change that is asked for". */
+function editDiffHtml(e){
+  const d = e && e._edit;
+  if (!d || !d.changes || !d.changes.length) return '';
+  const who = String(d.by||'').split('@')[0];
+  return `<div style="margin:6px 0 0;padding:7px 9px;background:var(--panel2);border-radius:8px;border-left:3px solid var(--accent2)">
+    <div class="small" style="font-weight:700;color:var(--navy)">✎ What changed</div>
+    ${d.changes.map(c=>`<div class="row between small" style="gap:10px;padding:1px 0;align-items:baseline">
+        <span class="muted" style="flex:0 0 auto">${esc(c.field)}</span>
+        <span style="text-align:right;overflow-wrap:anywhere"><span class="muted" style="text-decoration:line-through">${esc(c.was)}</span> → <b>${esc(c.now)}</b></span>
+      </div>`).join('')}
+    <div class="small muted" style="margin-top:4px">${d.reason?`“${esc(d.reason)}”`:'No reason given.'}${who?` — ${esc(who)}`:''}${d.at?`, ${esc(fmtDay(d.at))} ${esc(fmtTime(d.at))}`:''}</div>
+  </div>`;
+}
 function approvalsHtml(){
   if(!canApprove()) return '';
   const a=S.approvals||{}, isAdmin=S.me&&S.me.role==='admin';
   const ents=a.entries||[], tos=a.timeOff||[], als=a.allowances||[];
   const n=ents.length+tos.length+als.length;
   const hrs=ents.map(e=>{ const k=reg({e, employeeEmail:e._employee});
-    const changed = e['Approved By']==='' && e.Source!=='manual' && e['Last Edited At'] && e.ClockOut && (new Date(e['Last Edited At'])-new Date(e.ClockOut)>5*60000);
+    // v80 - a recorded diff IS the evidence it was changed; the timestamp test below is only
+    // the fallback for entries edited before the Edit Log existed.
+    const changed = !!e._edit || (e['Approved By']==='' && e.Source!=='manual' && e['Last Edited At'] && e.ClockOut && (new Date(e['Last Edited At'])-new Date(e.ClockOut)>5*60000));
     const tag = e.Source==='manual' ? 'Time added by hand' : (changed ? 'Hours changed' : 'Hours to approve');
     return `<div class="list-item">
       <div class="row between"><div><b>${esc(e._name||e._employee)}</b> <span class="pill pending">${tag}</span></div><span class="small muted">${fmtDay(e.ClockIn||e.Date)}</span></div>
@@ -6544,7 +6567,7 @@ function approvalsHtml(){
       <div class="small muted">${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)} · <b style="color:var(--text)">${e.Hours||'?'} hrs</b>${Number(e['Break Hrs'])?` (${(Number(e['Break Hrs'])*60).toFixed(0)} min break)`:''}</div>
       ${gpsBadge(e)}
       ${e.Notes?`<div class="small">${esc(e.Notes)}</div>`:''}
-      ${changed?`<div class="small muted">✎ changed ${fmtDay(e['Last Edited At'])} ${fmtTime(e['Last Edited At'])} by ${esc(String(e['Last Edited By']||'').split('@')[0])}</div>`:''}
+      ${e._edit?editDiffHtml(e):(changed?`<div class="small muted">✎ changed ${fmtDay(e['Last Edited At'])} ${fmtTime(e['Last Edited At'])} by ${esc(String(e['Last Edited By']||'').split('@')[0])}</div>`:'')}
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="apvEntry('${k}',true,this)">Approve</button>
         <button class="secondary" onclick="openEditEntry('${k}')">Edit</button>
