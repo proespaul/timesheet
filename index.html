@@ -6593,6 +6593,22 @@ function editDiffHtml(e){
     <div class="small muted" style="margin-top:4px">${d.reason?`“${esc(d.reason)}”`:'No reason given.'}${who?` — ${esc(who)}`:''}${d.at?`, ${esc(fmtDay(d.at))} ${esc(fmtTime(d.at))}`:''}</div>
   </div>`;
 }
+/* v83 — AN ENTRY EDITED BEFORE THE CHANGE LOG EXISTED has no before-state anywhere: the old
+ * values were simply never written down. Saying that is far better than leaving an empty space
+ * where the comparison should be, which reads as a bug. Same test as the card's "changed" marker,
+ * so a manual entry (whose Last Edited At is stamped when it is created) does not claim to have
+ * been altered. */
+function editNoDiffHtml(e){
+  if (!e || e._edit) return '';
+  const late = e['Last Edited At'] && e.ClockOut &&
+    (new Date(e['Last Edited At']) - new Date(e.ClockOut) > 5*60000);
+  if (e.Source==='manual' || !late) return '';
+  const who=String(e['Last Edited By']||'').split('@')[0];
+  return `<div style="margin:6px 0 0;padding:7px 9px;background:var(--panel2);border-radius:8px;border-left:3px solid var(--line)">
+    <div class="small" style="font-weight:700;color:var(--navy)">✎ Changed ${esc(fmtDay(e['Last Edited At']))} ${esc(fmtTime(e['Last Edited At']))}${who?` by ${esc(who)}`:''}</div>
+    <div class="small muted" style="margin-top:2px">What it was before this edit was not recorded — the change log only started on 26 October. Anything edited from now on shows the old value beside the new one, right here.</div>
+  </div>`;
+}
 /* v82 — on the CARD, one line: which fields moved. The before-and-after belongs behind View,
    so a screen with five approvals on it stays a list you can read. */
 function editChangedLine(e){
@@ -6627,7 +6643,7 @@ function openApvDetail(k){
     </div>
     ${gpsBadge(e)}
     ${media.length?`<p class="small" style="margin:6px 0 0"><a href="#" onclick="openMediaView('${k}');return false" style="color:var(--accent2)">📎 ${media.length} photo/video</a></p>`:''}
-    ${editDiffHtml(e)}
+    ${editDiffHtml(e)||editNoDiffHtml(e)}
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="openEditEntry('${k}')">✏️ Edit</button>
       <button class="grow" onclick="apvEntry('${k}',true,this,1)">Approve</button>
