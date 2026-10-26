@@ -6593,6 +6593,50 @@ function editDiffHtml(e){
     <div class="small muted" style="margin-top:4px">${d.reason?`“${esc(d.reason)}”`:'No reason given.'}${who?` — ${esc(who)}`:''}${d.at?`, ${esc(fmtDay(d.at))} ${esc(fmtTime(d.at))}`:''}</div>
   </div>`;
 }
+/* v82 — on the CARD, one line: which fields moved. The before-and-after belongs behind View,
+   so a screen with five approvals on it stays a list you can read. */
+function editChangedLine(e){
+  const d=e&&e._edit; if(!d||!d.changes||!d.changes.length) return '';
+  const names=d.changes.map(c=>c.field);
+  const list=names.length>1 ? names.slice(0,-1).join(', ')+' and '+names[names.length-1] : names[0];
+  return `<div class="small" style="color:var(--accent2);margin-top:2px">✎ ${esc(list)} changed${d.reason?` — “${esc(d.reason)}”`:''}</div>`;
+}
+/* v82 — VIEW. Charles, 27 Oct: three buttons on the card (View, Approve, Reject), and View
+   opens the whole thing, where it can also be edited and then approved or rejected. Everything
+   the approver might want before saying yes, in the order they would ask for it: whose it is,
+   which job, the times as they now stand, what was changed and why, the notes, the GPS. */
+function openApvDetail(k){
+  const ref=dereg(k); if(!ref) return;
+  const e=ref.e, email=ref.employeeEmail;
+  const row=(label,html)=>html?`<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line);gap:12px">
+      <span class="small muted" style="flex:0 0 auto">${label}</span>
+      <span style="text-align:right;overflow-wrap:anywhere">${html}</span></div>`:'';
+  const brk=Number(e['Break Hrs'])||0;
+  const overnight = e.ClockIn && e.ClockOut && localDateStr(new Date(e.ClockOut))!==localDateStr(new Date(e.ClockIn));
+  const media=String(e.Media||'').split(' | ').filter(Boolean);
+  sheet(`<h2 style="margin-bottom:2px">${esc(e._name||email)}</h2>
+    <p class="small muted" style="margin-top:0">${esc(e.Source==='manual'?'Time added by hand':'Hours waiting for approval')} · ${esc(fmtDay(e.ClockIn||e.Date))}</p>
+    <div style="margin:8px 0 2px">
+      ${row('Job', esc(e['Customer/Job Site']||e.Company||'—')+(e['PO#']?` <span class="small muted">PO ${esc(e['PO#'])}</span>`:''))}
+      ${row('Clocked in', e.ClockIn?`${esc(fmtDay(e.ClockIn))} ${esc(fmtTime(e.ClockIn))}`:'<span class="muted">—</span>')}
+      ${row('Clocked out', e.ClockOut?`${esc(fmtDay(e.ClockOut))} ${esc(fmtTime(e.ClockOut))}${overnight?' <span class="pill pending">next day</span>':''}`:'<span class="muted">still open</span>')}
+      ${row('Break', brk?`${(brk*60).toFixed(0)} min`:'<span class="muted">none</span>')}
+      ${row('Hours', `<b>${esc(String(e.Hours===''||e.Hours==null?'?':e.Hours))} hrs</b>${e['Gross Hours']?` <span class="small muted">(${esc(String(e['Gross Hours']))} gross)</span>`:''}`)}
+      ${row('Notes', e.Notes?esc(e.Notes):'<span class="muted">none</span>')}
+      ${row('Status', `<span class="pill ${esc(e.Status)}">${esc(e.Status)}</span>`)}
+    </div>
+    ${gpsBadge(e)}
+    ${media.length?`<p class="small" style="margin:6px 0 0"><a href="#" onclick="openMediaView('${k}');return false" style="color:var(--accent2)">📎 ${media.length} photo/video</a></p>`:''}
+    ${editDiffHtml(e)}
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="openEditEntry('${k}')">✏️ Edit</button>
+      <button class="grow" onclick="apvEntry('${k}',true,this,1)">Approve</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button class="danger grow" onclick="apvEntry('${k}',false,this,1)">Reject</button>
+      <button class="ghost grow" onclick="closeSheet()">Close</button>
+    </div>`);
+}
 function approvalsHtml(){
   if(!canApprove()) return '';
   const a=S.approvals||{}, isAdmin=S.me&&S.me.role==='admin';
@@ -6609,10 +6653,10 @@ function approvalsHtml(){
       <div class="small muted">${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)} · <b style="color:var(--text)">${e.Hours||'?'} hrs</b>${Number(e['Break Hrs'])?` (${(Number(e['Break Hrs'])*60).toFixed(0)} min break)`:''}</div>
       ${gpsBadge(e)}
       ${e.Notes?`<div class="small">${esc(e.Notes)}</div>`:''}
-      ${e._edit?editDiffHtml(e):(changed?`<div class="small muted">✎ changed ${fmtDay(e['Last Edited At'])} ${fmtTime(e['Last Edited At'])} by ${esc(String(e['Last Edited By']||'').split('@')[0])}</div>`:'')}
+      ${e._edit?editChangedLine(e):(changed?`<div class="small muted">✎ changed ${fmtDay(e['Last Edited At'])} ${fmtTime(e['Last Edited At'])} by ${esc(String(e['Last Edited By']||'').split('@')[0])}</div>`:'')}
       <div class="row" style="margin-top:6px">
+        <button class="secondary grow" onclick="openApvDetail('${k}')">View</button>
         <button class="grow" onclick="apvEntry('${k}',true,this)">Approve</button>
-        <button class="secondary" onclick="openEditEntry('${k}')">Edit</button>
         <button class="danger" onclick="apvEntry('${k}',false,this)">Reject</button>
       </div></div>`; }).join('');
   const off=tos.map(t=>{ const k=reg(t); return `<div class="list-item">
@@ -6644,13 +6688,17 @@ function apvDrop(kind, id){ const a=S.approvals; if(!a) return;
   if(kind==='t') a.timeOff=(a.timeOff||[]).filter(x=>x.id!==id);
   if(kind==='a') a.allowances=(a.allowances||[]).filter(x=>x.id!==id);
   S.pending=a.entries||[]; render(); }
-async function apvEntry(k,ok,btn){
+async function apvEntry(k,ok,btn,fromSheet){
   const ref=dereg(k); if(!ref) return; const e=ref.e, email=ref.employeeEmail;
   if(!S.online) return toast('You need signal.');
-  if(!ok){ apvRejectAsk(email,e.EntryID); return; }
-  btn.disabled=true;
-  try{ await api('approveEntry',{employeeEmail:email,entryId:e.EntryID}); apvDrop('e',e.EntryID); toast('Approved — '+(e._name||email)); }
-  catch(err){ toast(err.message); btn.disabled=false; }
+  if(!ok){ apvRejectAsk(email,e.EntryID); return; }   // the reject form replaces whatever is open
+  if(btn) btn.disabled=true;
+  try{
+    await api('approveEntry',{employeeEmail:email,entryId:e.EntryID});
+    if(fromSheet) closeSheetDom();                     // v82 - approved from the View sheet
+    apvDrop('e',e.EntryID); toast('Approved — '+(e._name||email));
+  }
+  catch(err){ toast(err.message); if(btn) btn.disabled=false; }
 }
 function apvRejectAsk(email,entryId){
   sheet(`<h2>Reject entry</h2><label>Reason (shown to the employee)</label>
