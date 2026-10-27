@@ -6439,6 +6439,7 @@ function applyRequests(r){
 async function loadRequests(){
   if(S._reqLoading) return; S._reqLoading=true;
   if(canApprove()) loadApprovals();                 // v56 — hours / time off / allowances waiting
+  if(canApprove()) loadNeo();                       // v84 — and what the inbox sweep found
   try{
     if(!S.requests){
       const c=await DB.getCache('requests');
@@ -6476,6 +6477,130 @@ function reqPhotoStrip(q){
     <span class="small muted" style="width:100%;margin-top:0">📷 ${ph.length} photo${ph.length===1?'':'s'} from the customer — tap to open</span>
   </div>`;
 }
+
+/* ======================= NEO'S REPORT (v84, card v85) ==============================================
+ * Three times a day a scheduled task reads what is still sitting in the inbox, works out what
+ * actually needs a person, and posts a line about each one plus a suggested reply. This is where
+ * Paul reads it: a card on the Requests tab, a list behind one button, and a sheet per email with
+ * the reply ready to edit.
+ *
+ * Four things can happen to an item, and the script remembers which:
+ *   Send          the reply goes out as PRO on the original thread
+ *   Save draft    it waits in Gmail for him to send it himself
+ *   Ignore        gone, until that person writes again
+ *   Later         back on the next sweep
+ * Nothing done at all? It is in the next sweep too, because the email is still in the inbox.
+ * ========================================================================================== */
+async function loadNeo(){
+  if(!canApprove()||!S.online||S._neoLoading) return;
+  S._neoLoading=true;
+  try{ S.neo=await apiBg('neoReport',{}); S._neoErr=false; }
+  catch(e){ S._neoErr=true; /* older script: no report, no card at all */ }
+  S._neoLoading=false;
+  if(S.tab==='requests') render();
+}
+/* v85 - the next sweep, in the words on the card. The scheduled task runs at 4:45am, 11:45am
+ * and 4:45pm Mountain; this only says which one is coming, so it never has to agree with
+ * anything but the trigger's own hours. */
+const NEO_SWEEP_HOURS=[4,11,16];
+function neoNextSweep(){
+  const now=new Date(), h=now.getHours(), m=now.getMinutes();
+  for(const sh of NEO_SWEEP_HOURS){ if(h<sh||(h===sh&&m<45)) return neoClock(sh)+' today'; }
+  return neoClock(NEO_SWEEP_HOURS[0])+' tomorrow';
+}
+function neoClock(h){ const ap=h<12?'am':'pm', hh=h%12===0?12:h%12; return hh+':45'+ap; }
+function neoCardHtml(){
+  /* v85 - the card is ALWAYS here for whoever approves, and says which of the four things is
+   * true: there is something to read, the last sweep found nothing, no sweep has run yet, or
+   * it could not be fetched. It used to render nothing at all when the report was empty, which
+   * is indistinguishable from a feature that was never deployed - Charles looked for Neo on the
+   * Requests tab the afternoon it went live, an hour before the first sweep, and found a blank. */
+  if(!canApprove()||S._neoErr) return '';
+  const n=S.neo, items=(n&&n.items)||[], swept=n&&(n.lastSweep||n.sweepAt);
+  let line, count='', btn=false;
+  if(!n){ line = S.online ? 'Reading the inbox report…' : 'Needs signal to load the report.'; }
+  else if(items.length){
+    count=`<span class="pill pending">${items.length}</span>`; btn=true;
+    line=`${items.length===1?'One email needs':'These need'} you${swept?` · swept ${esc(fmtDay(swept))} ${esc(fmtTime(swept))}`:''}`;
+  }
+  else if(swept){ btn=true; line=`Nothing in the inbox needs you · swept ${esc(fmtDay(swept))} ${esc(fmtTime(swept))}`; }
+  else { line=`No sweep has run yet — the first one is at ${esc(neoNextSweep())}.`; }
+  return `<div class="card" style="margin-bottom:10px">
+    <div class="row between"><h3 style="margin:0">🤖 Neo's report</h3>${count}</div>
+    <p class="small muted" style="margin:4px 0 0">${line}</p>
+    ${items.length?`<ul style="margin:6px 0 0;padding-left:20px">
+      ${items.slice(0,4).map(it=>`<li class="small" style="margin:2px 0">${esc(it.summary||it.subject||'(no subject)')}</li>`).join('')}
+      ${items.length>4?`<li class="small muted">and ${items.length-4} more…</li>`:''}
+    </ul>`:''}
+    ${btn?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openNeoReport()">Open Neo's report</button>`:''}
+  </div>`;
+}
+function openNeoReport(){
+  const n=S.neo, items=(n&&n.items)||[], swept=n&&(n.lastSweep||n.sweepAt);
+  sheet(`<h2 style="margin-bottom:2px">🤖 Neo's report</h2>
+    <p class="small muted" style="margin-top:0">${items.length?`${items.length} email${items.length===1?'':'s'} in the inbox that need you`:'Nothing in the inbox needs you.'}${swept?` · swept ${esc(fmtDay(swept))} ${esc(fmtTime(swept))}`:''}</p>
+    ${items.map((it,i)=>`<div class="list-item" style="cursor:pointer" onclick="openNeoItem(${i})">
+        <div class="row between"><b>${esc(it.from||'(unknown sender)')}</b>
+          <span class="small" style="color:var(--accent2)">Open ›</span></div>
+        <div class="small">${esc(it.subject||'(no subject)')}</div>
+        <div class="small muted" style="margin-top:2px">${esc(it.summary||'')}</div>
+        ${it.why?`<div class="small" style="color:var(--proj);font-weight:700;margin-top:2px">${esc(it.why)}</div>`:''}
+        ${it.date?`<div class="small muted">${esc(fmtDay(it.date))} ${esc(fmtTime(it.date))}</div>`:''}
+      </div>`).join('')}
+    <p class="small muted" style="margin-top:8px">Swept at 4:45am, 11:45am and 4:45pm. Anything you leave alone comes back on the next one.</p>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">Close</button>`);
+}
+function neoItem(i){ return ((S.neo&&S.neo.items)||[])[i]; }
+function openNeoItem(i){
+  const it=neoItem(i); if(!it) return;
+  sheet(`<h2 style="margin-bottom:2px">${esc(it.subject||'(no subject)')}</h2>
+    <p class="small muted" style="margin-top:0">${esc(it.from||'')}${it.date?` · ${esc(fmtDay(it.date))} ${esc(fmtTime(it.date))}`:''}</p>
+    ${it.why?`<div class="banner sync">${esc(it.why)}</div>`:''}
+    ${it.summary?`<p class="small">${esc(it.summary)}</p>`:''}
+    ${it.link?`<p class="small" style="margin:6px 0"><a href="${esc(it.link)}" target="_blank" rel="noopener" style="color:var(--accent2)">📧 Read the original email</a></p>`:''}
+    <label>Suggested reply — edit it before it goes</label>
+    <textarea id="neoBody" rows="9" style="font-size:.95rem">${esc(it.reply||'')}</textarea>
+    <div class="row" style="margin-top:10px">
+      <button class="grow" onclick="neoSend(${i},false,this)">📨 Send as PRO</button>
+      <button class="secondary grow" onclick="neoSend(${i},true,this)">📝 Save draft</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button class="secondary grow" onclick="neoDecide(${i},'later',this)">⏰ Remind me later</button>
+      <button class="ghost grow" onclick="neoDecide(${i},'ignore',this)">Ignore</button>
+    </div>
+    <button class="ghost" style="width:100%;margin-top:6px" onclick="openNeoReport()">← Back to the report</button>`);
+}
+function neoDrop_(i){
+  if(S.neo&&S.neo.items) S.neo.items.splice(i,1);
+  const left=(S.neo&&S.neo.items)||[];
+  if(left.length) openNeoReport(); else { closeSheet(); }
+  render();
+}
+async function neoSend(i,draft,btn){
+  const it=neoItem(i); if(!it) return;
+  if(!S.online) return toast('You need signal to send an email.');
+  const body=val('neoBody').trim();
+  if(!body) return toast('Write the reply first.');
+  btn.disabled=true; btn.textContent=draft?'Saving…':'Sending…';
+  try{
+    await api('neoReply',{id:it.id, body, draft:!!draft},{timeout:60000});
+    toast(draft?'Draft saved in Gmail — send it from there when you are ready.'
+               :`Sent to ${it.from||'them'} ✓`, 6000);
+    neoDrop_(i);
+  }catch(e){ toast(e.message,9000); btn.disabled=false; btn.textContent=draft?'📝 Save draft':'📨 Send as PRO'; }
+}
+async function neoDecide(i,action,btn){
+  const it=neoItem(i); if(!it) return;
+  if(!S.online) return toast('You need signal.');
+  btn.disabled=true;
+  try{
+    await api('neoDecide',{id:it.id, action});
+    toast(action==='later'?'Put off — it will be back on the next sweep.'
+                          :'Ignored — it stays out unless they write again.', 6000);
+    neoDrop_(i);
+  }catch(e){ toast(e.message); btn.disabled=false; }
+}
+
 function requestsView(){
   const list=(S.requests||[]).map((q,i)=>{
     const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
@@ -6545,7 +6670,7 @@ function requestsView(){
         <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>
       </div>
     </div>`; }).join('');
-  return `${approvalsHtml()}${collateralCardHtml()}${callsCardHtml()}<h2>📨 Requests</h2>
+  return `${approvalsHtml()}${neoCardHtml()}${collateralCardHtml()}${callsCardHtml()}<h2>📨 Requests</h2>
     <p class="small muted" style="margin-top:-4px">Website leads waiting to go on the calendar. Nothing is booked until you say so.</p>
     ${canApprove()?`<div class="row" style="margin:8px 0 10px">
       <button class="secondary grow" onclick="openAddManual('job')">⚡ Schedule a job</button>
