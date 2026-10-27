@@ -1,199 +1,8037 @@
-/* PCW/PRO Timesheet — service worker.
- * App-shell caching so the PWA opens offline and is installable. We deliberately do NOT cache
- * API (Apps Script /exec) responses — offline writes are queued in IndexedDB by the app itself.
- *
- * Strategy: CACHE-FIRST with background revalidation (stale-while-revalidate). Network-first
- * cost every single open 1.5–3s waiting on GH Pages over rural LTE even though the shell was
- * already cached. Now the app paints instantly from cache and the fetch that runs in the
- * background updates the cache, so a fresh deploy lands on the SECOND open after it ships.
- *
- * v43 — BACKGROUND SYNC. The app registers a 'flush-punches' sync whenever a punch is left
- * waiting on the phone. The browser then fires the 'sync' event below the next time the phone
- * has a connection — app closed, screen off, phone in a pocket — and this worker sends the
- * queue itself (it reads the same IndexedDB the app writes). If the app is open and visible it
- * is asked to do the sending instead, so the two never race. No answer from the office → the
- * handler throws and the browser retries the sync later with backoff. Chrome/Android only:
- * Safari has no Background Sync, so on an iPhone the queue still goes on the next open.
- */
-const CACHE = 'pcw-pro-timesheet-v83'; // v83: View now explains itself when there is nothing to compare. The before-and-after can only be shown for an edit made AFTER the change log started (26 Oct) - the old values of an earlier edit were never written down anywhere, so an entry edited on the 23rd had a blank where the comparison should be, which reads as a broken screen. It now says who changed it and when, and that what it was before was not recorded. Time added by hand is not mistaken for an edit (its Last Edited At is stamped when it is created), and an entry whose only edit was its own clock-out is not flagged either. Index.html only. // v82: the approvals card is three buttons - View, Approve, Reject - and View opens the whole entry, where it can be edited and then approved or rejected without going back. Edit has come off the card, so the row is a decision rather than a form; what the card keeps is one line naming the fields that moved and the reason given ("Date, Clock out and Hours changed - 'ran late on the roof'"), with the before-and-after moved behind View, so a screen with five approvals on it stays a list you can read. The View sheet shows whose it is, the job and PO, both ends of the shift with their own days and a next-day marker, the break, net and gross hours, the notes, the status, the GPS and the photos, then the full before-and-after. Approving or rejecting from in there closes it and drops the card; a refusal from the office leaves both alone and says why. Index.html only - no Apps Script change. // v81: on the edit sheet, each end of the shift carries its OWN day. One Date box and two bare times has been replaced by "Clocked in - day and time" and "Clocked out - day and time", so a shift from 10:30 pm on the 23rd to 3:45 am on the 24th is typed as exactly that and reads back as exactly that. The old code took one date and rolled the out time forward a day whenever it came out earlier than the in - right for the common case, unable to express anything else, and invisible either way. A line under the boxes now says what is about to be saved: the span, the break, the net hours, the day it ends on when that is not the day it started, and a warning over 16 hours; out-before-in is refused instead of quietly moved, and over 16 hours asks for a second tap. The entry is still dated the day the shift STARTED, which is what payroll and every summary key on. Code.gs v75 refuses an edited entry over 24 hours, because a free-typed year could otherwise put a 2000-hour entry into payroll. // v80: AN EDIT NOW SHOWS ITS WORKING. An entry that came back for approval showed only its new numbers, so saying yes to one meant taking it on trust - nothing anywhere said what the old numbers were. Every edit now records each changed field (the script writes them to a new "Edit Log" tab) and the approvals card puts the old value beside the new one, struck through, with the reason the person typed and who changed it when. The edit sheet has a "Why the change?" box for that reason, and whoever approves it reads it. A date change shows up there like any other, because the Date field has always been on that sheet and always worked - it sits directly above the In and Out times. Needs Code.gs deployed too. // v79: TWO off Charles's list. (1) Every job picker - Switch to, Clock in, Add time, Edit entry, the job swap at clock-out - now shows the jobs that are IN PROGRESS and only those. A blank Status used to count as open, from back when new PO Log rows arrived with that column empty; the dropdown has been back since v76 and the script writes "In progress" on every row it creates, so a blank is an oversight now rather than a new job. A job left blank is still reachable through the customer search under the list, so nobody is stuck. (2) "Add a job" is "Schedule a job", and it opens with the jobs already in progress instead of a blank form: pick one and the work is booked onto the number it already has - a PO number becomes the QuickBooks invoice number, so it is minted once and never re-minted, and the existing PO Log row is re-dated instead. Its phone, email, address and company come off that row, so nothing is retyped and nothing disagrees with what is filed. A customer who is genuinely new is the last option on the list and behaves exactly as before. Refused for a job that is closed, invoiced or cancelled, which needs its own number. Needs Code.gs deployed too. // v78: that button is called "Original inquiry", on the Requests tab and on the Schedule tab, and so is the sheet it opens. // v77: the ORIGINAL WEBSITE FORM is reachable from the Requests tab. The customer's own words - fetched off the email, laid out question by question, with their photos - have existed since v65/v71, but only on the SCHEDULE tab, hanging off a booking. A lead sitting on the Requests tab, which is where it is actually read and decided, offered the ball park and nothing else. The same sheet is now one tap from the lead card and from its Details sheet, above the ball-park button, because the form is the source and the ball park is what we made of it. Index.html only - no Apps Script change: the ball-park text filed with the lead carries the link back to the email, and the leadEmail action can find the row by its id as well. // v76: THE PARTS BOUGHT FOR THIS JOB. Clocked in to a job, the materials screen now opens with the parts off that job's own supplier POs - one row per part, not one per invoice line, because the same wire is on four EECOL invoices on House on the Hill and what you need to see is "bought 150 m, 60 logged, 90 left". The quantity box starts at what is left, so one tap covers using the rest of it. The general-inventory search is still there, underneath, where it always was. Nothing you do not log needs any bookkeeping: every purchase is added to the count on hand when its invoice is swept in and only logging a part as used takes it off again, so a leftover simply never leaves the shelf. Same list on the clock-out review, on Add time and on Edit entry, where the part goes on that sheet's list and is written when the sheet is submitted - so it queues offline like the hours do. The list itself is kept on the phone per job (the last eight jobs) and read synchronously, so it is on screen the moment the sheet opens, with no signal; and the inventory search box falls back to the catalogue the phone already has instead of showing an error when there is none. Needs Code.gs deployed as well - the list comes from the Job POs and Job usage tabs on the price list, rolled up, with prices and invoice numbers left out for anyone who is not an admin or the bookkeeper. // v75: FOUR things off Paul's list of 16 Oct, all of them the same complaint - the app made him wait on the internet for something it already had or could have kept. (1) The open-job list now paints the instant the picker opens, from a copy kept in localStorage, which can be read without waiting. It was only ever cached in IndexedDB, which cannot be read in time to draw a screen, so the first picker of a session painted 'Loading open jobs...' and nothing repainted it until the forced network fetch came back - seconds on a bad connection, never on none, with the list sitting on the phone the whole time. Every job list on every screen now repaints the moment a better one arrives, from the phone or from the office. (2) The forgotten-clock-out fix asks for a DAY as well as a time - a shift left open for two days could not be closed at the right moment at all - and it queues like a punch: the entry is closed on the phone and the correction written to the queue before the network is tried. It used to refuse to run without signal and sit on 'Fixing...' for the whole round trip, then reset itself to 'Fix it' with the shift still open when that trip timed out. That is the pair of screenshots he sent. A queued fix also survives the next refresh now, so the red banner and the Fix-it sheet stop coming back. (3) A clock-in is held behind a clock-out or a clock-out fix that is still in the queue, instead of being sent straight away and refused with 'you already have an open entry' - closing yesterday's shift and clocking in for today on a bad connection used to throw the clock-in away. The big Clock In button no longer waits on the fix either. (4) The project name is on the job row in its own weight and dark blue under the company name, with the PO number small underneath - two rows reading 'House on the Hill Renovation / PO C26197' and '... C26198' is how you clock in to the wrong job - and the Edit-entry picker, which was missed in v74, shows it too. Also: a clock-out time may be typed up to two hours ahead of the phone's clock (round 5:20 up to 5:30) instead of five minutes. Needs Code.gs deployed as well. // v74: the PROJECT NAME now travels with the job everywhere you pick one. The contact or company name leads the row and the PO number and project name sit underneath it together - clocking in, adding time by hand, swapping the job on the clock-out review, and down the Jobs tab and its detail sheet. A list of ten open POs reading R26191, R26192, R26193 was not something anyone could tell apart from memory. The project name is searchable too, so typing boathouse or fire panel finds the job without remembering its number. Needs Code.gs deployed as well: the project name is read off the PO Log and sent with the job list, and the Jobs tab gets it off that same read rather than a second one. // v73: TWO offline fixes. (1) The app registers THIS worker as the first thing it does. The register call used to sit after the bootstrap call to Apps Script, so on every open the worker was only registered once the office had answered - 4 to 6 seconds warm, much longer cold - and anyone who opened the app, looked at the clock and closed it inside that window registered nothing at all. On the open after a phone's storage had been cleared that is the whole difference between an app that opens with no service and one that shows the browser's offline page: no worker, no cached shell, nothing to open. Paul could not open it offline on 15 Oct, which is what turned this up. Registration needs no session and nothing from the server, and it is no longer awaited either, so the first paint never waits on an sw.js fetch that offline is going to fail anyway. (2) The list of actions given write-ahead protection - saved to the phone BEFORE the network is tried - named two actions that no longer exist (useMaterial, returnMaterial). The live ones are takeMaterial and logMaterials, so the materials typed into the clock-out review were the one thing on that screen with no protection while the hours beside them had it: a phone pocketed mid clock-out kept the hours and silently dropped the parts, which under-bills the job and nobody finds out. Fixed, and because write-ahead makes a repeat possible, those actions now carry a submission id and the script remembers the first one for six hours - otherwise a lost answer would put two sets of parts on one job and take the shelf down twice. Needs Code.gs deployed too. // v72: the app keeps its session token in TWO places now - IndexedDB, because this worker reads it from there to deliver punches while the app is shut, and localStorage, which survives the browser throwing IndexedDB away. Whichever copy lives puts the other one back. Paul was locked out on 13 Oct with 27 days still left on his session server-side: the phone had simply lost the token, so the app had nothing to send and fell back to the Google sign-in screen, which then would not cooperate. The app also asks the browser not to evict it (navigator.storage.persist), the sign-in screen gained a 'Use a different Google account' link - the silent sign-in only fires when the browser has exactly ONE Google account signed in, and with two it gives up without a word - and it now says so when Google's own script never loads instead of showing an empty space where a button should be. In this file: the background half of stale-while-revalidate has never actually worked. resp.clone() was being called one microtask too late, after the response had already been handed to respondWith, which locks the body and makes clone() throw; the error was swallowed. So renaming this cache was the ONLY thing that ever refreshed a phone, which is why a missed version bump left phones on an old app indefinitely instead of for one extra open. Fixed below. // v71: the enquiry reads like an enquiry. 1 - what the customer typed into the website form, word for word, laid out question by question with what they wrote about the job itself given room, plus their photos. 2 - what it comes to: labour, parts, permit and the parts needed, per scenario, under the total. 3 - the whole ball park behind a '📋 See the full ball park' button instead of sitting open on every card, so the Requests tab is a list of customers again. Also fixes five figures that were being read wrong off every live lead: the grand total was picking up 'Total labour' (Barry Toker #48 showed $420 instead of $929.25), and the hours were reading the first '~1.5 hrs' on the block instead of adding up the billed lines (Dawn Lewis #45 showed 1.5 hrs instead of 3.5). Checked against #41, #45, #46, #48 and #49: labour + parts + permit now reconciles to the printed subtotal to the cent on all ten scenarios. // ...earlier notes from v46 through v70 were moved to the build log in Drive to keep this line readable: Code.gs and app version history, the deploy steps, and the rules learned the hard way.
-const SHELL = ['./', './index.html', './manifest.webmanifest'];
-
-self.addEventListener('install', (e) => {
-  // cache:'reload' — fetch the shell from the network, not the browser's HTTP cache (GitHub Pages
-  // serves index.html with max-age=600, so a phone opened just before a deploy could otherwise
-  // cache the OLD page under the NEW version name).
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
-});
-
-self.addEventListener('activate', (e) => {
-  e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
-});
-
-self.addEventListener('fetch', (e) => {
-  const url = new URL(e.request.url);
-  // Never intercept API calls or Google auth — always hit the network.
-  if (e.request.method !== 'GET' || url.hostname.includes('script.google.com') ||
-      url.hostname.includes('googleusercontent.com') || url.hostname.includes('accounts.google.com') ||
-      url.hostname.includes('googleapis.com')) {
-    return; // let the browser handle it
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1F3864">
+<link rel="manifest" href="./manifest.webmanifest">
+<title>PCW / PRO Timesheet</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  :root{
+    /* PRO Electrical brand palette — navy / blue / grey on white, with the logo's
+     * electric-blue pulse as the accent line. Clock buttons keep their traffic-light
+     * colors on purpose: green = go, red = stop is what makes the app dummy proof. */
+    --bg:#eef2f8; --panel:#ffffff; --panel2:#e9eef6; --line:#d9e1ed;
+    --text:#1a2947; --muted:#5b6b85; --navy:#1F3864; --accent:#2E75B6; --accent2:#2265ab;
+    --pulse:#4DA3FF;
+    /* v75 - the PROJECT NAME on a job row. Paul asked for it as bold as the company name and in
+     * a different dark blue, so the two lines read as two different facts about the same job. */
+    --proj:#0E4C92;
+    --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --pending:#ca8a04;
+    /* --good was used in seven places and never defined, so every "✓ that is fine" line
+     * rendered in the ordinary text colour. Same green as --ok. */
+    --good:#16a34a;
+    --radius:16px; --safe: env(safe-area-inset-bottom, 0px);
   }
-  e.respondWith(
-    caches.match(e.request).then((cached) => {
-      const net = fetch(e.request).then((resp) => {
-        // v72 — TAKE THE COPY HERE, NOT LATER.
-        // This used to read:
-        //     if (resp && resp.ok) caches.open(CACHE).then((c) => c.put(e.request, resp.clone()))
-        // and resp.clone() therefore ran one microtask later, inside the caches.open callback. By
-        // then `return resp` below had already handed the response to respondWith, which locks the
-        // body — and clone() throws on a locked body. The .catch(() => {}) swallowed it, silently,
-        // every time. So the background half of "stale-while-revalidate" was not revalidating
-        // anything: the only thing that ever refreshed a phone was renaming the cache on the line
-        // above, which is why a missed version bump left phones on an old app indefinitely rather
-        // than for one extra open. Clone first, hand the response back second.
-        if (resp && resp.ok) {
-          const copy = resp.clone();
-          caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; font-size:16px; line-height:1.4}
+  body{padding-bottom:calc(100px + var(--safe))}
+  h1,h2,h3{margin:0 0 .4em; color:var(--navy)}
+  button{font:inherit; cursor:pointer; border:none; border-radius:12px; padding:12px 14px; color:#fff;
+    background:var(--accent); font-weight:600; touch-action:manipulation}
+  button:active{transform:scale(.98)}
+  button.secondary{background:var(--panel2); color:var(--text)}
+  button.ghost{background:transparent; color:var(--accent2); padding:8px}
+  button.danger{background:var(--bad)}
+  button:disabled{opacity:.5}
+  input,select,textarea{width:100%; font:inherit; color:var(--text); background:var(--panel2);
+    border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin:6px 0}
+  label{display:block; font-size:.82rem; color:var(--muted); margin-top:10px}
+  .wrap{max-width:560px; margin:0 auto; padding:16px}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:16px; margin:12px 0}
+  .row{display:flex; gap:10px; align-items:center}
+  /* v24: two buttons under one heading used to be laid out with `margin-left:8px` on the
+     second. On a phone the pair wraps, and a wrapped button keeps that stray left margin and
+     gains no gap above it — so they looked misaligned and stuck together. This lays them out
+     as a wrapping flex row instead: equal widths side by side on a wide screen, full width and
+     evenly spaced once they stack. */
+  .btnrow{display:flex; flex-wrap:wrap; gap:8px; margin-top:8px}
+  .btnrow>button{flex:1 1 190px; margin:0}
+  .row.between{justify-content:space-between}
+  .grow{flex:1}
+  .muted{color:var(--muted)}
+  .small{font-size:.82rem}
+  .pill{display:inline-block; padding:3px 10px; border-radius:999px; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.03em}
+  .pill.approved{background:rgba(22,163,74,.12); color:#15803d}
+  .pill.pending{background:rgba(202,138,4,.14); color:#a16207}
+  .pill.rejected{background:rgba(220,38,38,.12); color:#b91c1c}
+  .pill.live{background:rgba(46,117,182,.12); color:var(--accent2)}
+  .bigbtn{width:100%; padding:22px; font-size:1.35rem; border-radius:24px; box-shadow:0 8px 24px rgba(31,56,100,.18)}
+  .bigbtn.in{background:linear-gradient(135deg,#15803d,#22c55e)}       /* green = Clock In */
+  .bigbtn.out{background:linear-gradient(135deg,#dc2626,#f97316)}      /* red-orange = Clock Out */
+  .btn-break{background:linear-gradient(135deg,#d97706,#f59e0b)}       /* amber = Start Break */
+  .btn-resume{background:linear-gradient(135deg,#0369a1,#0ea5e9)}      /* blue = Resume Work */
+  .btn-switch{background:#d9f2e2; color:#166534; border:1px solid #a7dcbd}  /* pale green — distinct from grey */
+  .timer{font-size:2.1rem; font-weight:800; text-align:center; letter-spacing:.02em}
+  .tabbar{position:fixed; left:0; right:0; bottom:0; display:flex; background:var(--panel);
+    border-top:1px solid var(--line); padding-bottom:var(--safe); z-index:20}
+  .tabbar button{flex:1; min-width:0; background:transparent; color:var(--muted); border-radius:0; padding:12px 2px 13px; font-size:.76rem; font-weight:600;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .tabbar button.active{color:var(--accent2); font-weight:800; background:rgba(46,117,182,.10);
+    box-shadow:inset 0 3px 0 var(--accent2)}
+  .tabbar .ic .dot{position:absolute;margin:-14px 0 0 16px;width:9px;height:9px;border-radius:50%;background:var(--bad)}
+  .tabbar .ic{display:flex; align-items:center; justify-content:center; height:27px; font-size:1.55rem; line-height:1}
+  .banner{padding:10px 14px; border-radius:12px; margin:8px 0; font-size:.9rem}
+  .banner.offline{background:#fef3c7; color:#92400e; border:1px solid #fcd34d}
+  .banner.ot{background:#fee2e2; color:#b91c1c; border:1px solid #fca5a5}
+  .banner.sync{background:#dbeafe; color:var(--accent2)}
+  .hidden{display:none !important}
+  .list-item{border-bottom:1px solid var(--line); padding:12px 0}
+  .list-item:last-child{border-bottom:none}
+  .card{box-shadow:0 1px 3px rgba(31,56,100,.06)}
+  .sheet{position:fixed; inset:0; background:rgba(20,33,61,.5); z-index:40; display:flex; align-items:flex-end; justify-content:center}
+  .sheet .panel{background:var(--panel); width:100%; max-width:560px; border-radius:24px 24px 0 0; padding:18px;
+    max-height:92vh; overflow:auto; padding-bottom:calc(18px + var(--safe))}
+  .chip{display:inline-block; background:var(--panel2); border:1px solid var(--line); border-radius:999px;
+    padding:8px 14px; margin:4px 4px 0 0; font-size:.9rem}
+  .chip.sel{background:var(--accent); border-color:var(--accent); color:#fff}
+  .suggest{background:var(--panel2); border:1px solid var(--line); border-radius:12px; margin-top:-2px; overflow:hidden}
+  .suggest div{padding:12px 14px; border-bottom:1px solid var(--line)}
+  .suggest div:last-child{border-bottom:none}
+  .toast{position:fixed; bottom:calc(84px + var(--safe)); left:50%; transform:translateX(-50%);
+    background:var(--navy); color:#fff; padding:12px 18px; border-radius:14px; z-index:60;
+    max-width:90%; text-align:center; box-shadow:0 8px 24px rgba(31,56,100,.3)}
+  .center{text-align:center}
+  .avatar{width:34px; height:34px; border-radius:50%; background:var(--panel2); object-fit:cover}
+  .perm{display:flex; align-items:center; gap:8px; padding:6px 0}
+  .perm input{width:auto; margin:0}
+  .hourglass{display:inline-block;animation:hg 1.6s ease-in-out infinite}
+  @keyframes hg{0%,45%{transform:rotate(0)}55%,100%{transform:rotate(180deg)}}
+  .spin{width:22px;height:22px;border:3px solid var(--line);border-top-color:var(--accent2);border-radius:50%;animation:sp 1s linear infinite;display:inline-block;vertical-align:middle}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  /* ---- Branded header: navy band, greeting top-left, the logo's silver→blue→black
+   *      "PRO" colors as a thin pulse line along the bottom edge. ---- */
+  .apphead{background:linear-gradient(135deg,#1F3864,#2b5c9c); color:#fff; border-radius:var(--radius);
+    padding:10px 16px 12px; margin:4px 0 12px; display:flex; justify-content:space-between; align-items:center;
+    box-shadow:0 4px 14px rgba(31,56,100,.25); position:relative; overflow:hidden}
+  .apphead:after{content:''; position:absolute; left:0; right:0; bottom:0; height:3px;
+    background:linear-gradient(90deg,#aeb6c2 0%,#8f9aa8 30%,var(--pulse) 48%,var(--pulse) 62%,#2a2e35 100%)}
+  .apphead .hello{font-weight:800; font-size:1.18rem; letter-spacing:.01em}
+  .apphead .hello-sub{font-size:.78rem; color:rgba(255,255,255,.75); margin-top:1px}
+  .apphead .hello-sub .cap{text-transform:capitalize}
+  .apphead .ghost{color:#cfe3ff; padding:8px 0 8px 12px; font-weight:600}
+  .apphead .avatar{border:2px solid rgba(255,255,255,.45)}
+  .pulseline{height:3px; max-width:220px; margin:10px auto 14px; border-radius:2px;
+    background:linear-gradient(90deg,#aeb6c2,var(--pulse) 48%,var(--pulse) 62%,#2a2e35)}
+  /* ---- Month calendar (Schedule tab) ---- */
+  .cal{display:grid; grid-template-columns:repeat(7,1fr); gap:4px}
+  .cal .dow{text-align:center; font-size:.68rem; color:var(--muted); font-weight:700; padding:2px 0}
+  .cal .day{aspect-ratio:1; border-radius:10px; background:var(--panel); border:1px solid var(--line);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:.85rem;
+    cursor:pointer; position:relative; -webkit-user-select:none; user-select:none}
+  .cal .day.blank{background:transparent; border:none; cursor:default}
+  .cal .day.today{border:2px solid var(--accent2); font-weight:800}
+  .cal .day.hol{background:#fef9c3; border-color:#fde68a}
+  .cal .dots{display:flex; gap:2px; margin-top:2px; height:5px}
+  .cal .dot{width:5px; height:5px; border-radius:50%; background:var(--accent)}
+  .cal .dot.warn{background:var(--warn)}
+  .cal .off{position:absolute; top:1px; right:3px; font-size:.6rem}
+  .seg{display:flex; background:var(--panel2); border-radius:12px; padding:3px; gap:3px}
+  .seg button{flex:1; background:transparent; color:var(--muted); padding:7px 12px; border-radius:9px; font-size:.85rem}
+  .seg button.on{background:var(--panel); color:var(--navy); box-shadow:0 1px 3px rgba(31,56,100,.15)}
+  .co-logo{height:20px; max-width:64px; object-fit:contain; display:inline-block; vertical-align:middle}
+  .clock-logo{height:44px; max-width:180px; object-fit:contain; display:block; margin:10px auto 0}
+  .clock-logo-hd{height:56px; max-width:260px; object-fit:contain; display:block; margin:0 auto; vertical-align:middle}
+  .actbtn{display:flex; align-items:center; justify-content:center; gap:9px}
+  .bic{font-size:1.7em; line-height:1; transform:translateY(-0.05em)}
+  /* Tab-bar calendar icon that shows TODAY'S date (emoji calendars are stuck on a printed date) */
+  .calic{display:inline-flex; flex-direction:column; align-items:center; width:22px; height:22px;
+    border-radius:5px; background:#fff; border:1px solid #c6cfdc; overflow:hidden}
+  .calic-top{width:100%; height:5px; background:var(--bad); flex:none}
+  .calic-num{font-size:.6rem; font-weight:800; color:var(--navy); line-height:15px}
+  /* ---- Desktop layout (≥900px): wide and roomy for admin work; phones untouched. ---- */
+  @media (min-width: 900px){
+    .wrap{max-width:1080px}
+    .wrap.tab-clock{max-width:640px}                    /* the running clock reads best compact + centered */
+    .wrap.tab-entries, .wrap.tab-team, .wrap.tab-hours, .wrap.tab-jobs, .wrap.tab-jha, .wrap.tab-sched{max-width:820px}  /* comfortable reading width for lists */
+    /* Admin tab: cards flow into two columns (approvals | employees, materials | payroll) */
+    .wrap.tab-admin{display:grid; grid-template-columns:1fr 1fr; gap:0 18px; align-items:start}
+    .wrap.tab-admin>h2, .wrap.tab-admin>.row, .wrap.tab-admin>.banner{grid-column:1/-1}
+    /* Bottom tab bar: don't stretch buttons across a huge monitor */
+    .tabbar{justify-content:center}
+    .tabbar button{max-width:170px}
+    /* Sheets become centered dialogs instead of bottom drawers */
+    .sheet{align-items:center}
+    .sheet .panel{max-width:640px; border-radius:24px}
+  }
+</style>
+</head>
+<body>
+<!-- ============================== APP SHELL ============================== -->
+<div id="app"></div>
+<div id="toast"></div>
+
+<script>
+/* ============================================================================
+ * CONFIG — FILL THESE IN (must match the Apps Script deployment)
+ * ==========================================================================*/
+const CONFIG = {
+  GOOGLE_CLIENT_ID: '378684710856-ptq2bpavssjjii856ufbuu03uef97ivr.apps.googleusercontent.com',
+  APPS_SCRIPT_URL:  'https://script.google.com/macros/s/AKfycbxEZMh2MuzbfGFyuiwmJO1KMLffrj4_rWXYW8JXTew61EKsBKZ5SVoN7tlUH9peKq8f/exec',
+};
+const MAX_MEDIA_MB = 35; // base64 +33% must stay under Apps Script's ~50 MB POST limit
+
+/* ============================================================================
+ * ENCOURAGEMENTS — a full year (312) of Mon–Sat clock-out messages.
+ * Injected from messages.js at build time. Fallback kept so the app still runs.
+ * ==========================================================================*/
+/* 312 clock-out messages (a year of Mon-Sat), rewritten: four moods interleaved -
+ * dry humour, warm/homey, motivational, reflective+scripture - so index%4 = mood and
+ * the day-of-year rotation gives a different FEEL every day, never same-mood twice. */
+const ENCOURAGEMENTS = [
+  "Clock out achieved. Couch loading\u2026 87%.",
+  "Another honest day in the books. Head home easy.",
+  "What you did today compounds. Interest starts accruing overnight.",
+  "Whatever you do, work at it with all your heart. \u2014 Colossians 3:23. You did.",
+  "The day tried. You tried harder. Final score posted at supper.",
+  "Supper tastes better on days like this. Go find out.",
+  "Success is a few small disciplines repeated daily. Today: repeated.",
+  "The sleep of a labourer is sweet. \u2014 Ecclesiastes 5:12. Yours is earned.",
+  "You are now free to move about the evening.",
+  "You did right by the day. Now do right by your rest.",
+  "You moved the needle today, even if only you saw it move.",
+  "Come to me, all you who are weary, and I will give you rest. \u2014 Matthew 11:28.",
+  "Tools down. Standards still up. Go home.",
+  "The evening is yours, free and clear. Spend it on the good stuff.",
+  "Rest is a discipline too. The strong take it seriously.",
+  "Commit to the Lord whatever you do, and he will establish your plans. \u2014 Proverbs 16:3.",
+  "That list didn't know what hit it. (It was you. You hit it.)",
+  "Somebody's glad you're on the way home. That's the real paycheque.",
+  "The reward for good work is more capability. You leveled up today.",
+  "May the favour of the Lord rest on us; establish the work of our hands. \u2014 Psalm 90:17.",
+  "Somewhere a recliner just felt a disturbance. It knows you're coming.",
+  "Let the day go. It got everything it needed from you.",
+  "Every day you finish builds the person who starts tomorrow.",
+  "Well done, good and faithful servant. \u2014 Matthew 25:23. Rest easy tonight.",
+  "Work's done. The dog requires a full report.",
+  "Boots off, shoulders down, kettle on.",
+  "You kept the standard when it would've been easier not to. That's the whole game.",
+  "You will eat the fruit of your labour; blessings and prosperity will be yours. \u2014 Psalm 128:2.",
+  "Your boots have filed for overtime. Denied. Go rest them.",
+  "You gave the day your hands and your patience. Keep the evening for your heart.",
+  "Consistency looks unremarkable daily and unbeatable yearly.",
+  "Let us not become weary in doing good. \u2014 Galatians 6:9. Today, you didn't.",
+  "Official ruling: that counts as a full day. And then some.",
+  "Home is the job site where you're always on break.",
+  "Well done is better than well said. \u2014 Franklin. Today, you did.",
+  "In all toil there is profit. \u2014 Proverbs 14:23. Today's is banked.",
+  "You've earned the good chair and the last word tonight.",
+  "Rest isn't a reward for work. It's part of the work. Do it well.",
+  "The credit belongs to those actually in the arena. You were in it.",
+  "Unless the Lord builds the house, the builders labour in vain. \u2014 Psalm 127:1. Build with him.",
+  "Day: closed. Fridge: about to be opened.",
+  "The site is quiet, the tools are down, and you did good.",
+  "A hard day's work is a vote for your own future.",
+  "The plans of the diligent lead to profit. \u2014 Proverbs 21:5.",
+  "Scientists confirm supper tastes 40% better after a day like that.",
+  "Carry home the satisfaction. Leave the stress in the truck.",
+  "It is not the mountain we conquer but ourselves. \u2014 Hillary. Conquered.",
+  "Come away by yourselves and rest a while. \u2014 Mark 6:31. That's an instruction.",
+  "The job site will spend all night missing you. It'll cope.",
+  "A day like today is why the bed feels so honest tonight.",
+  "Mastery is a long apprenticeship. Another day served, another skill sharpened.",
+  "There is nothing better than to enjoy the good of one's labour. \u2014 Ecclesiastes 3:13.",
+  "Congratulations on defeating today. Rematch tomorrow, same time.",
+  "You showed up for everyone today. Tonight, show up for yourself.",
+  "You did what you said you'd do. In this world, that's rare currency.",
+  "The hardworking farmer should be the first to share in the crops. \u2014 2 Timothy 2:6.",
+  "Hang up the tool belt. It needs to think about what it did.",
+  "The porch light's on for a reason. Go be the reason.",
+  "No one stumbles onto excellence. You walked there again today, on purpose.",
+  "He gives strength to the weary. \u2014 Isaiah 40:29. Collect yours tonight.",
+  "Weather took its best shot. You filed it under 'noise.'",
+  "Good work done, good people waiting. That's a rich life.",
+  "The finish line of today is the training block for tomorrow.",
+  "God is not unjust; he will not forget your work. \u2014 Hebrews 6:10.",
+  "Achievement unlocked: Went To Work And Did The Work.",
+  "Tomorrow will ask again. Tonight, you've already answered.",
+  "Quiet effort makes loud results \u2014 eventually. Keep stacking.",
+  "By the seventh day God had finished his work, and he rested. \u2014 Genesis 2:2. Follow suit.",
+  "Your hands did math, art, and heavy lifting today. Pay them in supper.",
+  "Let supper be slow and the phone be far away.",
+  "Today's sweat is tomorrow's shortcut.",
+  "Diligent hands will rule. \u2014 Proverbs 12:24. Rest them tonight anyway.",
+  "The couch has been notified of your ETA.",
+  "You built things today that will outlast the tiredness. Fair trade.",
+  "You can be proud without being finished. Tonight: proud. Tomorrow: back at it.",
+  "Those who work their land will have abundant food. \u2014 Proverbs 12:11.",
+  "Timesheet updated. Legend status: maintained.",
+  "The day's ledger: effort given, pride earned, evening owed. Collect.",
+  "The tallest oaks grow slow through weather nobody remembers. Yours grew today.",
+  "In peace I will lie down and sleep, for you alone, Lord, make me dwell in safety. \u2014 Psalm 4:8.",
+  "That's a wrap. Craft services (your kitchen) is now open.",
+  "May your chair be soft and your family louder than the TV.",
+  "What you practiced today, you'll be known for someday.",
+  "Cast all your anxiety on him because he cares for you. \u2014 1 Peter 5:7. Tools down, worries too.",
+  "You may now stop being impressive. Resume at 7 a.m.",
+  "Take the long way home if the sky's doing something nice.",
+  "Real confidence is a stack of kept promises to yourself. Add today.",
+  "The Lord is my shepherd, I lack nothing. \u2014 Psalm 23:1. Not even after today.",
+  "Shift's over. The only thing left to fix is a plate of food.",
+  "Hard work has a quiet after-glow. You're wearing it now.",
+  "The great ones finish tired too. They just come back.",
+  "Be strong and courageous... for the Lord goes with you. \u2014 Deuteronomy 31:6. Today included.",
+  "Today has been thoroughly worked. No refunds.",
+  "The work's wrapped, the doors are locked, your part's done.",
+  "There's genius in persistence that talent can't buy.",
+  "My presence will go with you, and I will give you rest. \u2014 Exodus 33:14.",
+  "Whatever you couldn't finish today was clearly tomorrow's fault.",
+  "Some jobs end at a whistle. Yours ends at a sunset. Better deal.",
+  "You built proof today. Proof beats promise, every time.",
+  "Whatever your hand finds to do, do it with all your might. \u2014 Ecclesiastes 9:10. Done.",
+  "Clocking out at the top of your game. And the bottom of your energy. Balanced.",
+  "Put the day down gently. It served you well.",
+  "When your character out-works your circumstances, days end like this.",
+  "Each of you should eat and drink and find satisfaction in your toil \u2014 a gift of God. \u2014 Ecclesiastes 3:13.",
+  "Do not operate heavy machinery. Except the recliner lever.",
+  "You were useful today. That's no small thing. Rest like you know it.",
+  "Endurance is patience concentrated. \u2014 Carlyle. You concentrated well today.",
+  "He makes me lie down in green pastures. \u2014 Psalm 23:2. Take the hint.",
+  "You gave 100%. The other 30% was coffee. Math checks out.",
+  "There's stew-and-biscuits weather coming. Tonight might be it.",
+  "Do a little more each day than you think you can \u2014 you just did.",
+  "The end of a matter is better than its beginning. \u2014 Ecclesiastes 7:8. Good ending today.",
+  "Home: the only job site where lying down is encouraged.",
+  "Go easy tonight. Even good engines idle.",
+  "A finished day is a beaten excuse.",
+  "Six days you shall labour... but the seventh is rest. \u2014 Exodus 20:9-10. Pace yourself, friend.",
+  "The truck knows the way home. Let it do its thing.",
+  "The house missed you. The couch especially.",
+  "You showed up when it was hard. That's the line on the resume that matters.",
+  "A generous person will prosper; whoever refreshes others will be refreshed. \u2014 Proverbs 11:25.",
+  "Boots off at the door. House rules outrank work ethic.",
+  "Whatever's left undone will keep. You won't, without rest. Priorities.",
+  "Progress isn't loud. It sounds exactly like today did.",
+  "Trust in the Lord with all your heart. \u2014 Proverbs 3:5. The day is safely his now.",
+  "One more day where everything you touched works better now. Show-off.",
+  "Today you were somebody's steady. Tonight, be your own.",
+  "The habit of finishing is the rarest tool in any box. It's in yours.",
+  "He will bless the work of your hands. \u2014 Deuteronomy 28:12.",
+  "Your shadow clocked out an hour ago. Slacker.",
+  "Wash the day off, keep the pride on.",
+  "Look back at today's work once, then forward twice.",
+  "I have fought the good fight, I have finished the race. \u2014 2 Timothy 4:7. Today's leg: complete.",
+  "The evening has been cleared for your arrival. No hard hat required.",
+  "A tired body and a clear conscience: sleep's favourite recipe.",
+  "Your standards worked overtime today. Give them the evening off.",
+  "Do not worry about tomorrow, for tomorrow will worry about itself. \u2014 Matthew 6:34.",
+  "All problems remaining at quitting time are officially future problems.",
+  "The evening was bought and paid for by 7 a.m. you. Enjoy it.",
+  "Iron sharpens iron. Today sharpened you.",
+  "The joy of the Lord is your strength. \u2014 Nehemiah 8:10. Refuel on it tonight.",
+  "Well fought. The paperwork surrendered first.",
+  "Kick off the boots. The floor can handle a little honest dirt.",
+  "Nothing great was ever built in a day, but every day something great was built on.",
+  "Better one handful with tranquillity than two with toil. \u2014 Ecclesiastes 4:6. Tonight: tranquillity.",
+  "Nothing left to prove today. Except maybe how fast you can get to supper.",
+  "Let the last thought of the day be something you fixed.",
+  "Deserve your ambitions. Today you did.",
+  "Every good and perfect gift is from above. \u2014 James 1:17. Today's strength was one.",
+  "You're leaving the site better than you found it. The site says thanks.",
+  "Quiet evenings are the interest paid on loud days.",
+  "The compound interest of showing up: you'll cash it later. Deposit made.",
+  "He who watches over you will not slumber. \u2014 Psalm 121:3. So you can.",
+  "Quitting time: the most punctual you'll ever be.",
+  "You kept your word today, hour by hour. Sleep on that.",
+  "Grit means the story continues tomorrow. And it will.",
+  "Honour the Lord with your wealth and the firstfruits of your labour. \u2014 Proverbs 3:9.",
+  "Today's overtime is tonight's story time.",
+  "Come in from the cold. Or the heat. Whichever. Just come in.",
+  "Not every day is a highlight. Every day is a foundation.",
+  "Let the beauty of the Lord be upon us; establish the work of our hands. \u2014 Psalm 90:17.",
+  "Somebody worked hard today. The timesheet is pointing at you.",
+  "Real success: tired, home, and wanted.",
+  "You outworked your doubts today. They'll be quieter tomorrow.",
+  "A day's work is a day's answer to the question of who you are.",
+  "Break out the good salsa. You've earned condiments tonight.",
+  "Trade the work gear for a kitchen chair. Both fit you fine.",
+  "Effort keeps its own books. Yours are balanced and then some.",
+  "Good work remembers careful hands. So do people.",
+  "The stars are clocking in. Shift change complete.",
+  "You tended what needed tending. That's the whole job. Rest now.",
+  "The difference you made today is real, even where it's invisible.",
+  "You traded eight-plus hours of your life for this day's work. It was a fair trade, honestly made.",
+  "Toolbox closed. Kitchen table open.",
+  "The day ended better because you were in it. So will supper.",
+  "Character is what you do on the third hard day in a row.",
+  "What was hard today will be a story someday. Stories are wages too.",
+  "Your work here is done. Dramatically walk away from the explosion (sunset).",
+  "The work will still respect you in the morning. Go rest.",
+  "Today took discipline. Tomorrow takes one more day of it. You have plenty.",
+  "Tools get put away. Skills stay out all night.",
+  "Even your coffee cup is proud of you, and it's seen everything.",
+  "Nothing left to lift tonight but a fork.",
+  "A reputation is built shift by shift. Today: another course of brick.",
+  "Tired is the body's receipt for a day that meant something.",
+  "The lawn chair by the fire has your name on it. Literally, if you own a Sharpie.",
+  "Tell somebody about your day. The good part. There was one \u2014 you.",
+  "Excellence isn't a mood. You proved that today.",
+  "The best evenings are unearned by nothing and earned by everything.",
+  "Muscles sore in all the respectable places. Rest up.",
+  "Sleep comes easy to the honest and the busy. You're both.",
+  "Somewhere in today's hours was your best work yet. It'll show up again.",
+  "Look at your hands tonight. They're a resume no paper can hold.",
+  "Someone else's problem now? No \u2014 nobody's problem. You fixed it.",
+  "May the evening be slow and the biscuits be plenty.",
+  "The trade rewards the patient. You banked patience today.",
+  "A day of work is a long conversation with the real world. You listened well.",
+  "Jobs done, customers happy, jokes still mediocre. Perfect day.",
+  "You're the kind of tired that means it mattered.",
+  "Fatigue is temporary. The standard you kept is permanent.",
+  "Whatever else is uncertain, today you were useful. Hold onto that.",
+  "You beat rush hour by living somewhere with no rush hour. And by working late. Go home.",
+  "Set it all down. Every wrench, every worry.",
+  "Your ceiling rose a little today. It does that when you push.",
+  "Every generation thinks the work was harder in their day. Yours will be right too.",
+  "The day is now a highlight reel. Skip to the supper scene.",
+  "The best part of a hard day is the soft landing. Incoming.",
+  "The extra care you took today has a long memory.",
+  "There's an old kind of wealth in being spent on something worthwhile.",
+  "Signing off with all ten fingers. Professionalism.",
+  "Family, food, feet up. In any order. All three.",
+  "Persistence outlasts resistance. Today: outlasted.",
+  "Craft is memory in the hands. You added a page today.",
+  "Today's performance review: would hire again. \u2014 The Universe.",
+  "Days like this are the bricks. The life you're building is the house.",
+  "The strongest steel is forged on days that felt like today.",
+  "The quiet at day's end isn't empty. It's full of everything you finished.",
+  "Go home before the job thinks of something else.",
+  "You earned an evening where the hardest choice is what's on TV.",
+  "You held the line. Lines like that become legacies.",
+  "Somewhere in today was a moment you were exactly the right person for. That's a career.",
+  "Hard hat off, thinking cap optional until morning.",
+  "The shop's quiet now. It's proud too, in its way.",
+  "To finish well is a skill. You're getting dangerously good at it.",
+  "Work shapes the worker more than the workpiece. Today shaped you well.",
+  "You did the thing! All the things. Several things, anyway. Enough things.",
+  "One more day of doing it right. It adds up. It already has.",
+  "Every rep counts, and today was full of them.",
+  "Rest tonight isn't stopping. It's the other half of the craft.",
+  "Payday cares about this moment. Honour it with rest.",
+  "Go home to the people who knew you before you were this good.",
+  "The path to mastery looks exactly like an ordinary tired evening. This one.",
+  "You can't rush craftsmanship and you can't skip a day. You honoured this one.",
+  "The site's tidy, the truck's loaded, the evening's yours. Textbook.",
+  "A well-worked day deserves a well-fed evening.",
+  "You made hard look routine today. That's what expertise is.",
+  "The day is spent, and it was spent well. Few can say it. You can.",
+  "May your shower be hot and your phone stay quiet.",
+  "Rest your hands. They earned their keep and then some.",
+  "Today asked a fair price and you paid in full. Ownership feels like this.",
+  "Sunsets hit different when you've been useful since sunrise.",
+  "Everything hurts a normal, honest amount. Nailed it.",
+  "The stars punch in so you can punch out.",
+  "Slow progress is still progress, and yours wasn't even slow.",
+  "An honest day holds its value in any economy.",
+  "The couch commute begins now. Watch for slow-moving pets.",
+  "You made a living and kept your soul. Good shift.",
+  "You're not the same worker who clocked in this morning. Slightly better. Daily.",
+  "What you fixed today stays fixed. What you built stays built. Sleep on that.",
+  "You can't pour from an empty thermos. Refill overnight.",
+  "Tonight's forecast: warm kitchen, low stress, zero percent chance of email.",
+  "Winners are ordinary people with non-negotiable habits. Exhibit: today.",
+  "The work will teach you if you let it, the old-timers say. Today it taught. You learned.",
+  "Last one standing: you. As usual.",
+  "Being needed is a blessing. Being home is one too. You've got both.",
+  "Leave it all on the field, then refill overnight. That's the cycle. Honour it.",
+  "The day asked its questions. Your hands answered every one.",
+  "Dust off, punch out, chin up.",
+  "The shop's locked, the day's done, and you did well.",
+  "The best investment today: the effort nobody had to ask for.",
+  "Tomorrow inherits a little order because of today. That's legacy, small and real.",
+  "The job called you a machine today. You blushed. Machines can't blush. Checkmate.",
+  "Some evenings feel earned to the bone. This is one of them.",
+  "Keep promises, keep standards, keep going. Three for three today.",
+  "Nothing about care is wasted. Not one careful hour of it.",
+  "Nothing on tonight's schedule but well-earned nothing.",
+  "Time to go be somebody's favourite person instead of somebody's contractor.",
+  "Your future self just watched today and nodded.",
+  "The pride in a done day never shows up on an invoice. It's yours anyway.",
+  "You've officially run out of workday. Tragic. Anyway, supper.",
+  "The road home is the best part of the map.",
+  "Today's tired is the good kind \u2014 the kind with receipts.",
+  "A person who can end a day satisfied has already won most of what matters.",
+  "Take the win. Take the leftovers too.",
+  "Your chair, your table, your people. Clock out and claim them.",
+  "A body of work is built one honest day at a time. Volume added.",
+  "The trade is old, the day was new, and you held both well.",
+  "Today's blooper reel was short and the highlight reel was long.",
+  "Even the dog knows you did good. Especially the dog.",
+  "You met the day's resistance with better resistance.",
+  "Good days don't announce themselves in the morning. They confess at night. Hear that? Confession.",
+  "Somewhere, a spreadsheet just recorded your greatness.",
+  "Nothing sweeter than a done list and an open evening.",
+  "What you maintain, you keep. Standards included. Maintained.",
+  "You gave the day weight. That's why it sat heavy and finished full.",
+  "End of shift. Beginning of shift-lessness.",
+  "Home now. The rest is tomorrow's business.",
+  "Even on autopilot, your autopilot has high standards. That took years. It shows.",
+  "Between first coffee and last light, you mattered all day.",
+  "Your evening has zero action items. Keep it that way.",
+  "You wore the day well. Now wear the slippers.",
+  "You were the constant in today's chaos. Constants win.",
+  "Days like today don't trend. They endure.",
+  "Home stretch, literal version: go stretch, at home.",
+  "Let gratitude get the last word tonight.",
+  "History belongs to the diligent. Today is in your column.",
+  "Quiet accomplishment is still accomplishment. Quieter, in fact, and deeper.",
+  "The tools rest. The legend showers.",
+  "Full hands all day, full heart tonight.",
+  "One day of real effort is worth a month of intention. Banked.",
+  "The work took what it needed and left you tired and true. Even trade.",
+  "Even the sun called it a day. Great minds.",
+  "Peace, quiet, and potatoes. Go.",
+  "The secret ingredient was never talent. It was today, repeated.",
+  "Let the day close like a good book \u2014 finished, not abandoned.",
+  "Full day, empty list, happy exit.",
+  "The day gave what it gave. You gave more. Rest up, friend.",
+  "Strong finish. Stronger pattern. Unbreakable habit.",
+  "You were needed. You showed. You delivered. Repeat tomorrow.",
+  "Freedom smells like wood smoke and supper. Go get it.",
+  "Close the gate on today. It'll still be there to open tomorrow.",
+  "Let tonight's rest be as intentional as today's work was.",
+  "May tonight be as kind to you as you were useful today."
+];
+
+/* ============================================================================
+ * CLOCK-IN MESSAGES — 366 start-of-day lines (motivation + trades humor).
+ * Random pick that avoids the last 20 shown (localStorage), so nobody sees a
+ * repeat within a week even clocking in multiple times a day.
+ * ==========================================================================*/
+/* 366 clock-in messages, rewritten: four moods interleaved (dry-clever, playful,
+ * warm/grounded, motivational) - index%4 = mood; pickClockin avoids repeating a mood
+ * back-to-back as well as repeating any of the last 20 messages. */
+const CLOCKINS = [
+  "The coffee is in charge for the first hour. Then you.",
+  "Coffee's ready. Everything else is negotiable.",
+  "Show up for the morning and the afternoon takes care of itself.",
+  "Discipline is choosing between what you want now and what you want most.",
+  "Officially on the clock. Unofficially still waking up. Both count.",
+  "The to-do list woke up cocky today. That won't last.",
+  "One honest hour to start. The rest will follow it anywhere.",
+  "Hard days build the person easy days get to enjoy.",
+  "Today's forecast: work, with a chance of more work.",
+  "May your emails be short and your lunch be long.",
+  "You keep this place running. Don't forget that on the ordinary days.",
+  "You don't rise to the occasion. You fall to your training. Train well today.",
+  "Somewhere out there is a to-do list with your name on it. Go scare it.",
+  "Officially awake. Results may vary until the second coffee.",
+  "Good work starts quiet. Just a person deciding to begin.",
+  "The obstacle in the path becomes the path. Marcus Aurelius knew it. So do you.",
+  "Punched in before the sun got smug about it.",
+  "Today has main-character energy, and it's you.",
+  "The day is unwritten and you've got the good pen.",
+  "Well begun is half done. \u2014 Aristotle. The other half is also you.",
+  "The job doesn't know how organized you are today. Surprise it.",
+  "The plan is solid. The backup plan is also coffee.",
+  "Whatever yesterday was, it's not the boss of today.",
+  "Excellence is not an act but a habit. Today: one more rep.",
+  "You versus the day. The odds favour you.",
+  "Somebody set the thermostat to 'productive.'",
+  "Somebody's counting on what you build today. Build it kind and build it straight.",
+  "How you do anything is how you do everything.",
+  "Statistically, days that start with a clock-in go better.",
+  "Monday called. Tuesday answered. Whatever day it is, you've got it.",
+  "Slow is smooth, smooth is fast, and you've got all day to be both.",
+  "Nobody drifts to the top of their trade. They climb, mornings like this.",
+  "The early bird gets the worm. You get billable hours. Better deal.",
+  "You, the list, and a fighting chance. Begin.",
+  "Begin where you are. Use what you've got. It's always been enough.",
+  "The days are long but the years are short. Spend this one deliberately.",
+  "Step one complete: showing up. The other steps should be nervous.",
+  "The printer, the traffic, and the weather all tried. You showed up anyway.",
+  "There's a rhythm to good work. You'll find it by the second task.",
+  "What gets done before eight sets the ceiling for the day. Raise it.",
+  "Your future self already said thanks for starting now. Rude to keep them waiting.",
+  "Breakfast of champions: whatever was fastest.",
+  "A steady person on a steady morning is a beautiful thing.",
+  "Comparison is a thief. Craft is a gift. Choose craft.",
+  "Warning: productivity ahead.",
+  "Today's word of the day: 'handled.'",
+  "The work will test you a little. That's how you know it matters.",
+  "You are what you repeatedly do. Today, repeat the good stuff.",
+  "The day blinked first.",
+  "The chair spins, the clock ticks, the work quakes.",
+  "Bring patience for the work and for yourself. Both pay.",
+  "Fortune favours the bold, but it pays the prepared.",
+  "This timesheet has seen things. Today it sees excellence.",
+  "Snacks are packed. Morale is secured. Deploy.",
+  "Every nail, every wire, every chore \u2014 small things done well become a life.",
+  "Amateurs wait for motivation. Professionals get to work. \u2014 after Chuck Close.",
+  "Clocked in. The rumours about your work ethic are true.",
+  "Nothing on the schedule you haven't beaten before.",
+  "You don't need a perfect day. Just a started one.",
+  "A river cuts through rock not by power but persistence.",
+  "Plot twist: you were the reliable one all along.",
+  "New day, fresh page, same excellent handwriting. Metaphorically.",
+  "Care about the little stuff. It's all little stuff, and it's all somebody's home.",
+  "Today's small extra effort is next year's obvious advantage.",
+  "Some people press snooze. You press on.",
+  "The commute playlist really understood you today.",
+  "The first task sets the tone. Choose a good tone.",
+  "Courage doesn't always roar. Sometimes it just starts the truck.",
+  "May your list be short and your tape measure findable.",
+  "Someone's about to be very good at their job. Wild guess who.",
+  "Today, be the calm one in the room. Rooms need one.",
+  "Strive not to be a success, but rather to be of value. \u2014 Einstein.",
+  "Whatever broke overnight just felt a chill run down its spine.",
+  "Rumour has it the good parking spot was yours today. Momentum.",
+  "Work you're proud of starts with a morning you respect.",
+  "There's no elevator to mastery. You take the stairs, daily.",
+  "You have arrived. The chaos may now be scheduled.",
+  "The kettle and the plan are both coming to a boil.",
+  "It's a privilege to be trusted with the keys. Carry them lightly.",
+  "Your future is built during unwitnessed hours. Like these ones.",
+  "There are two kinds of mornings. You picked the useful kind.",
+  "Small wins before nine, bragging rights by five.",
+  "Your hands know what to do. Let your head stay out of their way.",
+  "Do the hard thing first and the day loses its favourite weapon.",
+  "It's not the caffeine. It's the character. Okay, it's a little the caffeine.",
+  "Do it tired, do it caffeinated, but do it. You're doing it.",
+  "Do the next right thing. Then the next one. That's the whole trick.",
+  "The best time to plant a tree was twenty years ago. The second best is now.",
+  "The to-do list called. It wants to negotiate. Decline.",
+  "You've survived 100% of your workdays so far. Strong stats.",
+  "Weather changes, prices change, seasons change. Showing up doesn't.",
+  "Nothing will work unless you do. \u2014 Maya Angelou.",
+  "Nobody ever regretted starting early. Citation needed, but still.",
+  "The desk is where dreams get filed. The site is where they get built. Pick your arena.",
+  "There's dignity in dusty boots.",
+  "Every task today is a chance to prove your standards to yourself.",
+  "You're the reason the schedule has hope today.",
+  "The stapler is where you left it. Today is already a win.",
+  "Let the work be honest and the breaks be earned.",
+  "Great things are done by a series of small things brought together. \u2014 van Gogh.",
+  "Alert: a professional has entered the job site.",
+  "May your phone battery outlast your patience, and your patience outlast the day.",
+  "You've built a reputation one morning at a time. Here's another brick.",
+  "Show me your habits and I'll show you your future.",
+  "The day had plans. Then you showed up with better ones.",
+  "Somewhere, your future self is bragging about what you did today.",
+  "Nobody sees most of what you do right. Do it right anyway.",
+  "Don't count the days. Make the days count. \u2014 Muhammad Ali.",
+  "Confidence level: someone who brought two pencils.",
+  "The office smells like coffee and ambition. Mostly coffee.",
+  "A good name is built on days exactly like this one.",
+  "You didn't come this far to only come this far.",
+  "Clock says start. Legend says finish.",
+  "Weather report: 100% chance of getting on with it.",
+  "Start gentle if you need to. Just start.",
+  "Somebody with half your talent is out-working someone with twice of it. Be the worker.",
+  "This is the part of the movie where the montage begins.",
+  "First one in gets to pick the radio station. Rules are rules.",
+  "The trade teaches what school couldn't: everything worth having takes care and time.",
+  "Perseverance is not a long race; it's many short races one after the other.",
+  "Being unstoppable looks a lot like just starting. Strange but true.",
+  "Today's agenda: crush list, hydrate, repeat.",
+  "Today will ask you to be patient exactly once more than you'd like. Say yes.",
+  "The grind doesn't care about your mood, and rewards you anyway.",
+  "New day, same skilled hands.",
+  "The morning yawns. You don't. Advantage: you.",
+  "Strong isn't loud. Strong is consistent.",
+  "Set the bar where nobody's watching. That's where it counts.",
+  "Somewhere a problem is bragging that it can't be fixed. It hasn't met you.",
+  "Lists fear commitment. You ARE commitment.",
+  "May the work go smooth, and when it doesn't, may you go steady.",
+  "What you tolerate, you teach. Tolerate excellence.",
+  "You've done harder days than this one on less sleep. It should worry.",
+  "Consider the inbox warned.",
+  "You're allowed to enjoy this. The sky, the skill, the purpose.",
+  "He who has a why can bear almost any how. \u2014 after Nietzsche.",
+  "The list is long, but so is the daylight. Advantage: you.",
+  "A fresh coffee and an old grudge against unfinished tasks. Perfect fuel.",
+  "Somewhere down the line, someone benefits from you doing this right today.",
+  "Talent whispers. Consistency shouts.",
+  "Nothing gets built by accident. Good thing you're on purpose.",
+  "You brought your A-game and a spare pen. Unstoppable.",
+  "Trust the process \u2014 you built the process.",
+  "Either you run the day or the day runs you. \u2014 Jim Rohn.",
+  "Today's difficulty setting: adjustable. You hold the knob.",
+  "The day started without your permission. Correct that.",
+  "Keep the promises you made to yourself last night.",
+  "The work you avoid grows. The work you face shrinks.",
+  "That first task never sees you coming.",
+  "Whatever's on the schedule, it's had this coming.",
+  "An honest morning forgives almost anything the afternoon does.",
+  "Ten years from now, you'll wish you'd started today. You just did.",
+  "You bring order to chaos for a living. Chaos hates that.",
+  "Good morning to everyone except unfinished paperwork.",
+  "Be where your boots are.",
+  "Motivation gets you going. Habit gets you there.",
+  "Today's motto: fewer trips back to the truck.",
+  "The team group chat is quiet. Too quiet. Work anyway.",
+  "Today's work is tomorrow's foundation. Pour it well.",
+  "Do what you can, with what you have, where you are. \u2014 Roosevelt.",
+  "The morning fog will burn off. Your focus won't.",
+  "Shoes on, game face optional but recommended.",
+  "The best crews are built from people who just keep showing up. Exhibit A: you.",
+  "Standards are personal weather. Bring your own climate.",
+  "If it was easy, they wouldn't have called you.",
+  "Every big accomplishment starts as a to-do item. Go collect some.",
+  "Let the small wins count today. They're the ones that add up.",
+  "Be so reliable it's boring. Boring is a superpower.",
+  "Reminder: you're the person other people call when it breaks.",
+  "Your reputation arrived five minutes before you. It said good things.",
+  "You carry more than tools to this site. Steadiness. Humour. Standards.",
+  "Success is the sum of small efforts, repeated day in and day out.",
+  "Site inspection of your own attitude: passed.",
+  "Today is 90% showing up and 10% snacks. You're fully equipped.",
+  "What you do today outlasts today.",
+  "Your effort is the one thing entirely yours today. Spend it proudly.",
+  "Fortune favours whoever loaded the truck last night.",
+  "The clock said 'go' and honestly, who are we to argue.",
+  "No shortcuts, no drama, no problem.",
+  "The difference between ordinary and extraordinary is that little extra.",
+  "Quality can't be rushed, but it can start on time. Look at that \u2014 it did.",
+  "Fuelled by coffee, guided by the list, feared by the backlog.",
+  "The day doesn't need you to be perfect. It needs you present. Done.",
+  "Begin, and the mind grows heated. Begin, and the task is completed.",
+  "Today's agenda: make it look easy, know it wasn't.",
+  "It's a beautiful day to cross things off.",
+  "Some jobs pay in money, some in pride. Today pays both.",
+  "Luck is what happens when preparation meets opportunity. \u2014 Seneca.",
+  "Overthinking is cancelled until further notice.",
+  "The workday blinked first. It always does.",
+  "Kindness on a crew is a power tool. Bring yours.",
+  "Make the next hour undeniable.",
+  "The clock is now your witness. Make it a good story.",
+  "Confidence is quiet. So is the office before you get there. Coincidence?",
+  "You've weathered worse mornings than this one, and built things anyway.",
+  "No one is coming to do your reps for you. Good \u2014 they're yours.",
+  "Your competition is still hitting snooze. Not that it was close.",
+  "You're the kind of dependable that doesn't need a slogan. Here's one anyway: go.",
+  "Keep it simple: good work, good word, good day.",
+  "When you feel like quitting, remember why you started.",
+  "Measure twice, cut once, clock in first.",
+  "Today's tasks were assigned to the right person. That's you. It says so right here.",
+  "The quiet satisfaction of a job started right \u2014 that's yours in about an hour.",
+  "Diligence is the mother of good fortune. \u2014 Cervantes.",
+  "There's no traffic on the extra mile. Roads are clear.",
+  "Deep breath. Big list. Bigger you.",
+  "Grit isn't glamorous. It's just you, again, on time, again.",
+  "The person who moves a mountain begins by carrying small stones. \u2014 Confucius.",
+  "This day has your name on the work order.",
+  "The phone will ring. The doors will open. You'll be great at both.",
+  "Leave every site better than you found it. Starting with your own head.",
+  "Act as if what you do makes a difference. It does. \u2014 William James.",
+  "First one to the problem wins. You're already moving.",
+  "Grab the day by the handle. It has a handle. It's the coffee mug.",
+  "Your word is worth more than the invoice. Protect both.",
+  "Winter asks what summer did. Answer well.",
+  "The work doesn't care what day of the week it is. Neither do you. Respect.",
+  "Nothing builds character like a Tuesday. Or whatever today is.",
+  "It's the tending that makes it yours \u2014 the land, the trade, the day.",
+  "Every champion was once a contender who refused to give up.",
+  "Focus is your superpower. Cape optional. Safety glasses mandatory.",
+  "Your work ethic entered the building three steps ahead of you.",
+  "Nothing about today is ordinary to the people you're doing it for.",
+  "Sweat in practice so you don't bleed in battle. Today is practice and battle.",
+  "A good day starts with a bad joke and a full thermos. One down.",
+  "The supply run, the school run, the payroll run \u2014 somebody runs it all. Hi, somebody.",
+  "Work like someone's watching. Rest like no one is.",
+  "You can't build a reputation on what you're going to do. \u2014 Henry Ford.",
+  "Whatever the day throws, you've caught heavier.",
+  "Warm vehicle, cold morning, warm heart, cold coffee already? Classic.",
+  "There is a version of tonight where you're proud of today. Aim there.",
+  "It always seems impossible until it's done. \u2014 Mandela.",
+  "The best part of clocking in: everything after.",
+  "The day is fully charged. So is your phone. Rare double.",
+  "The craft chose you back. Mornings like this are why.",
+  "Push yourself, because no one else is going to do it for you.",
+  "It's a great day to be the dependable one.",
+  "Big plans, small steps, steady coffee.",
+  "Steady beats speedy over any distance that matters.",
+  "Quality means doing it right when no one is looking. \u2014 Henry Ford.",
+  "Skill: loaded. Patience: charging. Coffee: assisting.",
+  "You're not late. Everyone else is early. Anyway \u2014 go.",
+  "Warm up the hands, quiet down the worries, and begin.",
+  "The secret of getting ahead is getting started. \u2014 Twain.",
+  "Punch in like you mean it. Oh \u2014 you just did.",
+  "The break room fridge holds your reward. Guard it with your morning.",
+  "You know the difference between done and done right. It's why you're here.",
+  "Effort is a full-time job with lifetime benefits.",
+  "The universe rewards momentum. So does payday.",
+  "Whatever went sideways yesterday is officially yesterday's problem.",
+  "Every morning is a small vote for the person you're becoming.",
+  "Don't wish it were easier. Wish you were better. \u2014 Jim Rohn. Then get better.",
+  "Big things have small beginnings. This clock-in, for instance.",
+  "The to-do list is long but your attention span is longer. Today, anyway.",
+  "Hold the standard, share the credit, eat the big lunch.",
+  "A year from now you may wish you had started today. \u2014 Karen Lamb.",
+  "Quietly competent is still competent.",
+  "Roll up the sleeves. Both of them. It's a two-sleeve day.",
+  "Let today be simple: show up, do good, go home.",
+  "Energy and persistence conquer all things. \u2014 Franklin.",
+  "You've officially out-morninged the morning.",
+  "May the wifi be strong and the interruptions be few.",
+  "The world runs on people nobody claps for. Consider this your applause.",
+  "Your ceiling is set by your daily floor. Raise the floor.",
+  "Someone has to be great at this today. Might as well be you.",
+  "Fun fact: you're most people's 'reliable one.' No pressure. Some pressure.",
+  "Honest work has a way of sorting out a cluttered mind.",
+  "Hard work beats talent when talent doesn't work hard.",
+  "Today runs on decisions, not moods. You've made the first good one.",
+  "The calendar says busy. Your face says bring it.",
+  "Your best is a moving target. Chase it kindly.",
+  "There are no traffic jams along the extra mile. \u2014 Roger Staubach.",
+  "The hardest part of the day is now behind you. Probably.",
+  "One eyebrow raised at the workload. It backed down immediately.",
+  "Roots first, then branches. Mornings first, then everything.",
+  "Do it with passion or not at all \u2014 and you showed up, so: passion.",
+  "Talent sometimes shows up late. Reliability just clocked in.",
+  "Today's forecast: brief showers of chaos, clearing by coffee number two.",
+  "May the day meet you halfway, and may you carry it the rest.",
+  "Believe you can and you're halfway there. \u2014 Roosevelt.",
+  "Do it right, do it once, be home for supper.",
+  "Start the day like you park the truck: confidently, mostly straight.",
+  "The good ones make it look boring. Be gloriously boring today.",
+  "Every morning you get to choose your reputation again.",
+  "The day is officially under new management.",
+  "The early hours are undefeated. Join the winning team.",
+  "You're not just filling hours. You're building something with your name on it.",
+  "The trees that are slow to grow bear the best fruit. \u2014 Moli\u00e8re.",
+  "Precision is a love language. Speak it fluently today.",
+  "There's a checkmark out there with your name on it. Several, actually.",
+  "A calm start is a competitive advantage.",
+  "Dreams don't work unless you do. \u2014 John C. Maxwell.",
+  "Somewhere, an inspector smiles and doesn't know why.",
+  "Clock in, cape off. Heroes here work in regular clothes.",
+  "Somebody taught you how to do this work. Honour them by starting well.",
+  "Champions keep playing until they get it right. \u2014 Billie Jean King.",
+  "The job list flinched.",
+  "The office plant believes in you. It told me.",
+  "The work never quite ends, but neither does the satisfaction. Fair trade.",
+  "Do today what others won't, so tomorrow you can do what others can't.",
+  "You, a plan, and daylight. Hardly a fair fight.",
+  "Quietly excellent is still excellent. Loudly is also available.",
+  "Look after the work and the work looks after you.",
+  "The harder you work, the luckier you get. \u2014 Gary Player.",
+  "May your morning run smooth and your knots come loose easy.",
+  "Your keys, your coffee, your moment.",
+  "You get to do this. Rain, shine, or chinook \u2014 you get to.",
+  "Excellence is never an accident. \u2014 Aristotle.",
+  "Every legend's origin story starts on an ordinary morning. Like this one.",
+  "Two kinds of people: those who dread the list and those who ARE the list. Morning, list.",
+  "Today has room in it for one small act of excellence. Minimum.",
+  "Fall seven times, stand up eight.",
+  "The workday just got outnumbered.",
+  "Success is 1% inspiration, 99% just answering the phone politely.",
+  "Keep your head where your hands are and the day goes easy.",
+  "You will never always be motivated. Learn to be disciplined.",
+  "Steady hands, steady pace, steady paycheque.",
+  "The workday auditioned several people. You got the part.",
+  "Real wealth: skills, sunrise, somewhere to be.",
+  "Great work is done by people who are not afraid to be great.",
+  "Consider the day warned.",
+  "Every legend clocked in this morning. See? You're right on schedule.",
+  "The measure of the day isn't speed. It's what's still standing in ten years.",
+  "Chop your own wood and it will warm you twice. \u2014 Henry Ford.",
+  "Start strong. Coast never.",
+  "May the customers be kind and the surprises be small.",
+  "Begin like a professional. Continue like a neighbour.",
+  "Perfection is not attainable, but if we chase it we catch excellence. \u2014 Lombardi.",
+  "The difference between a rough day and a good story is about twelve hours. Begin.",
+  "You beat the alarm. The alarm is rethinking its career.",
+  "You've started a thousand days like this. The streak continues.",
+  "Someday is not a day of the week.",
+  "Buildings don't wire themselves. Paperwork doesn't file itself. Hence: you.",
+  "It's giving 'productive.' It's giving 'on time.' It's giving you.",
+  "Let the first hour be your best hour, and dare the rest to keep up.",
+  "Success doesn't come to you. You go to it.",
+  "Someone's got to keep the standards up around here. Tag \u2014 you're it.",
+  "The day ordered a professional. You're the delivery.",
+  "Some people find their church in a building. Yours might have a tin roof.",
+  "Strength doesn't come from what you can do. It comes from overcoming what you couldn't.",
+  "A checklist walks into a bar. You close out its tab by noon.",
+  "Paperwork, fieldwork, teamwork \u2014 all work, all yours, all handled.",
+  "Take care of the morning and the afternoon takes care of itself.",
+  "What we do now echoes for a long time. Make good echoes.",
+  "Batteries charged. Yours and the drill's.",
+  "A little chaos keeps the job interesting. A little you keeps it running.",
+  "It all counts. Every hour. Every connection. Every clean panel.",
+  "An investment in effort pays the best interest.",
+  "The forecast said wind. It always says wind. Onward.",
+  "The doughnut run is a sacred duty. So is everything after it.",
+  "There's no app for what you do. That's the point.",
+  "The future depends on what you do today. \u2014 Gandhi.",
+  "Rumour has it you're good at this. Confirm it.",
+  "Headphones in or radio on \u2014 either way, the montage has begun.",
+  "Quality is just love made visible. Go be visible.",
+  "Be stronger than your strongest excuse.",
+  "Zero-excuse mornings are undefeated.",
+  "Today will be a story someday. Give it a good plot.",
+  "Your patience is a tool. Keep it sharp today.",
+  "First we make our habits, then our habits make us.",
+  "You know exactly what to do first. That's rarer than you think.",
+  "You make this look easy. It isn't. That's the point.",
+  "One day, this becomes 'remember when.' Make it worth remembering.",
+  "Doubt kills more dreams than failure ever will.",
+  "Let the record show: on time, on task, on purpose.",
+  "Go get 'em. All of 'em. In a reasonable order."
+];
+function pickClockin(){
+  let hist=[]; try{ hist=JSON.parse(localStorage.getItem('ciHist')||'[]'); }catch(e){}
+  const lastMood = hist.length ? hist[hist.length-1] % 4 : -1; // arrays are mood-interleaved (index%4)
+  let idx, tries=0;
+  do { idx=Math.floor(Math.random()*CLOCKINS.length); tries++; }
+  while ((hist.includes(idx) || idx % 4 === lastMood) && tries<80); // new message AND new mood each time
+  hist.push(idx); if (hist.length>20) hist=hist.slice(-20);
+  try{ localStorage.setItem('ciHist', JSON.stringify(hist)); }catch(e){}
+  return CLOCKINS[idx];
+}
+function showClockinMsg(){
+  sheet(`<div class="center" onclick="closeSheet()">
+    <div style="font-size:2.2rem">👷</div>
+    <p style="font-size:1.15rem;margin:12px 0">${esc(pickClockin())}</p>
+    <p class="small muted">Clocked in ✓</p>
+  </div>`);
+  // Auto-dismiss ONLY if this greeting is still the open sheet — otherwise a fast tap into
+  // "Clock Out?" (or any other sheet) within 3s would get yanked shut by this timer.
+  const mySheet = S._sheet;
+  setTimeout(()=>{ if (S._sheet===mySheet) closeSheet(); }, 3000);
+}
+
+/* ============================================================================
+ * STATE
+ * ==========================================================================*/
+const S = {
+  idToken: null,
+  me: null,            // {email,name,role,permissions,hourlyRate,picture}
+  companies: [],
+  config: {},
+  entries: [],
+  openEntry: null,     // live open entry (running clock)
+  employees: [],
+  pending: [],
+  tab: 'clock',
+  online: navigator.onLine,
+  booted: false,
+  mutSeq: 0,   // bumped on every optimistic local change — see refresh() staleness guard
+  scanWaiting: 0, // queued receipt/estimate scans waiting for a person's OK (home-screen banner)
+};
+
+/* ============================================================================
+ * OFFLINE QUEUE (IndexedDB)
+ * ==========================================================================*/
+const DB = (() => {
+  let dbp = null;
+  function open(){
+    if (dbp) return dbp;
+    dbp = new Promise((res, rej) => {
+      const r = indexedDB.open('pcw-timesheet', 1);
+      r.onupgradeneeded = () => {
+        const db = r.result;
+        if (!db.objectStoreNames.contains('queue')) db.createObjectStore('queue', {keyPath:'qid'});
+        if (!db.objectStoreNames.contains('cache')) db.createObjectStore('cache', {keyPath:'k'});
+      };
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    return dbp;
+  }
+  async function tx(store, mode){ const db = await open(); return db.transaction(store, mode).objectStore(store); }
+  return {
+    async enqueue(item){ const s = await tx('queue','readwrite'); return new Promise((res,rej)=>{ const r=s.put(item); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error);}); },
+    async all(){ const s = await tx('queue','readonly'); return new Promise((res,rej)=>{ const r=s.getAll(); r.onsuccess=()=>res(r.result||[]); r.onerror=()=>rej(r.error);}); },
+    async get(qid){ const s = await tx('queue','readonly'); return new Promise((res,rej)=>{ const r=s.get(qid); r.onsuccess=()=>res(r.result||null); r.onerror=()=>rej(r.error);}); },
+    async del(qid){ const s = await tx('queue','readwrite'); return new Promise((res,rej)=>{ const r=s.delete(qid); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error);}); },
+    async setCache(k,v){ const s=await tx('cache','readwrite'); return new Promise((res)=>{ s.put({k,v}).onsuccess=()=>res(); }); },
+    async getCache(k){ const s=await tx('cache','readonly'); return new Promise((res)=>{ const r=s.get(k); r.onsuccess=()=>res(r.result?r.result.v:null); r.onerror=()=>res(null); }); },
+  };
+})();
+
+/* v72 — KEEPING THE SESSION.
+   The session token lives in IndexedDB because the service worker reads it from there to deliver
+   punches while the app is shut. IndexedDB is also the first thing a browser throws away: iOS
+   clears it after seven unused days, and Android evicts it when the phone runs short of space.
+   That is what happened to Paul on 2026-10-13. His session had twenty-seven days left to run on
+   the server, but the phone no longer had the token, so the app had nothing to send and dropped
+   him back to the Google sign-in screen - which then would not cooperate.
+
+   So the token is written twice: IndexedDB for the service worker, localStorage as the copy that
+   outlives eviction. Whichever survives puts the other one back. Both are wrapped, because a
+   private window and blocked site data both make these throw rather than return empty. */
+const SESS_LS_KEY = 'pcwSession';
+async function saveSession_(sess){
+  try { await DB.setCache('session', sess); } catch(e){}
+  try {
+    if (sess) localStorage.setItem(SESS_LS_KEY, JSON.stringify(sess));
+    else localStorage.removeItem(SESS_LS_KEY);
+  } catch(e){}
+}
+async function loadSession_(){
+  let idb=null, ls=null;
+  try { idb = await DB.getCache('session'); } catch(e){}
+  try { const raw = localStorage.getItem(SESS_LS_KEY); if (raw) ls = JSON.parse(raw); } catch(e){}
+  const live = s => s && s.token && Date.now() < s.exp - 60000;
+  // Whichever copy is still good wins, and it repairs the other on the way past. The service
+  // worker can only read IndexedDB, so putting it back there is what keeps offline punches working.
+  if (live(idb) && !live(ls)) { try{ localStorage.setItem(SESS_LS_KEY, JSON.stringify(idb)); }catch(e){} return idb; }
+  if (live(ls) && !live(idb)) { try{ await DB.setCache('session', ls); }catch(e){} return ls; }
+  return live(idb) ? idb : (live(ls) ? ls : null);
+}
+/* Ask the browser to stop evicting us. An installed PWA is usually granted this; a tab usually
+   is not, and being refused costs nothing. */
+async function keepStorage_(){
+  try {
+    if (navigator.storage && navigator.storage.persist) {
+      if (!(await navigator.storage.persisted())) await navigator.storage.persist();
+    }
+  } catch(e){}
+}
+
+/* ============================================================================
+ * API — POST to Apps Script with text/plain to avoid CORS preflight.
+ * ==========================================================================*/
+/* Slow-tap protection (Charles): if a tap's server call takes >0.7s, show a calm notice so
+   nobody taps twice. Background refreshes pass {bg:true} and never trigger it. */
+/* v34 — the hourglass outlived the work it was covering. Three separate faults, each of
+   which could leave it parked on a screen that had already finished loading:
+
+   (1) THE COUNTER DRIFTED, BOTH WAYS. _slowN was a bare number and busyEnd() blindly
+       decremented it. One extra end (a retry path, a double-settled promise) drove it to 0
+       while a call was still running, so the hourglass vanished early; one missed end left
+       it pinned above 0 forever, so the hourglass never came down at all. Math.max(0,…)
+       hid the first case instead of preventing it. It is now a Set of per-call tokens:
+       an end can only remove its OWN token, so neither direction can drift.
+
+   (2) THE TIMER WAS NEVER NULLED WHEN IT FIRED. _slowTimer kept the dead timer id after
+       firing, so the `if(!_slowTimer)` guard in busyStart() blocked it from re-arming on
+       the next tap — the guard meant to prevent duplicate timers prevented ALL of them.
+
+   (3) NOTHING CAPPED ITS LIFETIME. fetch had no timeout, so a request that never settled
+       (rural LTE dropping mid-call) meant the `finally` never ran and the overlay stayed
+       until the app was force-closed. There is now a hard fetch timeout in apiRaw_ AND a
+       watchdog here — two independent nets, so a stuck hourglass cannot survive either.
+
+   Behaviour is deliberately unchanged: same 0.7s delay, same centred icon. Only the
+   sticking is fixed. */
+let _slowLive = new Set(), _slowTimer = null, _slowDog = null, _slowSeq = 0;
+const SLOW_DELAY = 700;    // a call must run this long before the hourglass appears
+const SLOW_MAX   = 35000;  // and it can never stay up longer than this, whatever happens
+const API_TIMEOUT = 30000; // a server call that hasn't answered by now is dead — abort it
+                           // (kept UNDER SLOW_MAX so the clean path always wins the race)
+function busyShow(){ if(document.getElementById('busyNote')) return;
+  // Centred on screen, icon only — a banner at the top read as an error to the crew (item 6).
+  const el=document.createElement('div'); el.id='busyNote';
+  el.style.cssText='position:fixed;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;pointer-events:none';
+  el.innerHTML='<div style="background:rgba(31,56,100,.92);border-radius:22px;width:84px;height:84px;display:flex;align-items:center;justify-content:center;box-shadow:0 10px 30px rgba(31,56,100,.4)"><span class="hourglass" style="font-size:2.4rem;line-height:1">⏳</span></div>';
+  document.body.appendChild(el);
+  // Last-resort net. The fetch timeout should always win first; if this ever fires, a call
+  // leaked a token, so say so in the console rather than papering over it silently.
+  clearTimeout(_slowDog);
+  _slowDog = setTimeout(()=>{ console.warn('[busy] watchdog cleared a stuck hourglass —', _slowLive.size, 'call(s) never reported back'); busyReset(); }, SLOW_MAX); }
+function busyHide(){ const el=document.getElementById('busyNote'); if(el) el.remove();
+  clearTimeout(_slowDog); _slowDog=null; }
+/* Force it down and forget every in-flight token. Hiding the overlay never cancels the
+   work — it only stops blocking a screen the user can already use. */
+function busyReset(){ _slowLive.clear(); if(_slowTimer){clearTimeout(_slowTimer);_slowTimer=null;} busyHide(); }
+function busyStart(){ const id = ++_slowSeq; _slowLive.add(id);
+  if(!_slowTimer) _slowTimer = setTimeout(()=>{ _slowTimer=null; if(_slowLive.size) busyShow(); }, SLOW_DELAY);
+  return id; }
+function busyEnd(id){ if(id!=null) _slowLive.delete(id);
+  if(!_slowLive.size){ if(_slowTimer){clearTimeout(_slowTimer);_slowTimer=null;} busyHide(); } }
+async function api(action, payload, opts){
+  const bg = opts && opts.bg;
+  const id = bg ? null : busyStart();   // the token this call must hand back
+  try{ return await apiRaw_(action, payload, opts && opts.timeout); }
+  finally{ if(!bg) busyEnd(id); }
+}
+function apiBg(action, payload){ return api(action, payload, {bg:true}); } // background refreshes — silent
+/* v42 — WHY A PUNCH IS LOST, AND THE ONE RULE THAT STOPS IT.
+ *
+ * apiMutate keeps a punch queued for retry only if it decides the failure was recoverable —
+ * and until v42 it decided that by matching the error TEXT against a list of Chrome's
+ * wordings ("Failed to fetch", "NetworkError"…). Everything else was treated as "the server
+ * rejected this punch" and the write-ahead copy was DELETED. That list did not contain:
+ *   • the app's own 30-second timeout ("No answer from the server…", added Sep 11 — since
+ *     then every clock-out that waited more than 30 s on weak signal has been thrown away);
+ *   • WebKit's wording for the same thing on an iPhone ("Load failed");
+ *   • the backend's transient errors ("Lock timeout: another process was holding the lock"
+ *     — the old backend held the lock for the whole 10-20 s AI read of a scanned PO).
+ * Meanwhile the ✅ "Clocked out — 6.2 hrs" card was already on screen, so the person had no
+ * way to know. Paul's tab shows nine shifts closed the next morning by hand; Elijah's Sep 5
+ * clock-out (same site, same minute as Paul's) is still open.
+ *
+ * The rule now: a punch is dropped ONLY when the server itself answered "no" to it
+ * (kind 'server'). A request that never got a readable answer — network, timeout, a Google
+ * error page, an expired session, a busy backend — is kind 'network'/'auth'/'transient' and
+ * STAYS QUEUED until it lands or the server refuses it. The backend is idempotent on the
+ * tap time (v30), so a retry of a punch that did land is answered as a duplicate, never as
+ * a second entry. */
+function apiErr_(msg, kind){ const e=new Error(msg); e.kind=kind; return e; }
+// Backend answers that mean "try again in a moment", not "no".
+const TRANSIENT_SERVER = /Lock timeout|acquire lock|Too many requests|Service invoked too many times|busy right now|Rate Limit|temporarily unavailable|timed out|deadline/i;
+function retryable_(e){
+  return !!e && (e.kind==='network' || e.kind==='auth' || e.kind==='transient' ||
+    /Failed to fetch|NetworkError|Load failed|network connection was lost|Session expired|sign-in token|signed in|audience mismatch|busy right now/i.test(e.message||''));
+}
+async function apiRaw_(action, payload, timeoutMs){
+  // 24h session token (issued by the backend at login) — Google's own ID tokens die after
+  // ~1h, which used to strand people mid-shift.
+  if (!S.session){
+    try{ google.accounts.id.prompt(); }catch(e){}
+    throw apiErr_('Please sign in.', 'auth');
+  }
+  // NOTE: no local expiry check — sessions renew themselves server-side on every use
+  // (30-day rolling), and only a real server rejection means signing in again.
+  const t0 = performance.now();
+  // HARD TIMEOUT (v34). fetch has no default one: a request that dies on the way out — the
+  // phone losing LTE between towers is the usual way — never settles, never rejects, and
+  // never runs its finally. That is what stranded the hourglass on a loaded screen. 30s is
+  // far past any real call (they run 4-6s) so this only ever catches a dead one. Punches are
+  // safe: apiMutate write-aheads to IndexedDB before the network attempt, so an aborted
+  // request is replayed by flushQueue rather than lost.
+  const ctl = new AbortController();
+  const killer = setTimeout(()=>ctl.abort(), timeoutMs || API_TIMEOUT);
+  const body = JSON.stringify({ sessionToken:S.session.token, action, payload: payload||{} });
+  let res;
+  try {
+    res = await fetch(CONFIG.APPS_SCRIPT_URL, {
+      method:'POST',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body,
+      signal: ctl.signal,
+      // v43 — keepalive: a punch request outlives the page. Tap Submit, pocket the phone, and
+      // the browser still finishes sending it (the answer is lost, but the write-ahead copy is
+      // then replayed and answered as a duplicate). Small bodies only — the browser caps
+      // keepalive at 64 KB, and a receipt scan is far bigger than that.
+      keepalive: PUNCH.test(action) && body.length < 60000,
+    });
+  } catch(e){
+    // Nothing came back. Whatever the browser calls it, this is a transport failure, never a
+    // rejection — the request may or may not have run, and the backend dedupes a replay.
+    if (e && e.name === 'AbortError') throw apiErr_('No answer from the office in 30 seconds. Usually it is the Google script being slow to wake up, not your signal — try once more.', 'network');
+    throw apiErr_((e && e.message) ? 'Network error — ' + e.message : 'Network error', 'network');
+  } finally { clearTimeout(killer); }
+  let json;
+  try { json = await res.json(); }
+  catch(e){ throw apiErr_('Google is busy right now — trying again shortly.', 'network'); } // HTML error page, not JSON
+  // Profiling: total = network + server; `ms` is server-side time reported by the backend.
+  console.debug(`[api] ${action}: ${Math.round(performance.now()-t0)}ms total (server ${json.ms??'?'}ms)`);
+  if (!json.ok){
+    const msg = json.error || 'Request failed';
+    if (/Session expired/i.test(msg)){
+      S.session=null; DB.setCache('session', null);
+      try{ google.accounts.id.prompt(); }catch(e){} // silent re-auth in most cases
+      throw apiErr_(msg, 'auth');
+    }
+    if (TRANSIENT_SERVER.test(msg)) throw apiErr_(msg, 'transient'); // the backend was busy, not wrong
+    throw apiErr_(msg, 'server');                                   // a real "no" — the only kind we act on
+  }
+  return json.data;
+}
+
+/* Queue a mutating action when offline; returns {queued:true} or the server result.
+   Entry-state mutations are counted while in flight so refresh() never applies a bootstrap
+   snapshot that was read from the sheet BEFORE the mutation's write landed (the flicker bug:
+   optimistic "Clock Out" state briefly overwritten by a pre-write snapshot). */
+let mutsInFlight = 0;
+let btnBusyN = 0;   // v75 - real punches only (see BTN_PUNCH)
+/* True while a punch is still being delivered. The big Clock In / Clock Out button reads this
+   and disables itself, so the eleven-second double punch cannot happen even on a dead network. */
+function punchBusy(){ return btnBusyN > 0; }
+let inflightQids = new Set(); // queued copies currently being delivered — flushQueue must skip them
+let tempIdMap = {};           // tmp_ id -> real EntryID, learned from punch responses/replays
+/* v42 — the map survives a restart. It used to live only in memory, so an app killed between a
+   clock-in landing and its clock-out being replayed forgot which real entry the tmp_ id meant. */
+function rememberId_(tmp, real){ if(!tmp||!real||tempIdMap[tmp]===real) return; tempIdMap[tmp]=real; DB.setCache('tempIdMap', tempIdMap).catch(()=>{}); }
+/* v73 — what gets WRITE-AHEAD persistence: saved to this phone BEFORE the network is tried, so
+   the app being killed mid-request cannot lose it.
+   Two of the names on this list had stopped existing. It read `useMaterial|returnMaterial`, and
+   neither is an action any more — the live ones are `takeMaterial` and `logMaterials`. So the
+   materials typed into the clock-out review were the one thing on that screen with NO write-ahead
+   protection, while the hours they belong to had it. A phone pocketed mid clock-out kept the hours
+   and silently dropped the parts, which under-bills the job and nobody ever finds out. */
+const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry|addManualEntry|takeMaterial|logMaterials|fixForgotClockout)$/;
+/* Actions that APPEND rather than overwrite, so sending one twice is not harmless: a repeat puts
+   a second set of material lines on the job and takes the shelf down again. Write-ahead makes a
+   repeat possible (an action whose answer was lost is sent again on the next open), so each of
+   these carries a submission id and the script remembers the first one for six hours. */
+const GUARDED = /^(takeMaterial|logMaterials|addManualEntry)$/;
+/* v75 - fixForgotClockout joins this list: it is queued, counted on the banner, listed under
+   "not at the office yet" and kept alive past the page, exactly like a punch. It is NOT in
+   BTN_PUNCH below, because the big Clock In button must not sit disabled waiting for it - the
+   whole point of queueing the fix is that nobody waits for the network to clock in again. */
+const PUNCH = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|fixForgotClockout)$/; // what the home-screen banner counts
+const BTN_PUNCH = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak)$/; // what disables the big button
+/* v43 — a punch that has waited on the phone this long is "stuck": the banner turns red, and
+   the office is told as soon as it can be reached (stuckReport_), so an admin hears about a
+   day-old clock-out from the phone's side too, not only from the office's 24 h sweep. */
+const STUCK_HOURS = 24;
+function punchAge_(it){ return Date.now() - (Number(it && it.ts) || Date.now()); }
+function isStuck_(it){ return punchAge_(it) >= STUCK_HOURS*3600000; }
+function fmtAge_(ms){
+  const m=Math.max(0,Math.round(ms/60000));
+  if (m<1) return 'just now';
+  if (m<60) return m+' min';
+  const h=Math.floor(m/60), d=Math.floor(h/24);
+  if (d>=1) return d+(d===1?' day ':' days ')+(h%24)+' h';
+  return h+' h '+(m%60)+' min';
+}
+/* Queue bookkeeping for the screen: how many punches are waiting, plus any that the server
+   refused (kept in the 'syncLog' cache until the person has seen them). */
+async function queueCount_(){
+  try{
+    const items = await DB.all();
+    const punches = items.filter(it=>PUNCH.test(it.action));
+    const n = punches.length, stuck = punches.filter(isStuck_).length;
+    const refused = ((await DB.getCache('syncLog'))||[]).length;
+    // render() leaves an open sheet alone (it lives outside #app), so the banner is already
+    // there when the card is dismissed.
+    if (n!==(S.queued||0) || refused!==(S.refused||0) || stuck!==(S.stuck||0)){ S.queued=n; S.refused=refused; S.stuck=stuck; if(S.booted && S.session) render(); }
+  }catch(e){}
+}
+async function syncLogAdd_(entry){ try{ const l=((await DB.getCache('syncLog'))||[]).slice(-9); l.push(entry); await DB.setCache('syncLog', l); }catch(e){} queueCount_(); }
+/* v38 — the hourglass no longer sits on top of work that is already done.
+ *
+ * Every call below goes through apiMutate, and every one of them updates the screen FIRST and
+ * talks to the server after: doClockIn paints the running clock at the tap, doSwitchSite closes
+ * the old segment at the tap, the break buttons flip at the tap. The Apps Script round trip then
+ * takes 4-6 seconds. With a 0.7s threshold that meant the overlay appeared AFTER the button had
+ * already changed and stayed for another four seconds — so the app looked stuck at the exact
+ * moment it had finished.
+ *
+ * That is not cosmetic. On 2026-09-10 Paul clocked out and clocked back in eleven seconds later
+ * on the same job, and stayed clocked in for four days. A person who cannot tell whether the tap
+ * registered taps again.
+ *
+ * So: a mutation is silent (bg), because the screen IS the feedback. The overlay is kept for the
+ * calls where the user is genuinely staring at an unchanged screen waiting for data. Double-tap
+ * protection moves to where it belongs — the button disables itself while the punch is in
+ * flight (see punchBusy()).
+ */
+async function apiMutate(action, payload, optimistic){
+  // If we've since learned the real id for a tmp_ entry, swap it in before sending.
+  if (payload && typeof payload.entryId==='string' && tempIdMap[payload.entryId])
+    payload = { ...payload, entryId: tempIdMap[payload.entryId] };
+  // An action referencing a STILL-UNSYNCED tmp_ entry can't be sent directly — the server
+  // doesn't know that id yet ("Entry not found" = the dead GNG clock-out). Queue it instead;
+  // flushQueue delivers in order (the pending clock-in first) and remaps the id.
+  const tempRef = payload && typeof payload.entryId==='string' && payload.entryId.indexOf('tmp_')===0;
+  const tracked = MUTATING.test(action);
+  // Stamped once, here, BEFORE the queued copy is made — so a replay carries the same id and the
+  // script recognises it as the same submission rather than a new one.
+  if (GUARDED.test(action) && !(payload && payload.subId))
+    payload = { ...payload, subId: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2,8) };
+  /* v75 - ORDER MATTERS, EVEN ONLINE. A clock-in sent while the clock-out (or the forgotten
+     clock-out fix) that closes the previous shift is still sitting in the queue gets refused:
+     "You already have an open entry", because the shift it closes has not reached the sheet
+     yet. So it waits in the queue behind it instead - flushQueue delivers in tap order and the
+     chain resolves itself. Without this, closing yesterday's shift and clocking in for today
+     on a bad connection ends with the clock-in thrown away. */
+  let mustFollow = false;
+  if (/^(clockIn|switchJobSite)$/.test(action)){
+    try { mustFollow = (await DB.all()).some(x => /^(clockOut|fixForgotClockout)$/.test(x.action)); } catch(e){}
+  }
+  // Paint the busy state NOW. doClockIn/doSwitchSite render optimistically BEFORE calling this,
+  // so without a second render the big button never learns a punch is in flight — and the big
+  // button is the one that has to refuse a second tap, because it sits in the same place and
+  // only changes its label. That is how a Clock Out tap became a Clock In tap eleven seconds
+  // later on 2026-09-10.
+  if (tracked){ mutsInFlight++; if (BTN_PUNCH.test(action)) btnBusyN++; if (S.tab==='clock' && !S._sheet) render(); }
+  const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+  const item = { qid, action, payload, ts: Date.now(), tempId: optimistic && optimistic.tempId };
+  let stored = false; // did the write-ahead copy make it into IndexedDB?
+  try {
+    // WRITE-AHEAD for punches: persist to the queue BEFORE the network attempt. Each round
+    // trip takes 4-6s — if the app is closed in that window (phone pocketed right after the
+    // tap) the request dies, and without this the punch would silently vanish. On next open
+    // flushQueue replays it, and the `at` timestamp keeps the recorded time correct.
+    if (tracked){
+      inflightQids.add(qid);
+      try { await DB.enqueue(item); stored = true; }
+      catch(e){ console.warn('write-ahead failed', e); } // storage trouble must not block the punch itself
+      queueCount_();
+    }
+    if (S.online && !tempRef && !mustFollow){
+      try {
+        const data = await api(action, payload, { bg: true }); // silent: the UI already moved
+        if (stored) await DB.del(qid); // delivered — clear the write-ahead copy
+        return data;
+      } catch(e){
+        // v42 — ONLY a rejection by the server drops the punch. Every other failure (no
+        // answer, timeout, error page, expired session, busy backend) keeps the write-ahead
+        // copy queued for flushQueue. See the note above apiRaw_.
+        if (!retryable_(e)){
+          if (stored) await DB.del(qid); // server REJECTED it — a bad punch must not replay forever
+          throw e;
         }
-        return resp;
-      }).catch(() => null);
-      // Serve the cached copy instantly; fall back to the network (then the shell) when new.
-      return cached || net.then((r) => r || caches.match('./index.html'));
-    })
-  );
-});
+        if (tracked && !stored){ e.notQueued = true; throw e; } // nowhere to keep it — say so, loudly
+        /* recoverable — leave the write-ahead copy queued */
+      }
+    }
+    if (!tracked) await DB.enqueue(item); // non-punch actions queue only on network failure
+    if ((tempRef || mustFollow) && S.online) setTimeout(flushQueue, 50); // deliver the chain now, in order
+    if (tracked && stored) registerSync_(); // v43: the browser sends it when there is a connection, app open or not
+    return { queued:true, qid };
+  } finally {
+    // v42: render even under a sheet (sheets live outside #app) — otherwise the big button
+    // could stay "Working…" behind the clock-out card.
+    if (tracked){ mutsInFlight--; if (BTN_PUNCH.test(action)) btnBusyN--; if (!mutsInFlight && S.tab==='clock') render(); }
+    inflightQids.delete(qid);
+    queueCount_();
+  }
+}
 
-/* ---------------------------------------------------------------------------------------------
- * Background delivery of queued punches (v43). Same IndexedDB as the app: database
- * 'pcw-timesheet', store 'queue' (items {qid, action, payload, ts, tempId, …}) and store 'cache'
- * ({k, v}: 'session' = {token}, 'apiUrl' = the office's address, 'tempIdMap' = tmp_ id → real id).
- * v72 — the app now ALSO keeps the session in localStorage, which this worker cannot read. That
- * copy exists only because phones throw IndexedDB away; the app puts it back here on its next
- * open, so 'session' below stays the worker's source of truth and needs no change.
- * ------------------------------------------------------------------------------------------ */
-/* v75 - fixForgotClockout is delivered by this worker too. It was missing, so a forgotten
- * clock-out fixed with no signal (the app queues it now) sat on the phone until the app was
- * next OPENED, while the clock-in taken straight after it was delivered by this worker ahead
- * of it - and refused, because the shift it closes had not landed. */
-const PUNCH = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|fixForgotClockout)$/;
-// The office was busy, not wrong — stop and let the browser retry the whole sync later.
-const TRANSIENT = /Lock timeout|acquire lock|Too many requests|Service invoked too many times|busy right now|Rate Limit|temporarily unavailable|timed out|deadline/i;
-// A replay of a punch that already landed (the app was killed before it heard the answer).
-const DUPLICATE = /Already clocked out|Already on break|Not on break/i;
+let syncing = false;
+/* A tmp_ id is 'tmp_' + Date.now() taken at the tap, and the clock-in's `at` is stamped the
+   same millisecond — so the real entry can be found again by its ClockIn time even after the
+   app forgot the mapping (killed, reinstalled, cache cleared). Looks in what we have, then asks
+   the server once. */
+async function resolveTmp_(tmpId, list){
+  const ms = Number(String(tmpId).slice(4)); if (!ms) return null;
+  const near = (arr) => (arr||[]).find(e => e && e.ClockIn && e.EntryID && String(e.EntryID).indexOf('tmp_')!==0 && Math.abs(new Date(e.ClockIn).getTime()-ms) < 2500);
+  let hit = near(S.entries) || (S.openEntry && near([S.openEntry]));
+  if (!hit && list) hit = near(list);
+  if (!hit && !list){ try { const d = await apiBg('bootstrap'); hit = near(d.entries) || near([d.openEntry]); } catch(e){} }
+  return hit && hit.EntryID && String(hit.EntryID).indexOf('tmp_')!==0 ? hit.EntryID : null;
+}
+/* Update a queued item in place — but only if it is still queued. Between the snapshot a flush
+   works from and this write, the service worker (v43) may have delivered and deleted it; a
+   blind put would bring it back from the dead. (A resurrected punch is only replayed and
+   answered as a duplicate, but the banner would show a phantom "waiting" punch meanwhile.) */
+async function requeue_(it, patch){
+  try { const cur = await DB.get(it.qid); if (cur) await DB.enqueue({ ...cur, ...patch }); } catch(e){}
+}
+function describePunch_(it){
+  const p=it.payload||{}; const when=p.at||new Date(it.ts).toISOString();
+  const what={clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start', endBreak:'break end', fixForgotClockout:'forgotten clock-out fix'}[it.action]||it.action;
+  return what+' '+fmtDay(when)+' '+fmtTime(when)+(p.jobSite?' — '+p.jobSite:'');
+}
+async function flushQueue(){
+  if (syncing || !S.online || !S.session) return 0;
+  syncing = true;
+  let processed = 0; // only pay for a full refresh when something actually synced
+  try {
+    const items = (await DB.all()).sort((a,b)=>a.ts-b.ts);
+    const idMap = {}; // tempId -> real EntryID
+    for (const it of items){
+      if (inflightQids.has(it.qid)) continue; // apiMutate is delivering this one right now
+      const p = { ...it.payload };
+      if (PUNCH.test(it.action)) p.queuedAt = it.ts; // v43: the office sees how long the phone held it (a day or more → LATE email)
+      // remap any temp entryId to the real one (from this flush OR learned earlier)
+      if (p.entryId && (idMap[p.entryId] || tempIdMap[p.entryId]))
+        p.entryId = idMap[p.entryId] || tempIdMap[p.entryId];
+      // STILL-UNRESOLVED tmp reference: its parent clock-in is queued ahead of it or being
+      // delivered by apiMutate right now. Sending it would get "Entry not found" and the
+      // catch below would DROP it (a lost clock-out). Wait for the parent instead.
+      if (typeof p.entryId==='string' && p.entryId.indexOf('tmp_')===0){
+        // v42 — the parent is the clock-in that CREATED this tmp id, never the item itself.
+        // The old test matched a clock-out's own tempId, so a clock-out taken before its
+        // clock-in had synced waited for itself forever — and blocked every refresh meanwhile.
+        const parentPending = items.some(x => x.qid!==it.qid && x.tempId === p.entryId && /^(clockIn|switchJobSite)$/.test(x.action));
+        if (parentPending) continue; // parent will land first — retry on the next flush
+        // Parent gone: either it landed and the mapping was lost, or the server refused it.
+        const real = await resolveTmp_(p.entryId);
+        if (real){ idMap[p.entryId]=real; rememberId_(p.entryId, real); p.entryId = real; }
+        else {
+          console.warn('Dropping orphaned queued action', it.action, p.entryId);
+          await syncLogAdd_({ ts: Date.now(), what: describePunch_(it), why: 'its clock-in never reached the server' });
+          await DB.del(it.qid); processed++; continue;
+        }
+      }
+      try {
+        const data = await api(it.action, p, { bg:true });
+        if (it.tempId && data && data.entry && data.entry.EntryID){
+          idMap[it.tempId] = data.entry.EntryID;
+          rememberId_(it.tempId, data.entry.EntryID); // remember across flush runs AND restarts
+          // A clock-in delivered LATE: repair local state still holding the temp id, so
+          // the running clock and any follow-up actions use the real entry.
+          if (S.openEntry && S.openEntry.EntryID===it.tempId) S.openEntry = data.entry;
+          const ix=(S.entries||[]).findIndex(x=>x.EntryID===it.tempId);
+          if (ix>=0) S.entries[ix] = data.entry;
+        }
+        await DB.del(it.qid); processed++;
+      } catch(e){
+        // No usable answer (network, timeout, error page, session, busy backend): STOP and
+        // retry later — never drop queued work for a recoverable failure.
+        if (retryable_(e)){ await requeue_(it, { lastError: e.message, lastTry: Date.now(), tries: (it.tries||0)+1 }); break; }
+        // "You already have an open entry" on a clock-in replay: is it THIS clock-in, landed
+        // before the app was killed — or a different, older shift still open on the server?
+        // Only a matching ClockIn time makes it the former. (A v30 backend answers a replayed
+        // clock-in with the entry itself, so this branch is for the transition.)
+        if (/already have an open entry/i.test(e.message) && it.tempId){
+          const real = await resolveTmp_(it.tempId);
+          if (real){ idMap[it.tempId]=real; rememberId_(it.tempId, real);
+            if (S.openEntry && S.openEntry.EntryID===it.tempId) S.openEntry.EntryID = real;
+            await DB.del(it.qid); processed++; continue; }
+          // An older shift is still open: keep the clock-in queued and make the conflict visible.
+          await requeue_(it, { lastError: 'An earlier shift is still open on the server — fix it, then this clock-in will send.', conflict: true, lastTry: Date.now(), tries: (it.tries||0)+1 });
+          continue;
+        }
+        // Write-ahead replay of a punch that already landed before the app was killed —
+        // the duplicate is expected, drop it quietly.
+        if (/Already clocked out|already have an open entry|Already on break|Not on break/i.test(e.message)){
+          await DB.del(it.qid); processed++; continue;
+        }
+        // The server said no to this one — drop it so the queue moves on, and keep the
+        // reason where the person will see it (home-screen banner), not in a 3-second toast.
+        console.warn('Dropping queued action', it.action, e.message);
+        await syncLogAdd_({ ts: Date.now(), what: describePunch_(it), why: e.message });
+        await DB.del(it.qid); processed++;
+      }
+    }
+  } finally {
+    syncing = false;
+    queueCount_();
+  }
+  // v43 — whatever is still waiting: hand it to the browser to send when the phone next has a
+  // connection even if the app is closed (Background Sync), and tell the office about anything
+  // that has now waited a day (it can be reached, or this flush would not have got this far).
+  try {
+    const left = (await DB.all()).filter(it=>PUNCH.test(it.action) && !inflightQids.has(it.qid));
+    if (left.length){ registerSync_(); stuckReport_(left); }
+  } catch(e){}
+  // The old unconditional refresh here fired a full 4-6s bootstrap every 60s (the periodic
+  // sync timer) even with an empty queue — a constant background drag for zero new data.
+  if (processed){ saveBootCache(); await refresh(true); }
+  return processed;
+}
+/* v43 — Background Sync: once registered, the browser fires the service worker's 'sync' event
+   the next time the phone has a connection — with the app closed, the screen off, the phone in
+   a pocket — and sw.js sends the queue (see there). Chrome/Android only; on an iPhone this is a
+   no-op and the queue goes on the next open, as before.
+   While the app is open and visible the worker leaves the sending to the app (which has its own
+   timers), so a registration made while visible is simply used up; going to the background
+   registers again (force) so the worker takes over from there. Registrations from failed
+   flushes are rate-limited — a busy office must never be hammered in a loop. */
+let lastSyncReg_ = 0;
+function registerSync_(force){
+  try {
+    if (!('serviceWorker' in navigator) || !('SyncManager' in window)) return;
+    if (!force && Date.now()-lastSyncReg_ < 30000) return;
+    lastSyncReg_ = Date.now();
+    navigator.serviceWorker.ready.then(reg => reg.sync && reg.sync.register('flush-punches')).catch(()=>{});
+  } catch(e){}
+}
+/* v43 — a punch still on the phone STUCK_HOURS after it was tapped: tell the office once a day
+   (it emails the person and the admins), and remember that it was told. */
+let stuckReporting_ = false;
+async function stuckReport_(items){
+  if (stuckReporting_ || !S.online || !S.session) return;
+  stuckReporting_ = true;
+  try {
+    for (const it of items){
+      if (!isStuck_(it)) continue;
+      if (it.stuckReported && Date.now()-it.stuckReported < 20*3600000) continue;
+      const p = it.payload||{};
+      try {
+        await apiBg('punchStuck', { action: it.action, at: p.at, queuedAt: it.ts, entryId: p.entryId, jobSite: p.jobSite,
+          hours: Math.round(punchAge_(it)/360000)/10, lastError: it.lastError||'', tries: it.tries||0 });
+        // Re-read before writing: a flush may have delivered (deleted) or re-queued it meanwhile.
+        const cur = await DB.get(it.qid);
+        if (cur) await DB.enqueue({ ...cur, stuckReported: Date.now() });
+      } catch(e){ break; } // no answer — the office cannot be reached after all; next time
+    }
+  } finally { stuckReporting_ = false; queueCount_(); }
+}
 
-function idb_() {
-  return new Promise((res, rej) => {
-    const r = indexedDB.open('pcw-timesheet', 1);
-    r.onupgradeneeded = () => { // same shape as the app's DB.open, in case the worker gets here first
-      const db = r.result;
-      if (!db.objectStoreNames.contains('queue')) db.createObjectStore('queue', { keyPath: 'qid' });
-      if (!db.objectStoreNames.contains('cache')) db.createObjectStore('cache', { keyPath: 'k' });
-    };
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
+/* ============================================================================
+ * AUTH (Google Identity Services)
+ * ==========================================================================*/
+function decodeJwt(t){ try { return JSON.parse(atob(t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); } catch(e){ return {}; } }
+
+function onCredential(resp){
+  S.idToken = resp.credential;
+  const p = decodeJwt(resp.credential);
+  S.me = S.me || { email:p.email, name:p.name, picture:p.picture };
+  doLogin();
+}
+/* Trade the (1h) Google ID token for a backend session that runs for CONFIG.SESSION_HOURS
+   (30 days at present) and renews on every use. Login returns the full bootstrap too, so first
+   paint after sign-in costs a single round-trip. */
+async function doLogin(){
+  try {
+    if (!S.booted) render(true);
+    const res = await fetch(CONFIG.APPS_SCRIPT_URL, {
+      method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify({ idToken:S.idToken, action:'login' }),
+    });
+    // v72 — a reply that is not JSON used to surface as a parser error, which tells a person
+    // nothing. Google's own busy page is the usual culprit.
+    let json; try { json = await res.json(); }
+    catch(_){ throw new Error('The server answered with something unreadable. Google is probably busy — try again in a moment.'); }
+    if (!json.ok) throw new Error(json.error || 'Sign-in failed');
+    S.session = { token: json.data.sessionToken, exp: json.data.exp };
+    await saveSession_(S.session);
+    keepStorage_();
+    applyBootstrap(json.data.boot);
+    overlayQueued_(await DB.all()); // v42: punches still waiting on this phone stay visible
+    S.booted = true; S._lastRefresh = Date.now();
+    await DB.setCache('bootstrap', json.data.boot);
+    flushQueue(); render();
+    loadCustomers(); loadMaterials(); loadOnboarding();
+  } catch(e){ S.session=null; toast(e.message, 10000); render(); }
+}
+
+function initAuth(){
+  if (!window.google || !google.accounts) {
+    // Google's script not loaded yet (slow LTE / offline first open): show the sign-in
+    // screen anyway instead of a blank white page; the button fills in when it arrives.
+    if (!S.session && !S.booted && !S._authWait){ S._authWait = true; render(); }
+    // v72 — it used to retry silently for ever, so a blocked or unreachable Google script looked
+    // like an app with no sign-in button and no explanation. After ten seconds, say so.
+    S._authTries = (S._authTries || 0) + 1;
+    if (S._authTries === 34){
+      const h = document.getElementById('gbtn');
+      if (h) h.innerHTML = '<p class="small" style="color:var(--bad);margin:0">Google\'s sign-in script has not loaded.'
+        + ' Check the connection, and if you are on a network that blocks Google, try mobile data.</p>';
+    }
+    setTimeout(initAuth, 300); return;
+  }
+  google.accounts.id.initialize({
+    client_id: CONFIG.GOOGLE_CLIENT_ID,
+    callback: onCredential,
+    auto_select: true,
+    itp_support: true,
+  });
+  if (!S.session){
+    render(); // shows sign-in screen with the button placeholder
+    const holder = document.getElementById('gbtn');
+    if (holder) google.accounts.id.renderButton(holder, {theme:'outline', size:'large', width:320, text:'signin_with'});
+    google.accounts.id.prompt(); // one-tap / auto
+  }
+}
+/* v72 — the silent sign-in (auto_select) only fires when the browser has EXACTLY ONE Google
+   account signed in. With two, it gives up without a word and the user is left looking at a
+   button that seems to do nothing. This forces the account chooser back open. */
+function googleRetry(){
+  let ok = false;
+  try { google.accounts.id.disableAutoSelect(); ok = true; } catch(e){}
+  try { google.accounts.id.prompt(); } catch(e){}
+  toast(ok ? 'Pick the account you use for work.'
+           : 'Google sign-in has not loaded yet. Give it a moment and try again.', 7000);
+}
+function signOut(){
+  if (S.session) { try{ api('logout',{sessionToken:S.session.token}).catch(()=>{}); }catch(e){} } // best-effort server invalidation (async — .catch stops an unhandled rejection)
+  S.idToken=null; S.session=null; S.me=null; S.booted=false;
+  saveSession_(null);
+  try{ google.accounts.id.disableAutoSelect(); }catch(e){}
+  render();
+  initAuth();
+}
+
+/* ============================================================================
+ * BOOT / REFRESH
+ * ==========================================================================*/
+async function boot(){
+  try{ history.replaceState({tab:S.tab||'clock'},''); }catch(e){}
+  // Stale-while-revalidate: paint instantly from the cached bootstrap, refresh in background.
+  const cached = await DB.getCache('bootstrap');
+  try { tempIdMap = Object.assign({}, (await DB.getCache('tempIdMap'))||{}, tempIdMap); } catch(e){} // v42: survives restarts
+  if (cached){ applyBootstrap(cached); overlayQueued_(await DB.all()); S.booted = true; render(); }
+  else render(true); // first-ever load: show spinner
+  queueCount_();
+  try {
+    // Unsynced punches from the last session (app closed mid-request) MUST land before we
+    // trust a server snapshot — the snapshot still shows the pre-punch state (clocked in
+    // again after you clocked out). flushQueue replays them, then refreshes on its own.
+    if ((await DB.all()).length){
+      await flushQueue();
+      S.booted = true; render();
+      // v24: flushQueue only refreshes when it actually LANDS something. A queued punch that
+      // keeps failing therefore left the app running on the cached bootstrap forever — which is
+      // why Paul still saw "admin" in the header days after his name was set to Paul Olivares.
+      // The cached `me` was never replaced. Always re-read after a flush.
+      scheduleRefresh();
+    } else {
+      const seq = S.mutSeq;
+      const data = await apiBg('bootstrap');
+      // Same staleness guard as refresh(): if the user punched in/out while this initial
+      // bootstrap was in flight, its snapshot predates the punch — applying it would flash
+      // the old button state. Drop it and re-sync shortly.
+      if (seq === S.mutSeq && !mutsInFlight){
+        applyBootstrap(data);
+        S.booted = true; S._lastRefresh = Date.now();
+        await DB.setCache('bootstrap', data);
+        render();
+      } else scheduleRefresh();
+    }
+    loadCustomers(); loadMaterials(); loadOnboarding(); flushReceipts(); flushScans(); // warm caches + push any phone-only receipts/scans up
+  } catch(e){
+    if (cached) toast('Showing last synced data — will retry');
+    else { toast(e.message); render(); }
+  }
+}
+function applyBootstrap(d){
+  S.me = d.me; S.companies = d.companies; S.config = d.config;
+  S.entries = d.entries||[]; S.openEntry = d.openEntry||null;
+  S.employees = d.employees||[];
+  if (d.pendingRequests !== undefined) S.pendingRequests = d.pendingRequests;
+  setTimeout(()=>{ forgotNudge(); reqNudge(); }, 900);   // after the first paint, one at a time
+  setTimeout(()=>{ if(canApprove()) loadApprovals(); }, 1500);   // v56 — badge counts approvals too
+  if (d.pending !== undefined) S.pending = d.pending; // pending now loads on demand (Admin tab)
+}
+/* Write-through: keep the cached bootstrap in step with optimistic local state, so
+   reopening the app right after a punch paints the RUNNING clock, not a stale screen. */
+function saveBootCache(){
+  DB.setCache('bootstrap', { me:S.me, companies:S.companies, config:S.config,
+    entries:S.entries, openEntry:S.openEntry, employees:S.employees });
+}
+let refreshRetryT=null;
+function scheduleRefresh(){ clearTimeout(refreshRetryT); refreshRetryT=setTimeout(()=>refresh(true), 4000); }
+/* THE FLICKER GUARD. A bootstrap response is a snapshot of the sheet at request time. If a
+   punch happened after that snapshot was taken (mutSeq moved, or a mutation/queue-sync is
+   still mid-flight), applying it would overwrite fresh optimistic state with the old truth —
+   the button flashes back. Stale snapshots are discarded and a clean refresh is rescheduled. */
+async function refresh(silent){
+  if (!S.session || !S.online) return;
+  if (mutsInFlight > 0 || syncing){ scheduleRefresh(); return; }
+  try {
+    // Unsynced queued punches mean the server is BEHIND local state — deliver them first,
+    // otherwise the snapshot would resurrect the pre-punch button state. flushQueue
+    // refreshes on its own when it lands something.
+    // v42 — but a punch that CANNOT be delivered right now (no signal, or waiting on a fix)
+    // no longer blocks the refresh forever: the snapshot is taken anyway and the queued
+    // punches are laid over it (overlayQueued_), so the screen shows what the person did AND
+    // the app keeps learning what the server knows.
+    if ((await DB.all()).length){
+      if (await flushQueue()) return;                 // it landed something and refreshed itself
+      if (mutsInFlight > 0 || syncing){ scheduleRefresh(); return; }
+    }
+    const seq = S.mutSeq;
+    const d = await apiBg('bootstrap');
+    if (seq !== S.mutSeq || mutsInFlight > 0 || syncing){ scheduleRefresh(); return; } // stale
+    applyBootstrap(d); await DB.setCache('bootstrap', d);
+    overlayQueued_(await DB.all()); S._lastRefresh = Date.now(); render();
+  }
+  catch(e){ if(!silent) toast(e.message); }
+}
+/* Lay the punches still waiting in the queue over a fresh server snapshot, oldest first, so a
+   clock-out that has not reached the office yet still shows as clocked out (with the banner
+   saying it is waiting), and a queued clock-in still shows its running clock. */
+function overlayQueued_(items){
+  (items||[]).slice().sort((a,b)=>a.ts-b.ts).forEach(it=>{
+    const p=it.payload||{};
+    if (it.action==='clockIn' || it.action==='switchJobSite'){
+      if (it.action==='switchJobSite' && S.openEntry && !S.openEntry._pending)
+        upsertLocalEntry({ ...S.openEntry, ClockOut:p.at||new Date(it.ts).toISOString(), Source:'paused' });
+      const id = it.tempId || ('tmp_'+it.ts);
+      S.openEntry = { EntryID: tempIdMap[id]||id, ClockIn: p.at||new Date(it.ts).toISOString(), Company:p.company||'',
+        'Customer/Job Site':p.jobSite||'', 'PO#':p.poNumber||'', Status:'approved', Source:'live', _local:true, _pending:true };
+    } else if (it.action==='clockOut' && S.openEntry){
+      const id = tempIdMap[p.entryId]||p.entryId;
+      if (S.openEntry.EntryID===id || S.openEntry.EntryID===p.entryId){
+        upsertLocalEntry({ ...S.openEntry, ClockOut:p.at||new Date(it.ts).toISOString(), Source: p.paused?'paused':'live', _pending:true });
+        S.openEntry=null;
+      }
+    } else if (it.action==='fixForgotClockout' && S.openEntry){
+      // v75 - same for a forgotten clock-out closed on the phone but not yet at the office.
+      // Without this the next bootstrap put the open shift (and the red banner, and the "Fix
+      // it" sheet) straight back on screen, which is what Paul saw on 16 Oct.
+      const id = tempIdMap[p.entryId]||p.entryId;
+      if (S.openEntry.EntryID===id || S.openEntry.EntryID===p.entryId){
+        upsertLocalEntry({ ...S.openEntry, ClockOut:p.outISO||new Date(it.ts).toISOString(), Status:'pending', Source:'live', _pending:true });
+        S.openEntry=null;
+      }
+    }
   });
 }
-function req_(r) { return new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
-const cacheGet_ = (db, k) => req_(db.transaction('cache', 'readonly').objectStore('cache').get(k)).then((x) => (x ? x.v : null));
-const cachePut_ = (db, k, v) => req_(db.transaction('cache', 'readwrite').objectStore('cache').put({ k, v }));
-const queueAll_ = (db) => req_(db.transaction('queue', 'readonly').objectStore('queue').getAll()).then((x) => x || []);
-const queueGet_ = (db, qid) => req_(db.transaction('queue', 'readonly').objectStore('queue').get(qid));
-const queuePut_ = (db, it) => req_(db.transaction('queue', 'readwrite').objectStore('queue').put(it));
-const queueDel_ = (db, qid) => req_(db.transaction('queue', 'readwrite').objectStore('queue').delete(qid));
 
-/* Send what is waiting. Returns {deferred} when the app is open and visible — it has its own
- * timers and will send; the worker only steps in when nobody is looking (the app re-registers
- * the sync the moment it goes to the background). Returns {sent, left, stopped} otherwise.
- * Throws on "no answer" so the browser schedules a retry with backoff. opts.force skips the
- * visibility check (tests).
- * The worker must NOT poke a visible app into flushing: register → sync fires at once while
- * online → poke → flush fails on a busy office → app re-registers → … a tight retry storm
- * against the backend. */
-async function flushPunches_(opts) {
-  const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  if (!(opts && opts.force) && wins.some((c) => c.visibilityState === 'visible')) return { deferred: true };
-  const db = await idb_();
-  const session = await cacheGet_(db, 'session');
-  const url = await cacheGet_(db, 'apiUrl');
-  if (!session || !session.token || !url) return { sent: 0, left: 0, stopped: 'no session' };
-  const idMap = Object.assign({}, (await cacheGet_(db, 'tempIdMap')) || {});
-  const items = (await queueAll_(db)).filter((it) => PUNCH.test(it.action)).sort((a, b) => a.ts - b.ts);
-  let sent = 0, stopped = null, left = 0;
-  for (const it of items) {
-    const p = Object.assign({}, it.payload || {}, { queuedAt: it.ts });
-    if (typeof p.entryId === 'string' && idMap[p.entryId]) p.entryId = idMap[p.entryId];
-    if (typeof p.entryId === 'string' && p.entryId.indexOf('tmp_') === 0) { left++; continue; } // its clock-in has not landed — the app resolves these
-    let json;
-    try {
-      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ sessionToken: session.token, action: it.action, payload: p }) });
-      json = await res.json();
-    } catch (e) { stopped = 'network'; break; }            // no answer (or an error page): retry the sync later
-    if (json && json.ok) {
-      if (it.tempId && json.data && json.data.entry && json.data.entry.EntryID) idMap[it.tempId] = json.data.entry.EntryID;
-      await queueDel_(db, it.qid); sent++;
-      try { await patchBoot_(db, it.action, p, json.data || {}); } catch (e) {}
+/* ============================================================================
+ * GPS
+ * ==========================================================================*/
+function getGps(timeoutMs){
+  return new Promise((res)=>{
+    if (!navigator.geolocation) return res(null);
+    let done=false; const finish=(v)=>{ if(!done){done=true; res(v);} };
+    navigator.geolocation.getCurrentPosition(
+      (pos)=>finish({lat:pos.coords.latitude, lng:pos.coords.longitude, acc:pos.coords.accuracy}),
+      ()=>finish(null),
+      {enableHighAccuracy:true, timeout: timeoutMs||8000, maximumAge:30000}
+    );
+    setTimeout(()=>finish(null), (timeoutMs||8000)+500);
+  });
+}
+
+/* ============================================================================
+ * ACTIONS
+ * ==========================================================================*/
+/* Missed GPS fix at punch time → keep trying quietly for up to 30s and patch the entry.
+   Backend only fills EMPTY cells, so a late fix can never overwrite a real one. */
+function retryGpsPatch(entryId, which){
+  getGps(30000).then(g=>{ if (g) apiMutate('patchGps', { entryId, which, gps:g }); });
+}
+async function doClockIn(payload){
+  const tempId = 'tmp_' + Date.now();
+  const at = new Date().toISOString(); // punch time = tap time, even if the request syncs later
+  S.mutSeq++; // any bootstrap snapshot taken before this tap is now stale (flicker guard)
+  // optimistic local open entry — UI responds at the tap, BEFORE the GPS wait
+  S.openEntry = { EntryID: tempId, ClockIn: at, Company: payload.company||'',
+    'Customer/Job Site': payload.jobSite||'', 'PO#': payload.poNumber||'', Status:'approved', Source:'live', _local:true };
+  render();
+  saveBootCache(); // NOW, not after the 4-6s confirm — closing the app right away must not lose the state
+  showClockinMsg(); // greet instantly at the tap — don't make it wait on the network
+  const gps = await getGps(4000); // AFTER the UI update — a slow fix must never freeze the tap
+  let r=null;
+  try { r = await apiMutate('clockIn', { ...payload, gps, at }, { tempId }); }
+  catch(e){ // e.g. an earlier shift is still open on the server — the refresh brings it back on screen
+    S.openEntry=null; S.mutSeq++; render(); saveBootCache();
+    toast(/already have an open entry/i.test(e.message) ? 'Not clocked in — an earlier shift is still open. Clock that one out first (tap the red banner to fix it).' : 'Clock-in did not save: '+e.message, 8000);
+    refresh(true); return; }
+  // The response IS the authoritative entry — no full refresh needed (the old one here was
+  // both a wasted 4-6s call and a flicker source).
+  if (r && r.entry){ tempIdMap[tempId]=r.entry.EntryID; S.openEntry = r.entry; upsertLocalEntry(r.entry); }
+  saveBootCache();
+  if (!gps) retryGpsPatch((r && r.entry ? r.entry.EntryID : tempId), 'in');
+  if (r && r.queued) toast('Clocked in (will sync)');
+}
+/* Clock-out itself now lives in the review flow (openClockOut → startClockOutReview →
+   submitClockOut) — nothing is finalized until Submit is tapped there. */
+function upsertLocalEntry(e){
+  const i=(S.entries||[]).findIndex(x=>x.EntryID===e.EntryID);
+  if (i>=0) S.entries[i]=e; else S.entries.unshift(e);
+}
+async function doSwitchSite(payload){
+  const at = new Date().toISOString(); // one boundary instant for both segments
+  S.mutSeq++; // flicker guard — see refresh()
+  // Optimistically close the current segment as 'paused' so the Paused-today list and
+  // cumulative timer are right immediately (and offline) — BEFORE the GPS wait.
+  if (S.openEntry){
+    const gross=(new Date(at)-new Date(S.openEntry.ClockIn))/3600000;
+    const brk=breakHrsSoFar(at);
+    upsertLocalEntry({ ...S.openEntry, ClockOut:at,
+      Hours: Math.round(Math.max(0,gross-brk)*100)/100, Source:'paused', Date:S.openEntry.Date||todayStr() });
+  }
+  const tempId='tmp_'+Date.now();
+  S.openEntry={ EntryID:tempId, ClockIn:at, Company:payload.company||'',
+    'Customer/Job Site':payload.jobSite||'', 'PO#':payload.poNumber||'', Status:'approved', Source:'live', _local:true };
+  render();
+  saveBootCache(); // persist the optimistic state immediately (app may close mid-request)
+  const gps = await getGps(4000);
+  let r=null;
+  try { r = await apiMutate('switchJobSite', { ...payload, gps, at }, { tempId }); }
+  catch(e){ toast('Job switch did not save: '+e.message, 8000); refresh(true); return; }
+  if (r && r.entry){ tempIdMap[tempId]=r.entry.EntryID; S.openEntry=r.entry; upsertLocalEntry(r.entry); }
+  saveBootCache();
+  toast('Switched job site');
+}
+
+/* ============================================================================
+ * RENDER
+ * ==========================================================================*/
+/* Object registry: avoids embedding JSON in HTML attributes (which breaks on
+   apostrophes like "O'Brien Ranch"). Handlers pass a short key instead. */
+let _regN=0;
+function reg(obj){ const k='r'+(_regN++); (S._reg||(S._reg={}))[k]=obj; return k; }
+function dereg(k){ return (S._reg||{})[k]; }
+function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtTime(iso){ if(!iso) return '—'; const d=new Date(iso); return d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}); }
+function fmtDay(iso){ if(!iso) return ''; return new Date(iso).toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'}); }
+
+function render(loading){
+  // Registry keys are globally unique (_regN never resets), so KEEP old entries: a
+  // background sync re-rendering the page must not orphan the keys an open sheet's
+  // buttons still hold (Edit/Upload inside a sheet silently died on tap before).
+  // Reset only when nothing is open; entries are tiny, so no meaningful memory cost.
+  if (!S._sheet) S._reg = {};
+  else S._reg = S._reg || {};
+  const app = document.getElementById('app');
+  if (loading){ app.innerHTML = '<div class="wrap center" style="margin-top:40vh"><span class="spin"></span><p class="muted">Loading…</p></div>'; return; }
+  if (!S.session || !S.booted){ app.innerHTML = signInView(); return; }
+  let body='';
+  if (S.tab==='clock') body = clockView();
+  else if (S.tab==='entries') body = entriesView();
+  else if (S.tab==='admin') body = adminView();
+  else if (S.tab==='team') body = teamView();
+  else if (S.tab==='hours') body = hoursView();
+  else if (S.tab==='jobs') body = jobsView();
+  else if (S.tab==='jha') body = jhaView();
+  else if (S.tab==='requests') body = requestsView();
+  else if (S.tab==='sched') body = schedView();
+  app.innerHTML = `<div class="wrap tab-${S.tab}">${topBar()}${offlineBanner()}${body}</div>${tabBar()}`; // tab-* class drives the desktop layout
+  wire();
+}
+
+function signInView(){
+  return `<div class="wrap center" style="margin-top:22vh">
+    <h1>PCW / PRO Timesheet</h1>
+    <div class="pulseline"></div>
+    <p class="muted">Peace Country Wagyu &amp; PRO Electrical</p>
+    <div class="card">
+      <p>Sign in with your work Google account to clock in.</p>
+      <div id="gbtn" style="display:flex;justify-content:center"></div>
+      <p class="small" style="margin-top:12px">
+        <a href="#" onclick="googleRetry();return false" style="color:var(--accent2)">Use a different Google account</a>
+      </p>
+      <p class="small muted" style="margin-top:6px">Your account must be added by an admin first.</p>
+    </div>
+  </div>`;
+}
+
+/* Company choice is per-employee: without the viewAllCompanies permission the crew books
+   PRO time only — their one no-PO option is labelled as shop work. Admin grants the choice
+   per hire (Add employee checkbox) or later via the permission editor. */
+/* Company chip face: the company's logo if the file exists on the host, else the letters.
+   (Selects/dropdowns can't render images, so those keep text.) */
+function coFace(c){
+  return `<img class="co-logo" src="logos/${String(c).toLowerCase()}.png" alt="" onerror="this.replaceWith(document.createTextNode('${esc(c)}'))">`;
+}
+function companyOptions(){
+  const all=S.companies||[];
+  const can=S.me&&(S.me.role==='admin'||(S.me.permissions&&S.me.permissions.viewAllCompanies));
+  if(can) return all.map(c=>({c,label:c}));
+  const home=(S.me&&S.me.permissions&&S.me.permissions.homeCompany)||all[0]||'PRO';
+  const label = home==='PCW' ? '🌾 Farm work — no PO'
+              : '🔧 Shop work — no PO'+(home!==(all[0]||'PRO')?(' ('+home+')'):'');
+  return [{c:home, label, noPO:true}];
+}
+
+function topBar(){
+  const m=S.me||{};
+  // v24: second source for the name. `me` comes from the cached bootstrap and can lag a rename;
+  // the employees list is fetched separately and usually carries the new name first. Prefer
+  // whichever one actually has a name rather than falling back to the email prefix, which is
+  // how Paul ended up greeted as "admin".
+  const mine=(S.employees||[]).find(e=>String(e.email||'').toLowerCase()===String(m.email||'').toLowerCase());
+  const full=(m.name&&m.name.trim()) || (mine&&mine.name&&mine.name.trim()) || '';
+  const first=(full || String(m.email||'').split('@')[0]).split(/\s+/)[0];
+  return `<div class="apphead">
+    <div>
+      <div class="hello">Hello, ${esc(first)}! 👋</div>
+      <div class="hello-sub">${(m.role==='admin'||m.role==='bookkeeper')?`<span class="cap">${esc(m.role)}</span> · `:''}${new Date().toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'})}</div>
+    </div>
+    <div class="row">
+      <img class="avatar" src="${esc(m.picture||'')}" onerror="this.style.display='none'">
+      <button class="ghost" onclick="signOut()">Sign out</button>
+    </div>
+  </div>`;
+}
+function offlineBanner(){
+  let h='';
+  if (!S.online) h += `<div class="banner offline">Offline — entries are saved on your phone and will sync automatically.</div>`;
+  return h;
+}
+
+/* ----- CLOCK TAB ----- */
+/* Break helpers: break intervals live in the open entry's Breaks JSON column. */
+function openBreaks(){ try{ return JSON.parse((S.openEntry&&S.openEntry['Breaks JSON'])||'[]')||[]; }catch(e){ return []; } }
+function onBreak(){ const b=openBreaks(); return b.length>0 && !b[b.length-1].e; }
+function breakHrsSoFar(asOf){
+  const end = asOf ? new Date(asOf) : new Date();
+  let ms=0; for (const b of openBreaks()) ms += Math.max(0,(b.e?new Date(b.e):end) - new Date(b.s));
+  return ms/3600000;
+}
+/* Jobs worked earlier today (paused, i.e. clocked-out live segments) that aren't the active one. */
+function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function jobKey(e){ return (e.Company||'')+'|'+(e['Customer/Job Site']||'')+'|'+(e['PO#']||''); }
+function pausedToday(){
+  // A job is resumable ONLY if its most recent segment today ended via "Pause & Switch"
+  // (Source 'paused'). A proper clock-out leaves Source 'live' → job drops off this list.
+  const t=todayStr(), latest={}, order=[];
+  for (const e of (S.entries||[])){ // newest-first, so first hit per job = latest segment
+    if (String(e.Date).slice(0,10)!==t) continue;
+    if (e.Source!=='live' && e.Source!=='paused') continue;
+    const k=jobKey(e);
+    if (!(k in latest)){ latest[k]=e; order.push(k); }
+  }
+  const activeKey = S.openEntry ? jobKey(S.openEntry) : null;
+  return order.filter(k => k!==activeKey && latest[k].Source==='paused' && latest[k].ClockOut)
+    .map(k => latest[k]);
+}
+function hrsTodayFor(key){
+  // Net hours already logged today for this job (all closed segments).
+  const t=todayStr(); let total=0;
+  for (const e of (S.entries||[])){
+    if (String(e.Date).slice(0,10)!==t || !e.ClockOut || jobKey(e)!==key) continue;
+    if (e.Source!=='live' && e.Source!=='paused') continue;
+    total += Number(e.Hours)||0;
+  }
+  return total;
+}
+/* The big timer continues from earlier time ONLY when RESUMING a paused job. A fresh
+   clock-in after a full clock-out starts at 0:00 — earlier hours worked today on the same
+   job show in the small sub-line instead ("timer started at 37 seconds" bug). */
+function resumedPrevMs(){
+  if (!S.openEntry) return 0;
+  const k=jobKey(S.openEntry), t=todayStr();
+  for (const e of (S.entries||[])){ // newest-first: the first closed segment today decides
+    if (String(e.Date).slice(0,10)!==t || !e.ClockOut || jobKey(e)!==k) continue;
+    if (e.Source==='paused') return hrsTodayFor(k)*3600000; // resuming — continue the count
+    if (e.Source==='live') return 0;                        // was fully clocked out — fresh start
+  }
+  return 0;
+}
+function pausedCard(){
+  const p=pausedToday(); if(!p.length) return '';
+  return `<div class="card"><h3>Paused today</h3><p class="small muted" style="margin-top:-6px">Jobs waiting to be resumed — each stretch logs as its own entry.</p>
+    ${p.map(e=>{ const k=reg({e}); const hrs=hrsTodayFor(jobKey(e)); return `<div class="list-item row between">
+      <div><b>${esc(e['Customer/Job Site']||e.Company)}</b>${e['PO#']?` <span class="small muted">PO ${esc(e['PO#'])}</span>`:''}
+        <div class="small muted">${hrs.toFixed(2)} hrs so far today</div></div>
+      <button class="ghost" onclick="resumeJob('${k}')">▶ Resume</button></div>`; }).join('')}</div>`;
+}
+async function resumeJob(k){
+  const ref=dereg(k); if(!ref) return; const e=ref.e;
+  const p={ company:e.Company||'', jobSite:e['Customer/Job Site']||'', poNumber:e['PO#']||'' };
+  if (S.openEntry) await doSwitchSite(p); else await doClockIn(p);
+}
+function clockLogo(){
+  const co=((S.openEntry&&S.openEntry.Company)||(S.me&&S.me.permissions&&S.me.permissions.homeCompany)||(S.companies&&S.companies[0])||'PRO');
+  return `<img class="clock-logo" src="logos/${String(co).toLowerCase()}.png" alt="" onerror="this.remove()">`;
+}
+function clockView(){
+  let ot = weekHours() > (S.config.otThreshold||44)
+    ? `<div class="banner ot">⚠ Overtime: ${weekHours().toFixed(1)} hrs this week (over ${S.config.otThreshold||44}).</div>` : '';
+  ot = obBanner() + syncBanner() + scanBanner() + ot; // onboarding nag sits above everything until it's done
+  if (S.openEntry){
+    const ageH=(Date.now()-new Date(S.openEntry.ClockIn))/3600000;
+    if (ageH>14) ot = `<div class="banner ot" style="cursor:pointer" onclick="openForgotFix()">⚠ <b>Still clocked in since ${fmtDay(S.openEntry.ClockIn)} ${fmtTime(S.openEntry.ClockIn)}</b> — forgot to clock out? Tap here to fix it.</div>` + ot;
+  }
+  if (S.openEntry){
+    const site = S.openEntry['Customer/Job Site'] || S.openEntry.Company || 'Working';
+    const isInternal = !S.openEntry['Customer/Job Site'] && !!S.openEntry.Company;
+    const title = isInternal
+      ? `<h2 style="margin:.4em 0"><img class="clock-logo-hd" src="logos/${esc(String(S.openEntry.Company).toLowerCase())}.png" alt="" onerror="this.replaceWith(document.createTextNode('${esc(site)}'))"></h2>`
+      : `<h2 style="margin:.4em 0">${esc(site)}</h2>`;
+    const breaking = onBreak();
+    return `${ot}
+      <div class="card center">
+        <div class="pill ${breaking?'pending':'live'}">${breaking?'☕ On break':'On the clock'}</div>
+        ${title}
+        ${S.openEntry['PO#']?`<div class="small muted">PO ${esc(S.openEntry['PO#'])}</div>`:''}
+        <div class="timer" id="runningTimer" style="${breaking?'color:var(--warn)':''}">0:00:00</div>
+        <div class="small muted" id="timerSub"></div>
+        <div class="small muted">since ${fmtTime(S.openEntry.ClockIn)}</div>
+        ${isInternal?'':clockLogo()}
+        <button class="bigbtn out" style="margin-top:16px" onclick="openClockOut()"
+          ${punchBusy()?'disabled':''}>${punchBusy()?'Working…':'Clock Out'}</button>
+        <div class="row" style="margin-top:10px">
+          ${breaking
+            ? `<button class="btn-resume grow" onclick="doEndBreak()">▶ Resume Work</button>`
+            : `<button class="btn-break grow actbtn" style="padding:16px 12px" onclick="doStartBreak()"><span class="bic">☕</span><span>Start Break</span></button>`}
+          <button class="btn-switch grow actbtn" style="padding:16px 12px" onclick="openJobPicker(true)"><span class="bic">⏸️</span><span>Pause &amp; Switch</span></button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button class="actbtn grow" style="padding:12px 8px" onclick="openDocScan()"><span class="bic">📷</span><span>Scan receipt / estimate</span></button>
+          <button class="actbtn grow" style="padding:12px 8px" onclick="openMatUse()"><span class="bic">🔩</span><span>Materials used</span></button>
+        </div>
+        <button class="secondary" style="width:100%;margin-top:8px;padding:11px 8px" onclick="openManual()">➕ Add time manually</button>
+        ${allowBtn()}
+      </div>
+      ${pausedCard()}`;
+  }
+  return `${ot}
+    <div class="card center">
+      <p class="muted">Not clocked in</p>
+      ${clockLogo()}
+      <button class="bigbtn in" onclick="openJobPicker(false)"
+        ${punchBusy()?'disabled':''}>${punchBusy()?'Working…':'Clock In'}</button>
+      <div class="row" style="margin-top:8px">
+        <button class="secondary grow" style="padding:11px 8px" onclick="openDocScan()">📷 Scan receipt / estimate</button>
+        <button class="secondary grow" style="padding:11px 8px" onclick="openMatUse()">🔩 Materials used</button>
+      </div>
+      <button class="secondary" style="width:100%;margin-top:8px;padding:11px 8px" onclick="openManual()">➕ Add time manually</button>
+      ${allowBtn()}
+    </div>
+    ${pausedCard()}
+`;
+}
+async function doStartBreak(){
+  if (!S.openEntry || onBreak()) return;
+  S.mutSeq++; // flicker guard — a stale bootstrap must not flip the button back
+  const eid = S.openEntry.EntryID;
+  const at = new Date().toISOString(); // tap time — an offline break must not sync hours late
+  const arr=openBreaks(); arr.push({s:at});
+  S.openEntry['Breaks JSON']=JSON.stringify(arr); render(); saveBootCache(); // optimistic + persisted
+  try {
+    const r = await apiMutate('startBreak',{entryId:eid, at});
+    // server's break array is authoritative; same visual state, so no re-render needed
+    if (r && r.breaks && S.openEntry && S.openEntry.EntryID===eid)
+      S.openEntry['Breaks JSON']=JSON.stringify(r.breaks);
+    saveBootCache();
+  } catch(e){ toast(e.message); refresh(true); }
+}
+async function doEndBreak(){
+  if (!S.openEntry || !onBreak()) return;
+  S.mutSeq++; // flicker guard
+  const eid = S.openEntry.EntryID;
+  const at = new Date().toISOString(); // tap time — an offline break must not sync hours late
+  const arr=openBreaks(); arr[arr.length-1].e=at;
+  S.openEntry['Breaks JSON']=JSON.stringify(arr); render(); saveBootCache(); // optimistic + persisted
+  try {
+    const r = await apiMutate('endBreak',{entryId:eid, at});
+    if (r && r.breaks && S.openEntry && S.openEntry.EntryID===eid)
+      S.openEntry['Breaks JSON']=JSON.stringify(r.breaks);
+    saveBootCache();
+  } catch(e){ toast(e.message); refresh(true); }
+}
+function periodCard(t){
+  return `<div class="card">
+    <div class="row between"><h3>This pay period</h3><span class="small muted">${esc(currentPeriodLabel())}</span></div>
+    <div class="row between"><span>Approved</span><b>${t.approved.toFixed(1)} hrs</b></div>
+    <div class="row between"><span class="muted">Pending</span><span class="muted">${t.pending.toFixed(1)} hrs</span></div>
+    <div class="row between"><span class="muted">This week</span><span class="muted">${weekHours().toFixed(1)} hrs</span></div>
+  </div>`;
+}
+
+/* ----- ENTRIES TAB ----- */
+function entriesView(){
+  const items = (S.entries||[]);
+  const rows = items.length ? items.map(e=>entryRow(e)).join('') : '<p class="muted center">No entries yet.</p>';
+  // v41 — the Receipt button moved to the home screen as "Scan receipt / estimate".
+  return `<div class="row between"><h2>My entries</h2>
+      <div class="row"><button class="secondary" onclick="openManual()">+ Manual</button></div></div>
+    <div class="card">${rows}</div>`;
+}
+/* GPS visibility: absence is explicit ("no GPS"), presence is a tappable map link for
+   admins/bookkeepers so locations actually get looked at, not just stored. */
+function mapsLink(gpsStr){ const m=String(gpsStr||'').match(/^(-?[\d.]+),(-?[\d.]+)/); return m?`https://maps.google.com/?q=${m[1]},${m[2]}`:''; }
+function gpsBadge(e){
+  if (e.Source==='manual') return '';
+  const canSeeMaps = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
+  const bits=[];
+  if (!e['GPS In'] && e.ClockIn) bits.push('<span style="color:var(--warn)">⚠ no GPS in</span>');
+  else if (canSeeMaps && e['GPS In']) bits.push(`<a href="${esc(mapsLink(e['GPS In']))}" target="_blank" style="color:var(--accent2)">📍 in</a>`);
+  if (e.ClockOut && !e['GPS Out']) bits.push('<span style="color:var(--warn)">⚠ no GPS out</span>');
+  else if (canSeeMaps && e['GPS Out']) bits.push(`<a href="${esc(mapsLink(e['GPS Out']))}" target="_blank" style="color:var(--accent2)">📍 out</a>`);
+  return bits.length?`<div class="small">${bits.join(' · ')}</div>`:'';
+}
+function entryRow(e, employeeEmail){
+  // Own entries are always editable (a mistake caught later can be fixed) — the backend
+  // sends employee edits to approved entries back to 'pending' for admin re-approval.
+  const isSelf = (employeeEmail||S.me.email)===S.me.email;
+  const canEdit = isSelf || S.me.role==='admin' || (S.me.permissions&&S.me.permissions.editPastEntries);
+  // "edited after the fact" marker: Last Edited At well after the entry closed = a later fix.
+  const edited = e['Last Edited At'] && e.ClockOut &&
+    (new Date(e['Last Edited At']) - new Date(e.ClockOut) > 5*60000);
+  const site = e['Customer/Job Site'] || e.Company || '—';
+  const k = reg({ e, employeeEmail: employeeEmail || S.me.email });
+  return `<div class="list-item">
+    <div class="row between">
+      <div><b>${esc(site)}</b> ${e['PO#']?`<span class="small muted">PO ${esc(e['PO#'])}</span>`:''}</div>
+      <span class="pill ${esc(e.Status)}">${esc(e.Status)}</span>
+    </div>
+    <div class="row between small muted">
+      <span>${fmtDay(e.ClockIn||e.Date)} · ${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)}</span>
+      <span>${e.Hours!==''&&e.Hours!=null?('<b style=\"color:var(--text)\">'+e.Hours+' hrs</b>'+(Number(e['Break Hrs'])?` <span class=\"muted\">(${e['Gross Hours']}h − ${(Number(e['Break Hrs'])*60).toFixed(0)}m brk)</span>`:'')):''}</span>
+    </div>
+    ${gpsBadge(e)}
+    ${e.Notes?`<div class="small" style="margin-top:4px">${esc(e.Notes)}</div>`:''}
+    ${e.Status==='rejected'&&e['Reject Note']?`<div class="small" style="color:#f87171">Rejected: ${esc(e['Reject Note'])}</div>`:''}
+    ${edited?`<div class="small muted">✎ edited ${fmtDay(e['Last Edited At'])} ${fmtTime(e['Last Edited At'])} by ${esc(String(e['Last Edited By']||'').split('@')[0])}</div>`:''}
+    ${e.Media?`<div class="small"><a href="#" onclick="openMediaView('${k}');return false" style="color:var(--accent2)">📎 ${String(e.Media).split(' | ').filter(Boolean).length} photo/video</a></div>`:''}
+    <div class="row" style="margin-top:6px">
+      ${canEdit?`<button class="ghost" onclick="openEditEntry('${k}')">Edit</button>`:''}
+      ${canEdit?`<button class="ghost" onclick="openUpload('${k}')">Add photo/video</button>`:''}
+    </div>
+  </div>`;
+}
+
+/* ----- TEAM (bookkeeper/admin read) ----- */
+function teamView(){
+  const emps = S.employees||[];
+  const row = emp=>`
+      <div class="list-item row between">
+        <div><b>${esc(emp.name)}</b><div class="small muted">${esc(emp.email)} · ${esc(emp.role)}${emp.active?'':' · inactive'}</div></div>
+        <button class="ghost" onclick="viewEmployee('${esc(emp.email)}')">View</button>
+      </div>`;
+  const act=emps.filter(e=>e.active), inact=emps.filter(e=>!e.active);
+  return `<h2>Team</h2>
+    <div class="card">${act.map(row).join('')||'<p class="muted small">No active employees.</p>'}
+      ${inactiveToggle(inact, row)}</div>`;
+}
+/* Deactivated employees are hidden from the everyday lists (they can't sign in, but their
+   history is kept for payroll) — expandable here when you need to look one up. */
+function inactiveToggle(inact, row){
+  if (!inact.length) return '';
+  return `<button class="ghost" style="width:100%;margin-top:6px" onclick="S.showInactive=!S.showInactive;render()">
+      ${S.showInactive?'▾ Hide':'▸ Show'} ${inact.length} deactivated</button>
+    ${S.showInactive? inact.map(row).join('') : ''}`;
+}
+
+/* ----- ADMIN TAB ----- */
+function adminView(){
+  const pend = S.pending||[];
+  const emps = S.employees||[];
+  return `<h2>Admin</h2>
+    <div class="card">
+      <div class="row between"><h3>Pending approvals</h3><span class="pill pending">${pend.length}</span></div>
+      ${pend.length? pend.map(pendRow).join('') : '<p class="muted small">Nothing waiting. 🎉</p>'}
+    </div>
+    <div class="card">
+      <div class="row between"><h3>Employees</h3><button class="secondary" onclick="openAddEmployee()">+ Add</button></div>
+      ${emps.filter(e=>e.active).map(empAdminRow).join('')||'<p class="muted small">No active employees.</p>'}
+      ${inactiveToggle(emps.filter(e=>!e.active), empAdminRow)}
+    </div>
+    ${allowAdminCard()}
+    ${obStatusCard()}
+    <div class="card">
+      <h3>Allowances &amp; stat pay</h3>
+      <p class="small muted">Amounts, rates and the meal cap live here — no code changes needed.</p>
+      <div class="btnrow">
+        <button class="secondary" onclick="openAllowCfg()">💳 Allowance settings</button>
+        <button class="secondary" onclick="runStatPay(this)">🍁 Post stat holiday pay</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Materials</h3>
+      <p class="small muted">Free-typed field entries waiting to be matched against supplier receipts.</p>
+      <div class="btnrow">
+        <button class="secondary" onclick="openMatReview()">Review flagged materials</button>
+        <button class="secondary" onclick="openReceiptScan()">📷 Scan a receipt</button>
+      </div>
+      <button class="ghost" style="width:100%;margin-top:8px" onclick="seedMats()">Load starter catalog (1,179 common parts)</button>
+    </div>
+    <div class="card">
+      <h3>Payroll</h3>
+      <p class="small muted">Export approved hours for the current pay period.</p>
+      <div class="btnrow">
+        <button onclick="exportPayroll()">Download CSV</button>
+        <button class="ghost" onclick="openActivityLog()">View activity log</button>
+      </div>
+    </div>`;
+}
+function pendRow(e){
+  return `<div class="list-item">
+    <div class="row between"><b>${esc(e._name||e._employee)}</b><span class="small muted">${fmtDay(e.ClockIn||e.Date)}</span></div>
+    <div class="small muted">${esc(e['Customer/Job Site']||e.Company)} · ${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)} · ${e.Hours||'?'} hrs</div>
+    ${gpsBadge(e)}
+    ${e.Notes?`<div class="small">${esc(e.Notes)}</div>`:''}
+    <div class="row" style="margin-top:8px">
+      <button class="grow" onclick="approve('${esc(e._employee)}','${esc(e.EntryID)}')">Approve</button>
+      <button class="grow danger" onclick="reject('${esc(e._employee)}','${esc(e.EntryID)}')">Reject</button>
+    </div>
+  </div>`;
+}
+function empAdminRow(emp){
+  return `<div class="list-item row between">
+    <div><b>${esc(emp.name)}</b><div class="small muted">${esc(emp.email)} · ${esc(emp.role)} · $${emp.hourlyRate||0}/hr${emp.active?'':' · inactive'}</div></div>
+    <button class="ghost" onclick="openEmployee('${esc(emp.email)}')">Manage</button>
+  </div>`;
+}
+
+/* ----- TAB BAR ----- */
+function tabBar(){
+  const isAdmin = S.me && S.me.role==='admin';
+  const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
+  const t=(id,ic,label)=>`<button class="${S.tab===id?'active':''}" onclick="go('${id}')"><span class="ic">${ic}</span>${label}</button>`;
+  const cal=`<span class="calic"><span class="calic-top"></span><span class="calic-num">${new Date().getDate()}</span></span>`;
+  // Waiting leads plus hours / time off / allowances to approve. Both of those live on the
+  // REQUESTS tab — the leads are the list itself, the approvals are the "Needs your OK" card at
+  // the top of it — so this count badges Requests and nothing else.
+  //
+  // v61 — it used to badge the More button as well. That dated from when Requests was still
+  // inside the More menu and a dot there was the only way to surface it; when Requests was
+  // promoted to a tab of its own the dot was copied rather than moved, and never unhooked. So
+  // More carried a red dot that pointed at a tab sitting right next to it, and opening the menu
+  // showed nothing marked — because nothing in it (JHA, Hours, Entries, Team, Admin, Price list)
+  // has anything waiting. Nothing in there is badged, so More no longer claims otherwise.
+  const pend=(S.pendingRequests||0)+apvCount();
+  const canReq=canApprove();
+  // Paul's own bar (Sept 2026): the four things he actually works from, then More.
+  // Crew get Entries in its place — they have no Requests or Jobs to look at.
+  const moreTabs = canReq ? ['hours','team','admin','jha','entries'] : ['hours','jha'];
+  const more=`<button class="${moreTabs.includes(S.tab)?'active':''}" onclick="openMore()"><span class="ic">☰</span>More</button>`;
+  return `<div class="tabbar">
+    ${t('clock','⏱','Clock')}
+    ${canReq?t('requests',`📨${pend?'<span class="dot"></span>':''}`,'Requests'):''}
+    ${t('sched',cal,'Schedule')}
+    ${canTeam?t('jobs','🏗️','Jobs'):''}
+    ${canReq?'':t('entries','📋','Entries')}
+    ${more}
+  </div>`;
+}
+/* Admin/bookkeeper overflow menu — keeps the crew-facing tab bar roomy (Charles, 2.3). */
+function openMore(){
+  const isAdmin = S.me && S.me.role==='admin';
+  const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
+  const items=[['jha','🦺','JHA'],['hours','📊','Hours']];
+  if(canApprove()) items.push(['entries','📋','Entries']);   // off the main bar to make room for Requests
+  if(canTeam) items.push(['team','👥','Team']);
+  if(isAdmin) items.push(['admin','⚙️','Admin']);
+  sheet(`<h2>More</h2>
+    ${items.map(([id,ic,l])=>`<button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.05rem;padding:16px"
+      onclick="closeSheetDom();go('${id}','replace')">${ic}&nbsp;&nbsp;${l}${S.tab===id?' <span class="small" style="color:var(--accent2)">• current</span>':''}</button>`).join('')}
+    ${canPrice()?`<button class="secondary" style="width:100%;margin-top:8px;text-align:left;font-size:1.05rem;padding:16px" onclick="closeSheetDom();openPriceList()">💲&nbsp;&nbsp;Price list</button>`:''}
+    <button class="ghost" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+}
+function go(tab, nav){
+  if(nav==='replace'){ try{ history.replaceState({tab},''); }catch(e){} }             // from the More menu
+  else if(tab!==S.tab){ try{ history.pushState({tab},''); }catch(e){} }              // Back walks tab history (2.6)
+  S.tab=tab; render();
+  if (tab==='admin' && S.online){ loadPending(); loadObStatus(); loadAllowAdmin(); } // fetched on demand, not at boot
+  if (tab==='hours' && S.online){
+    const canTeam=S.me&&(S.me.role==='admin'||(S.me.permissions&&S.me.permissions.viewAllEmployees));
+    if(canTeam){ loadHours(); loadMyAllow(); } else { refresh(true); loadMyAllow(); } // everyone: allowance claims
+  }
+  if (tab==='jobs' && S.online) loadJobs();              // refresh job costs on every open
+  if (tab==='jha') { if(S.online) loadJha(); loadCustomers(); } // JHA needs the job picker warm too
+  if (tab==='requests' && S.online) loadRequests();
+  if (tab==='sched' && S.online) loadSched();            // schedule reads the admin calendar live
+  if (tab==='clock' || tab==='entries') loadCustomers(); // keep autocomplete warm
+}
+
+/* ----- JOBS TAB (admin + bookkeeper): per-customer hours + labour cost -----
+   All-time approved hours per job, costed at each worker's CURRENT rate (a rate change
+   re-prices history — good enough for job costing, not an accounting ledger). Includes
+   internal company time (PRO/PCW/etc.) as its own rows. Never visible to the crew. */
+function jobsRowsHtml(){
+  const d=S.jobsData; if(!d) return '';
+  const q=(S.jobsQuery||'').trim().toLowerCase();
+  let list=d.jobs.filter(j=>!q || j.name.toLowerCase().includes(q) || (j.po||'').toLowerCase().includes(q));
+  const arch=list.filter(j=>j.po&&poArchived(j.status));
+  if(!S.jobsShowArch) list=list.filter(j=>!(j.po&&poArchived(j.status)));
+  // v55 - internal company time (PRO, PCW, GNG...) is not a job: not listed here at all
+  const coSet=new Set((S.companies||[]).map(c=>String(c).trim().toLowerCase()));
+  list=list.filter(j=>j.po || !coSet.has(String(j.name||'').trim().toLowerCase()));
+  const archToggle = arch.length
+    ? `<button class="ghost" style="width:100%;margin-top:6px" onclick="S.jobsShowArch=!S.jobsShowArch;jobsFilter(S.jobsQuery||'')">${S.jobsShowArch?'▾ Hide':'▸ Show'} ${arch.length} archived job${arch.length===1?'':'s'} (invoiced/closed)</button>` : '';
+  let h=list.map(j=>{ const k=reg(j); return `<div class="list-item row between" style="cursor:pointer" onclick="openJobDetail('${k}')">
+      <div style="min-width:0"><b>${esc(j.name||j.po||'—')}</b>
+        <div class="small muted">${[j.po?('PO '+esc(j.po)):'', j.project?esc(j.project):''].filter(Boolean).join(' · ')}</div>
+        ${j.status?`<div class="small muted">${esc(j.status)}</div>`:''}</div>
+      <div style="text-align:right"><b>${j.hours.toFixed(2)} hrs</b>
+        ${j.pending?`<div class="small" style="color:var(--pending)">+ ${j.pending.toFixed(2)} pending</div>`:''}
+        <div class="small muted">≈ $${j.cost.toFixed(2)} labour</div></div>
+    </div>`; }).join('');
+  if (!h) h = `<p class="muted small">${q?'No jobs match your search.':'No hours logged against any job yet.'}</p>`;
+  return h + archToggle;
+}
+function jobsView(){
+  return `<div class="row between"><h2>Jobs</h2>${S.jobsLoading&&!S.jobsData?'<span class="spin"></span>':''}</div>
+    <input id="jobsSearch" placeholder="Search job or PO…" autocomplete="off" value="${esc(S.jobsQuery||'')}" oninput="jobsFilter(this.value)">
+    <div class="card">
+      <p class="small muted" style="margin-top:0">All-time approved hours and labour cost per job. Tap one for the per-person breakdown.</p>
+      <div id="jobsList">${jobsRowsHtml() || (S.jobsLoading?'<p class="muted small">Loading…</p>':'<p class="muted small">Open this tab while online to load.</p>')}</div>
+    </div>`;
+}
+function jobsFilter(v){ S.jobsQuery=v; const el=document.getElementById('jobsList'); if(el) el.innerHTML=jobsRowsHtml(); }
+async function loadJobs(){
+  if (S.jobsLoading) return;
+  if (!S.jobsData){ const c=await DB.getCache('jobsData'); if(c){ S.jobsData=c; if(S.tab==='jobs') render(); } }
+  S.jobsLoading=true; if(S.tab==='jobs') render();
+  try{ const r=await apiBg('jobCosts',{}); S.jobsData=r; DB.setCache('jobsData',r); }
+  catch(e){ if(!S.jobsData) toast(e.message); }
+  S.jobsLoading=false; if(S.tab==='jobs') render();
+}
+function openJobDetail(k){
+  const j=dereg(k); if(!j) return;
+  const pk=reg({jobSite:j.name, po:j.po||''});
+  sheet(`<h2>${esc(j.name||j.po||'—')}</h2>
+    ${j.project?`<p class="small" style="margin:-6px 0 6px">${esc(j.project)}</p>`:''}
+    <p class="small muted">${j.po?('PO '+esc(j.po)+' · '):''}${esc(j.status||'')} ·
+      <b>${j.hours.toFixed(2)} hrs</b> ≈ $${j.cost.toFixed(2)} labour${j.pending?` · ${j.pending.toFixed(2)} hrs pending`:''}</p>
+    ${(j.employees||[]).map(e=>`<div class="list-item row between">
+      <div><b>${esc(e.name)}</b></div>
+      <div style="text-align:right"><b>${e.hours.toFixed(2)} hrs</b><div class="small muted">≈ $${e.cost.toFixed(2)}</div></div>
+    </div>`).join('')||'<p class="muted small">No breakdown available.</p>'}
+    ${S.me&&S.me.role==='admin'?`
+      <div class="small muted" style="margin-top:12px">Invoicing — two steps</div>
+      <button style="width:100%;margin-top:4px" onclick="openInvoiceList('${pk}')">🧾 Build Initial Draft</button>
+      <button class="secondary" style="width:100%;margin-top:6px" onclick="reqInvoice('${pk}','final',this)">✅ Build Final Draft</button>
+      <p class="small muted" style="margin:6px 0 0">Initial: you confirm the quantity of each part first, then Claude bills that list at cost and adds the hours. Final rolls them up and applies the markup. Neither is ever sent to the customer.</p>`:''}
+    <button class="secondary" style="width:100%;margin-top:${S.me&&S.me.role==='admin'?'6':'10'}px" onclick="openJobAll('${pk}')">📋 Job details</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+}
+
+
+
+/* ---------------------------------------------------------------------------------------------
+ * JOB DETAILS — one page (v57)
+ * The day-by-day hours, everything bought and used, and the job's photos used to be three
+ * separate screens behind three buttons, so seeing the whole job meant opening and closing each
+ * one in turn and holding the three halves in your head. Now they are three sections of one
+ * page you scroll. The three section builders below are the ONLY place each is rendered.
+ * Each section loads independently: one that fails says so and the other two still show.
+ * ------------------------------------------------------------------------------------------ */
+
+/* Day by day — newest first, with who, the times, and any note on the shift. */
+function jobDaysHtml(rows){
+  rows = rows || [];
+  if(!rows.length) return '<p class="muted small">No shifts logged against this job yet.</p>';
+  const byDate={};
+  rows.forEach(x=>{ (byDate[x.date]=byDate[x.date]||[]).push(x); });
+  const days=Object.keys(byDate).sort().reverse();
+  const total=rows.reduce((s,x)=>s+(Number(x.hours)||0),0);
+  return `<p class="small muted" style="margin:0 0 6px">${rows.length} shift${rows.length===1?'':'s'} ·
+      <b>${total.toFixed(2)} hrs</b>, newest first${rows.length>=400?' (most recent 400)':''}</p>` +
+    days.map(d=>{
+      const list=byDate[d];
+      const dayTotal=list.reduce((s,x)=>s+(Number(x.hours)||0),0);
+      const lbl=schedDayLabel(d);
+      return `<div class="list-item">
+        <div class="row between"><b>${esc(lbl!=='Today'&&lbl!=='Tomorrow'
+          ? new Date(d+'T12:00').toLocaleDateString([],{weekday:'short',month:'short',day:'numeric',year:'numeric'})
+          : lbl)}</b><b>${dayTotal.toFixed(2)} hrs</b></div>
+        ${list.map(x=>`<div class="row between small" style="margin-top:2px">
+          <span>${esc(x.who)}${x.in?` <span class="muted">${fmtTime(x.in)}–${x.out?fmtTime(x.out):'…'}</span>`:''}</span>
+          <span>${(Number(x.hours)||0).toFixed(2)}h ${x.status==='pending'?'<span class="pill pending">pending</span>':''}</span>
+        </div>${x.notes?`<div class="small muted" style="margin-left:2px">↳ ${esc(x.notes)}</div>`:''}`).join('')}
+      </div>`;
+    }).join('');
+}
+
+/* Materials: what was USED (what the customer is charged for) and what was BOUGHT, grouped by
+   the supplier PO it came on, plus the documents and the Drive folders. */
+function jobMatsHtml(r){
+  const bought=(r&&r.bought)||[], used=(r&&r.used)||[];
+  const showP=bought.some(b=>b.price!=null)||used.some(u=>u.price!=null);
+  const byInv={};
+  bought.forEach(it=>{ const k=(it.supplier||'Supplier')+' · '+(it.invoice||'—');
+    (byInv[k]=byInv[k]||{date:'',doc:'',list:[]}); byInv[k].list.push(it);
+    if(it.date) byInv[k].date=it.date; if(it.doc) byInv[k].doc=it.doc; });
+  let boughtCost=0;
+  const boughtHtml=Object.keys(byInv).map(k=>{
+    const g=byInv[k];
+    const cost=g.list.reduce((sum,it)=>sum+(it.price!=null?it.price*it.qty:0),0);
+    boughtCost+=cost;
+    return `<div class="list-item">
+      <div class="row between"><b>${esc(k)}</b><span class="small muted">${esc(g.date||'')}</span></div>
+      ${g.list.map(it=>`<div class="row between small" style="margin-top:2px">
+          <span>${esc(it.desc)} <span class="muted">${esc(it.sku||'')}</span></span>
+          <span style="white-space:nowrap">×${it.qty}${it.price!=null?' · $'+(it.price*it.qty).toFixed(2):''}</span>
+        </div>`).join('')}
+      ${showP?`<div class="row between small" style="margin-top:4px;border-top:1px solid var(--line);padding-top:4px"><b>PO total (cost)</b><b>$${cost.toFixed(2)}</b></div>`:''}
+      ${g.doc?`<a class="small" href="${esc(g.doc)}" target="_blank" style="color:var(--accent2)">📄 open this PO</a>`:''}
+    </div>`; }).join('');
+  const realUsed=used.filter(u=>u.status!=='to return — awaiting credit note');
+  const bySku={};
+  realUsed.forEach(u=>{ const k=u.sku||u.desc;
+    (bySku[k]=bySku[k]||{desc:u.desc,sku:u.sku,qty:0,price:u.price}); bySku[k].qty+=u.qty; });
+  let usedCost=0;
+  const usedHtml=Object.keys(bySku).map(k=>{
+    const u=bySku[k]; if(u.price!=null) usedCost+=u.price*u.qty;
+    return `<div class="row between small" style="margin-top:3px">
+      <span>${esc(u.desc)} <span class="muted">${esc(u.sku||'')}</span></span>
+      <span style="white-space:nowrap">×${u.qty}${u.price!=null?' · $'+(u.price*u.qty).toFixed(2):''}</span>
+    </div>`; }).join('');
+  const pendingReturns=used.filter(u=>u.status==='to return — awaiting credit note');
+  const docs=(r&&r.docs)||[], folders=(r&&r.folders)||[];
+  const docsHtml = docs.length ? `<div style="margin-top:${boughtHtml?'10px':'0'}">
+      ${boughtHtml?'<div class="small muted" style="margin-bottom:4px">Documents on file</div>':''}
+      ${docs.map(d=>`<a class="list-item row between" href="${esc(d.url)}" target="_blank"
+          style="text-decoration:none;color:inherit">
+          <span>${d.kind==='photo'?'📷':'📄'} ${esc(d.name)}</span>
+          <span class="small muted" style="white-space:nowrap">${esc(d.date||'')}</span>
+        </a>`).join('')}</div>` : '';
+  const foldersHtml = folders.length
+    ? folders.map(f=>`<a href="${esc(f.url)}" target="_blank" style="text-decoration:none">
+         <button class="secondary" style="width:100%;margin-top:8px">📁 ${esc(f.name)} in Drive</button></a>`).join('')
+    : (docs.length?'':'<p class="small muted" style="margin-top:8px">No Drive folder found for this job yet.</p>');
+  return `<p class="small muted" style="margin:0 0 8px">The invoice charges what was <b>used</b>. Anything bought and not used stays in inventory.</p>
+    <div style="margin-bottom:10px"><b>Used on this job${showP?` — $${usedCost.toFixed(2)} at cost`:''}</b>
+      ${usedHtml||'<p class="muted small">Nothing recorded yet. Crew add this from the Clock tab → Materials used.</p>'}</div>
+    <div><b>Bought for this job${showP?` — $${boughtCost.toFixed(2)} at cost`:''}</b>
+      ${boughtHtml||''}${docsHtml}
+      ${(!boughtHtml&&!docsHtml)?'<p class="muted small">No supplier POs filed against this job yet.</p>':''}</div>
+    ${pendingReturns.length?`<div class="banner" style="background:#fef3c7;color:#92400e;margin-top:8px">↩ ${pendingReturns.length} item(s) flagged to go back to the supplier — they leave inventory when the credit note arrives.</div>`:''}
+    ${foldersHtml}`;
+}
+
+/* Photos: the quick look. The Drive folder stays the permanent home. */
+function jobPhotosHtml(r){
+  const files=(r&&r.files)||[];
+  const grid=files.map(f=>`<a href="${esc(f.url)}" target="_blank" style="width:31%;text-decoration:none">
+      ${f.isVideo
+        ? `<div style="width:100%;aspect-ratio:1;border-radius:12px;background:var(--panel2);display:flex;align-items:center;justify-content:center;font-size:1.8rem">🎬</div>`
+        : `<img src="https://drive.google.com/thumbnail?id=${esc(f.id)}&sz=w300" loading="lazy"
+             style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:12px;background:var(--panel2)"
+             onerror="this.replaceWith(Object.assign(document.createElement('div'),{textContent:'📷',style:'font-size:1.8rem;text-align:center'}))">`}
+      <div class="small muted" style="text-align:center">${fmtDay(f.date)}${f.by?(' · '+esc(String(f.by).split('@')[0])):''}</div>
+    </a>`).join('');
+  return `<p class="small muted" style="margin:0 0 8px">${files.length} photo/video${files.length===1?'':'s'}
+      ${r&&r.folderUrl?` · <a href="${esc(r.folderUrl)}" target="_blank" style="color:var(--accent2)">open folder in Drive ↗</a>`:''}</p>
+    ${files.length? `<div class="row" style="flex-wrap:wrap;gap:8px;align-items:flex-start">${grid}</div>`
+      : '<p class="muted small">No photos for this job yet — they show up here when the crew attaches them to entries.</p>'}`;
+}
+
+/* The whole job on one page. The three fetches run together, and each section renders on its
+   own as soon as its answer lands, so a slow photo folder never holds up the hours. */
+async function openJobAll(pk){
+  const ref=dereg(pk); if(!ref) return;
+  if(!S.online) return toast('You need signal to load the job details.');
+  const title=esc(ref.jobSite||ref.po||'Job');
+  const sec=(id,icon,label)=>`<div class="card" style="margin:8px 0">
+      <h3 style="margin-top:0">${icon} ${label}</h3>
+      <div id="${id}"><p class="center" style="margin:14px 0"><span class="spin"></span></p></div>
+    </div>`;
+  sheet(`<h2>${title}</h2>
+    <p class="small muted" style="margin-top:-4px">${ref.po?('PO '+esc(ref.po)):''}</p>
+    ${sec('jdDays','📆','Day by day')}
+    ${sec('jdMats','📦','Materials &amp; supplier POs')}
+    ${sec('jdPics','📷','Job photos')}
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+  const mine=S._sheet;
+  const put=(id,html)=>{ if(S._sheet!==mine) return; const el=document.getElementById(id); if(el) el.innerHTML=html; };
+  const fail=(id,e)=>put(id,`<p class="small" style="color:var(--bad)">Could not load this — ${esc(e&&e.message||'no answer')}</p>`);
+  apiBg('jobEntries',{jobSite:ref.jobSite, po:ref.po||''})
+    .then(r=>put('jdDays', jobDaysHtml(r&&r.rows))).catch(e=>fail('jdDays',e));
+  apiBg('jobMaterials',{jobSite:ref.jobSite, poNumber:ref.po||'', withFolder:1})
+    .then(r=>put('jdMats', jobMatsHtml(r))).catch(e=>fail('jdMats',e));
+  apiBg('jobMedia',{jobSite:ref.jobSite})
+    .then(r=>put('jdPics', jobPhotosHtml(r))).catch(e=>fail('jdPics',e));
+}
+
+/* 3.6: one tap → a structured request lands in admin@proes.ca's inbox, where Claude's
+   hourly sweep picks it up and runs the QuickBooks invoice build (POs + markup + hours). */
+/* v37 — invoicing in two steps.
+   INITIAL: every part on its own line at cost, consumables on one Misc. line naming them all,
+   no markup — so Paul can see at a glance that nothing was missed, and fix it in QuickBooks.
+   FINAL: reads back whatever Paul left on the invoice, rolls the parts into the usual single
+   Materials line and applies the markup tier to the corrected total. Neither stage sends. */
+const INV_LABEL = { initial:'🧾 Build Initial Draft', final:'✅ Build Final Draft' };
+async function reqInvoice(pk,stage,btn){
+  const ref=dereg(pk); if(!ref) return;
+  if(!S.online) return toast('You need signal to send the request.');
+  if(stage==='final' && !confirm('Final draft rewrites the invoice in QuickBooks: the itemised '
+      +'part lines are replaced by one Materials line with the markup applied.\n\n'
+      +'Have you finished correcting it in QuickBooks?')) return;
+  btn.disabled=true; btn.textContent='Sending…';
+  try{
+    // v53 — the script now emails the request AND starts Claude; on a cold start that can take
+    // longer than the default wait, so give it 90 s instead of calling a sent request a failure.
+    const r=await api('invoiceRequest',{po:ref.po||'', jobSite:ref.jobSite, stage:stage},{timeout:90000});
+    btn.textContent = r&&r.fired ? '⚡ Claude is building it' : '✓ Sent to Claude';
+    toast(stage==='final'
+      ? 'Final draft requested — the parts get rolled up and the markup applied. Still not sent to the customer.'
+      : (r&&r.fired
+          ? 'Claude started on it now — the draft should be in QuickBooks in about 5–10 minutes. Every part at cost, for you to check.'
+          : 'Initial draft requested — every part listed at cost, for you to check in QuickBooks.' + (r&&r.note?' ('+r.note+')':'')), 7000);
+  }catch(e){
+    // No answer is not a no: the request is usually already on its way. Say so, and do not
+    // invite a second tap (the build checks QuickBooks first, so a repeat is harmless anyway).
+    if (e && e.kind === 'network'){ btn.textContent='✓ Probably sent'; toast('The office was slow to answer, but the request has most likely gone through — watch for the "Initial draft ready" email in a few minutes before tapping again.', 8000); return; }
+    toast(e.message); btn.disabled=false; btn.textContent=INV_LABEL[stage]||'Build the invoice'; }
+}
+
+/* v55 — Build Initial Draft: Paul confirms the parts first.
+   Every line from the job's supplier POs (same part at the same price merged; credit notes net
+   off), each with an editable quantity. 0 = not billed. "Add a part" for anything bought
+   elsewhere. Save → the list is stored on the Invoice lists tab and Claude builds the draft from
+   it, then fetches the hours. If a list was saved before, its quantities come back pre-filled. */
+let invList=null;
+async function openInvoiceList(pk){
+  const ref=dereg(pk); if(!ref) return;
+  if(!S.online) return toast('You need signal to load the parts.');
+  sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center" style="margin:22px 0"><span class="spin"></span> Loading the POs…</p>`);
+  const mine=S._sheet;
+  try{
+    const [m,saved]=await Promise.all([
+      apiBg('jobMaterials',{jobSite:ref.jobSite, poNumber:ref.po||''}),
+      apiBg('invoiceMaterials',{po:ref.po||'', jobSite:ref.jobSite}).catch(()=>null)]);
+    if(S._sheet!==mine) return;
+    const byKey={}, order=[];
+    (m.bought||[]).forEach(b=>{
+      const unit=b.price!=null?Math.round(Number(b.price)*100)/100:null;
+      const k=(String(b.sku||'').trim().toUpperCase()||String(b.desc||'').trim().toLowerCase())+'|'+(unit==null?'':unit);
+      if(!byKey[k]){ byKey[k]={sku:b.sku||'', desc:b.desc||'', unit, bought:0, supplier:b.supplier||'', invoice:String(b.invoice||''), src:[]}; order.push(k); }
+      const it=byKey[k]; it.bought+=Number(b.qty)||0;
+      const inv=(b.supplier||'')+' '+(b.invoice||''); if(!it.src.includes(inv)) it.src.push(inv);
+    });
+    let items=order.map(k=>byKey[k]).filter(it=>Math.round(it.bought*1000)>0)
+      .map(it=>({...it, bought:Math.round(it.bought*1000)/1000, qty:Math.round(it.bought*1000)/1000}));
+    // pre-fill from an earlier save: same part + price keeps Paul's quantity; his extra lines come back too
+    if(saved&&saved.found){
+      const sk=it=>(String(it.sku||'').trim().toUpperCase()||String(it.desc||'').trim().toLowerCase())+'|'+(it.unit==null?'':Math.round(it.unit*100)/100);
+      const prev={}; (saved.items||[]).forEach(x=>prev[sk(x)]=x);
+      items.forEach(it=>{ const x=prev[sk(it)]; it.qty = x ? x.qty : 0; if(x) x._used=1; });
+      (saved.items||[]).filter(x=>!x._used&&x.bought==null).forEach(x=>items.push({sku:x.sku||'',desc:x.desc,unit:x.unit,bought:null,qty:x.qty,supplier:'',invoice:'',src:[],added:true}));
+    }
+    invList={ref, items, savedAt: saved&&saved.found?saved.savedAt:''};
+    renderInvoiceList();
+  }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
+}
+function invListRead(){
+  if(!invList) return;
+  invList.items.forEach((it,i)=>{
+    const q=document.getElementById('ilq'+i); if(q) it.qty=Math.max(0,Number(q.value)||0);
+    if(it.added){ const d=document.getElementById('ild'+i), u=document.getElementById('ilu'+i);
+      if(d) it.desc=d.value.trim(); if(u) it.unit=u.value===''?null:Math.max(0,Number(u.value)||0); }
+  });
+}
+function invListTotals(){
+  invListRead(); let t=0, n=0;
+  invList.items.forEach(it=>{ if(it.qty>0&&it.desc){ n++; if(it.unit!=null) t+=it.unit*it.qty; } });
+  const el=document.getElementById('ilTot'); if(el) el.textContent=`${n} part line${n===1?'':'s'} · $${t.toFixed(2)} at cost`;
+  invList.items.forEach((it,i)=>{ const c=document.getElementById('ilc'+i); if(c) c.textContent=it.unit!=null?'$'+(it.unit*it.qty).toFixed(2):'—'; });
+}
+function renderInvoiceList(){
+  const L=invList; if(!L) return;
+  const rows=L.items.map((it,i)=>`<div class="list-item" style="padding:8px 0">
+      ${it.added
+        ? `<input id="ild${i}" placeholder="Part description" value="${esc(it.desc||'')}" oninput="invListTotals()" style="margin:0 0 6px">`
+        : `<div><b>${esc(it.desc)}</b></div>
+           <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}`:''}</div>`}
+      <div class="row" style="align-items:center;gap:8px;margin-top:4px">
+        <button class="secondary" style="width:44px;padding:8px 0" onclick="invStep(${i},-1)">−</button>
+        <input id="ilq${i}" type="number" min="0" step="any" inputmode="decimal" value="${it.qty}" oninput="invListTotals()" style="width:84px;margin:0;text-align:center">
+        <button class="secondary" style="width:44px;padding:8px 0" onclick="invStep(${i},1)">+</button>
+        ${it.added
+          ? `<span class="small muted">@ $</span><input id="ilu${i}" type="number" min="0" step="0.01" inputmode="decimal" placeholder="cost" value="${it.unit==null?'':it.unit}" oninput="invListTotals()" style="width:84px;margin:0">`
+          : `<span class="small muted">@ ${it.unit!=null?'$'+it.unit.toFixed(2):'no cost'}</span>`}
+        <span class="grow" style="text-align:right;font-weight:600" id="ilc${i}"></span>
+      </div></div>`).join('');
+  sheet(`<h2 style="margin-bottom:2px">${esc(L.ref.jobSite)} — parts to bill</h2>
+    <p class="small muted" style="margin-top:0">${L.ref.po?('PO '+esc(L.ref.po)+' · '):''}Set how many of each part to put on the invoice. 0 = leave it off. Claude bills exactly this list at cost, then adds the hours.${L.savedAt?' <b>Pre-filled from your last save.</b>':''}</p>
+    ${rows||'<p class="muted small">No supplier POs are filed against this job. Add parts below, or save with none for a labour-only draft.</p>'}
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="invAdd()">＋ Add a part</button>
+    <div class="card row between" style="margin:10px 0"><b>Parts</b><b id="ilTot"></b></div>
+    <div class="row" style="margin-top:6px">
+      <button class="secondary grow" onclick="invList=null;closeSheet()">Cancel</button>
+      <button class="grow" id="ilGo" onclick="invListSave()">Save &amp; build draft</button>
+    </div>`);
+  invListTotals();
+}
+function invStep(i,d){ invListRead(); const it=invList.items[i]; it.qty=Math.max(0,Math.round((Number(it.qty)+d)*1000)/1000);
+  const q=document.getElementById('ilq'+i); if(q) q.value=it.qty; invListTotals(); }
+function invAdd(){ invListRead(); invList.items.push({sku:'',desc:'',unit:null,bought:null,qty:1,supplier:'',invoice:'',src:[],added:true}); renderInvoiceList();
+  const i=invList.items.length-1; setTimeout(()=>{ const d=document.getElementById('ild'+i); if(d) d.focus(); },50); }
+async function invListSave(){
+  invListRead();
+  const L=invList, btn=document.getElementById('ilGo');
+  const items=L.items.filter(it=>it.desc).map(it=>({sku:it.sku,desc:it.desc,qty:it.qty,unit:it.unit,supplier:it.supplier,invoice:it.invoice,bought:it.bought}));
+  if(!items.some(it=>it.qty>0) && !confirm('No parts on the list — build a labour-only draft?')) return;
+  btn.disabled=true; btn.textContent='Sending…';
+  try{
+    const r=await api('invoiceMaterialsSave',{po:L.ref.po||'', jobSite:L.ref.jobSite, items},{timeout:90000});
+    invList=null; closeSheet();
+    toast(r&&r.fired
+      ? `Saved ${r.lines} part line(s) ($${Number(r.partsCost||0).toFixed(2)} at cost). Claude started on it — the draft should be in QuickBooks in about 5–10 minutes.`
+      : `Saved ${r.lines} part line(s). Initial draft requested.` + (r&&r.note?' ('+r.note+')':''), 8000);
+  }catch(e){
+    if (e && e.kind === 'network'){ invList=null; closeSheet(); toast('The office was slow to answer, but the list has most likely been saved and sent — watch for the "Initial draft ready" email before trying again.', 8000); return; }
+    toast(e.message); btn.disabled=false; btn.textContent='Save & build draft';
+  }
+}
+
+
+
+
+
+/* ----- SCHEDULE TAB (everyone): the admin calendar, with per-event crew assignment -----
+   Source of truth is admin@proes.ca's Google Calendar (the one the AI books). Crew see only
+   the events they're assigned to — plus who else is coming; admins see everything and assign
+   from the event detail sheet. Newly-assigned workers get an email. */
+async function loadSched(){
+  if (S.schedLoading) return;
+  if (!S.sched){ const c=await DB.getCache('sched'); if(c){ S.sched=c; if(S.tab==='sched') render(); } } // paint instantly
+  S.schedLoading=true; if(S.tab==='sched') render();
+  try{ const r=await apiBg('scheduleList',{}); if(r&&Array.isArray(r.events)){ S.sched=r; S.schedErr=''; DB.setCache('sched',r); } }
+  catch(e){ S.schedErr=/permission/i.test(e.message)
+      ? 'The Schedule needs a one-time authorization from Paul: open script.google.com → the timesheet project → Run any function → approve the Calendar permission.'
+      : e.message;
+    if(!S.sched) { /* shown inline in the tab — no vanishing toast */ } else if(!/busy right now/.test(e.message)) toast(e.message); }
+  S.schedLoading=false; if(S.tab==='sched') render();
+}
+function schedDayLabel(dstr){
+  const t=localDateStr(new Date());
+  const tomorrow=localDateStr(new Date(Date.now()+86400000));
+  if(dstr===t) return 'Today';
+  if(dstr===tomorrow) return 'Tomorrow';
+  const p=dstr.split('-');
+  return new Date(Number(p[0]),Number(p[1])-1,Number(p[2])).toLocaleDateString([],{weekday:'long', month:'short', day:'numeric'});
+}
+function schedView(){
+  const d=S.sched;
+  let body='';
+  if(d){
+    const byDay={};
+    d.events.forEach(ev=>{ const k=localDateStr(new Date(ev.start)); (byDay[k]=byDay[k]||[]).push(ev); });
+    (d.holidays||[]).forEach(h=>{ byDay[h.date]=byDay[h.date]||[]; }); // holiday-only days still get a header
+    const offByDay={};
+    if(d.canAssign) (d.timeOff||[]).forEach(t=>{ if(t.status!=='approved') return;
+      Object.keys(byDay).forEach(day=>{ if(day>=t.start&&day<=t.end) (offByDay[day]=offByDay[day]||[]).push(t.name); }); });
+    const days=Object.keys(byDay).sort();
+    body=days.map(day=>{
+      const hol=(d.holidays||[]).filter(h=>h.date===day);
+      return `<h3 style="margin:14px 0 4px">${esc(schedDayLabel(day))}</h3>`+
+      hol.map(h=>`<div class="banner" style="background:#fef9c3;color:#854d0e;border:1px solid #fde68a;margin:4px 0">🎉 ${esc(h.name)} — stat holiday</div>`).join('')+
+      (offByDay[day]?`<div class="small" style="color:var(--pending);margin:2px 0 4px">🏖 Off: ${offByDay[day].map(esc).join(', ')}</div>`:'')+
+      byDay[day].map(ev=>{ const k=reg(ev);
+        return `<div class="list-item" style="cursor:pointer" onclick="openSchedDetail('${k}')">
+          <div class="row between"><b>${esc(ev.title)}</b>
+            <span class="small muted">${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}</span></div>
+          ${ev.location?`<div class="small muted">📍 ${esc(ev.location)}</div>`:''}
+          <div class="small" style="margin-top:2px">${ev.assigned.length
+            ? ev.assigned.map(a=>`<span class="chip" style="padding:3px 10px;font-size:.78rem">${esc(a.name)}</span>`).join(' ')
+            : (d.canAssign?'<span style="color:var(--pending)">⚠ nobody assigned — tap to assign</span>':'')}</div>
+        </div>`; }).join('');
+    }).join('');
+    if(!days.length) body = d.canAssign
+      ? '<p class="muted small">Nothing on the calendar for the next 2 weeks.</p>'
+      : '<p class="muted small">Nothing scheduled for you in the next 2 weeks. Check back — new jobs show up here when you\'re assigned.</p>';
+  } else body = S.schedErr
+    ? `<div class="banner ot" style="white-space:pre-wrap">⚠ ${esc(S.schedErr)}</div>`
+    : (S.schedLoading?'':'<p class="muted small">Open this tab while online to load the schedule.</p>');
+  const mode=S.schedView||'list';
+  const head=`<div class="row between"><h2>Schedule</h2>${(S.schedLoading||S._smLoading)?'<span class="spin"></span>':''}</div>
+    <div class="seg" style="margin-bottom:10px">
+      <button class="${mode==='list'?'on':''}" onclick="schedToggle('list')">☰ Next 2 weeks</button>
+      <button class="${mode==='month'?'on':''}" onclick="schedToggle('month')">📅 Month</button>
+    </div>
+    ${canApprove()?`<div class="row" style="margin-bottom:10px">
+      <button class="secondary grow" onclick="openAddManual('job')">⚡ Schedule a job</button>
+      <button class="secondary grow" onclick="openAddManual('call')">📞 Schedule a call</button>
+    </div>`:''}`;
+  if(mode==='month') return head + schedMonthHtml() + (d?timeOffSection():'');
+  return head + `<div class="card">
+      <p class="small muted" style="margin:0">${(S.sched&&S.sched.canAssign)
+        ? 'Your admin@proes.ca calendar, next 2 weeks. Tap a job to assign the crew — new assignees get an email.'
+        : 'Your jobs for the next 2 weeks, with everything you need: time, address, details, and who\'s with you.'}</p>
+    </div>
+    ${body}
+    ${d?timeOffSection():''}`;
+}
+function schedRefreshAll(){ // any schedule mutation: refresh the list AND drop stale month grids
+  S.schedMonths={};
+  loadSched();
+  if((S.schedView||'list')==='month') loadSchedMonth();
+}
+function schedToggle(m){
+  S.schedView=m; render();
+  if(m==='month') loadSchedMonth();
+  else if(S.online) loadSched();
+}
+/* ---- Month view: Google-Calendar-style grid; tap a day for that day's jobs ---- */
+function curSchedMonth(){ return S.schedMonth || curMonthStr(); }
+async function loadSchedMonth(){
+  const month=curSchedMonth();
+  if (S._smLoading===month) return;
+  S.schedMonths=S.schedMonths||{};
+  if (!S.schedMonths[month]){
+    const c=await DB.getCache('sched_'+month);
+    if(c){ S.schedMonths[month]=c; if(S.tab==='sched') render(); } // paint instantly
+  }
+  if (!S.online) return;
+  S._smLoading=month; if(S.tab==='sched') render();
+  try{
+    const p=month.split('-');
+    const start=`${p[0]}-${p[1]}-01`;
+    const end=localDateStr(new Date(Number(p[0]),Number(p[1]),1)); // first of next month
+    const r=await apiBg('scheduleList',{startDate:start,endDate:end});
+    if(r&&Array.isArray(r.events)){ S.schedMonths[month]=r; DB.setCache('sched_'+month,r); }
+  }catch(e){ if(!S.schedMonths[month]) toast(e.message); }
+  S._smLoading=null; if(S.tab==='sched') render();
+}
+function schedShiftMonth(dir){
+  const p=curSchedMonth().split('-');
+  const dt=new Date(Number(p[0]), Number(p[1])-1+dir, 1);
+  // keep within the backend's window: ~6 months ahead, 12 back
+  const lim=new Date(); const min=new Date(lim.getFullYear(),lim.getMonth()-12,1), max=new Date(lim.getFullYear(),lim.getMonth()+6,1);
+  if(dt<min||dt>max) return toast(dir>0?'That\'s as far ahead as the schedule goes.':'That\'s as far back as it goes.');
+  S.schedMonth=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0');
+  render(); loadSchedMonth();
+}
+function schedMonthHtml(){
+  const month=curSchedMonth(), data=(S.schedMonths||{})[month];
+  const p=month.split('-'), y=Number(p[0]), m=Number(p[1]);
+  const evByDay={}, unByDay={}, holByDay={}, offByDay={};
+  if(data){
+    data.events.forEach(ev=>{ const k=localDateStr(new Date(ev.start));
+      (evByDay[k]=evByDay[k]||[]).push(ev);
+      if(data.canAssign && !ev.assigned.length) unByDay[k]=true; });
+    (data.holidays||[]).forEach(h=>holByDay[h.date]=h.name);
+    (data.timeOff||[]).forEach(t=>{ if(t.status!=='approved') return;
+      for(let d=new Date(y,m-1,1); d.getMonth()===m-1; d.setDate(d.getDate()+1)){
+        const k=localDateStr(d); if(k>=t.start&&k<=t.end) offByDay[k]=true; } });
+  }
+  const first=new Date(y,m-1,1), dim=new Date(y,m,0).getDate(), tstr=localDateStr(new Date());
+  let cells=['S','M','T','W','T','F','S'].map(d=>`<div class="dow">${d}</div>`).join('');
+  for(let i=0;i<first.getDay();i++) cells+='<div class="day blank"></div>';
+  for(let dn=1;dn<=dim;dn++){
+    const k=`${y}-${String(m).padStart(2,'0')}-${String(dn).padStart(2,'0')}`;
+    const evs=evByDay[k]||[];
+    const dots=evs.slice(0,3).map(()=>`<span class="dot${unByDay[k]?' warn':''}"></span>`).join('');
+    cells+=`<div class="day${k===tstr?' today':''}${holByDay[k]?' hol':''}" onclick="openSchedDay('${k}')">
+      ${offByDay[k]?'<span class="off">🏖</span>':''}${dn}<span class="dots">${dots}</span></div>`;
+  }
+  const label=new Date(y,m-1,1).toLocaleDateString([],{month:'long',year:'numeric'});
+  return `<div class="card">
+    <div class="row between" style="margin-bottom:8px">
+      <button class="secondary" style="padding:8px 16px" onclick="schedShiftMonth(-1)">‹</button>
+      <b style="color:var(--navy)">${esc(label)}</b>
+      <button class="secondary" style="padding:8px 16px" onclick="schedShiftMonth(1)">›</button>
+    </div>
+    <div class="cal">${cells}</div>
+    <p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
+      ? '• dot = jobs that day (orange = nobody assigned yet) · 🏖 = someone off · yellow = stat holiday · tap a day'
+      : '• dot = you\'re scheduled that day · 🏖 = your time off · yellow = stat holiday · tap a day to see where you\'re heading'}</p>
+  </div>`;
+}
+function openSchedDay(day){
+  const data=(S.schedMonths||{})[curSchedMonth()];
+  if(!data){ toast('Still loading — try again in a second.'); return; }
+  const evs=data.events.filter(e=>localDateStr(new Date(e.start))===day);
+  const hols=(data.holidays||[]).filter(h=>h.date===day);
+  const offs=(data.timeOff||[]).filter(t=>t.status==='approved'&&day>=t.start&&day<=t.end);
+  const p=day.split('-');
+  const label=new Date(Number(p[0]),Number(p[1])-1,Number(p[2])).toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'});
+  sheet(`<h2>${esc(label)}</h2>
+    ${hols.map(h=>`<div class="banner" style="background:#fef9c3;color:#854d0e;border:1px solid #fde68a">🎉 ${esc(h.name)} — stat holiday</div>`).join('')}
+    ${(data.canAssign&&offs.length)?`<div class="small" style="color:var(--pending);margin:4px 0">🏖 Off: ${offs.map(t=>esc(t.name)).join(', ')}</div>`:''}
+    ${(!data.canAssign&&offs.length)?'<div class="small" style="color:var(--pending);margin:4px 0">🏖 Your approved time off</div>':''}
+    ${evs.length? evs.map(ev=>{ const k=reg(ev);
+      return `<div class="list-item" style="cursor:pointer" onclick="openSchedDetail('${k}')">
+        <div class="row between"><b>${esc(ev.title)}</b>
+          <span class="small muted">${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}</span></div>
+        ${ev.location?`<div class="small muted">📍 ${esc(ev.location)}</div>`:''}
+        <div class="small" style="margin-top:2px">${ev.assigned.map(a=>`<span class="chip" style="padding:3px 10px;font-size:.78rem">${esc(a.name)}</span>`).join(' ')||(data.canAssign?'<span style="color:var(--pending)">⚠ nobody assigned</span>':'')}</div>
+      </div>`; }).join('')
+      : `<p class="muted small">${data.canAssign?'Nothing on the calendar this day.':'Nothing scheduled for you this day.'}</p>`}
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+}
+/* Time off: crew request + track; admins approve/deny right here. */
+function timeOffSection(){
+  const d=S.sched||{}, list=d.timeOff||[];
+  const pill=s=>`<span class="pill ${s==='approved'?'approved':(s==='pending'?'pending':'rejected')}">${esc(s)}</span>`;
+  if(d.canAssign){
+    const pending=list.filter(t=>t.status==='pending');
+    const off=list.filter(t=>t.status==='approved');
+    return `<div class="card"><h3>Time off</h3>
+      ${pending.length? pending.map(t=>{ const k=reg(t); return `<div class="list-item">
+          <div class="row between"><div><b>${esc(t.name)}</b> · ${esc(t.start)}${t.end!==t.start?(' → '+esc(t.end)):''}
+            ${t.reason?`<div class="small muted">${esc(t.reason)}</div>`:''}</div>${pill(t.status)}</div>
+          <div class="row" style="margin-top:6px">
+            <button class="grow" onclick="toDecide('${k}',true,this)">Approve</button>
+            <button class="secondary grow" onclick="toDecide('${k}',false,this)">Deny</button></div>
+        </div>`; }).join('') : '<p class="muted small">No pending requests.</p>'}
+      ${off.length?`<p class="small muted" style="margin-bottom:0">Approved leave in this window: ${off.map(t=>esc(t.name)+' ('+esc(t.start)+(t.end!==t.start?('→'+esc(t.end)):'')+')').join(' · ')}</p>`:''}
+    </div>`;
+  }
+  return `<div class="card"><h3>My time off</h3>
+    ${list.length? list.map(t=>{ const k=reg(t); return `<div class="list-item row between">
+        <div>${esc(t.start)}${t.end!==t.start?(' → '+esc(t.end)):''}${t.reason?`<div class="small muted">${esc(t.reason)}</div>`:''}</div>
+        <div class="row">${pill(t.status)}${t.status==='pending'?`<button class="ghost" onclick="toCancel('${k}',this)">✕</button>`:''}</div>
+      </div>`; }).join('') : '<p class="muted small">No requests yet.</p>'}
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="openTimeOff()">🏖 Request time off</button>
+  </div>`;
+}
+function openTimeOff(){
+  const t=todayStr();
+  sheet(`<h2>Request time off</h2>
+    <p class="small muted">Paul gets an email right away and you'll get one back when it's decided.</p>
+    <label>First day off</label><input id="toStart" type="date" value="${t}" min="${t}">
+    <label>Last day off (same day for a single day)</label><input id="toEnd" type="date" value="${t}" min="${t}">
+    <label>Reason (optional)</label><input id="toReason" placeholder="e.g. family trip, appointment">
+    <button style="width:100%;margin-top:12px" onclick="toSubmit(this)">Send request</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
+}
+async function toSubmit(btn){
+  if(!S.online) return toast('You need signal to send a request.');
+  const s=val('toStart'), e=val('toEnd')||s;
+  if(!s) return toast('Pick the first day.');
+  if(e<s) return toast('Last day is before the first day.');
+  btn.disabled=true; btn.textContent='Sending…';
+  try{ await api('timeOffRequest',{startDate:s,endDate:e,reason:val('toReason')});
+    closeSheet(); toast('Request sent — Paul has been emailed.'); schedRefreshAll();
+  }catch(err){ toast(err.message); btn.disabled=false; btn.textContent='Send request'; }
+}
+async function toCancel(k,btn){
+  const t=dereg(k); if(!t) return;
+  if(!S.online) return toast('You need signal to cancel.');
+  btn.disabled=true;
+  try{ await api('timeOffCancel',{reqId:t.id}); toast('Request cancelled'); schedRefreshAll(); }
+  catch(e){ toast(e.message); btn.disabled=false; }
+}
+async function toDecide(k,approve,btn){
+  const t=dereg(k); if(!t) return;
+  if(!S.online) return toast('You need signal.');
+  btn.disabled=true;
+  try{ const r=await api('timeOffDecide',{reqId:t.id,approve});
+    toast((approve?'Approved':'Denied')+' — '+t.name+' has been emailed.'); schedRefreshAll();
+  }catch(e){ toast(e.message); btn.disabled=false; }
+}
+/* v59 — WHAT IS THIS BOOKING? Ask the office, don't guess.
+   v57 matched a calendar event to a job by looking through the Requests list already on the
+   phone. That only ever finds bookings that came from a website lead. A RETURN VISIT — the kind
+   Paul books standing in a customer's kitchen — is created as a calendar event with no Requests
+   row at all, so it matched nothing and showed "no job behind it", which on a quiet fortnight
+   described the only job on the calendar. The office now answers for any event: who it is for,
+   what the job is, and the original enquiry of the job a return visit continues. */
+function schedLinkify(s){
+  return esc(String(s||'')).replace(/https?:\/\/[^\s<>"']+/g,
+    u=>`<a href="${u}" target="_blank" rel="noopener" style="color:var(--accent2);word-break:break-all">${u}</a>`);
+}
+function schedBookedIndex(requestId){
+  const bk=(S.reqBooked||[]);
+  for(let i=0;i<bk.length;i++) if(String(bk[i].id)===String(requestId)) return i;
+  return -1;
+}
+async function openSchedDetail(k){
+  const ev=dereg(k); if(!ev) return;
+  const d=S.sched||{};
+  if(d.canAssign && !(S.employees&&S.employees.length) && S.online){
+    try{ const r=await api('listEmployees'); S.employees=r.employees||[]; }catch(e){}
+  }
+  const when=`${schedDayLabel(localDateStr(new Date(ev.start)))} · ${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}`;
+  const asg=new Set(ev.assigned.map(a=>a.email));
+  const crewHtml=`<h3 style="margin:12px 0 4px">${d.canAssign?'Assign the crew':'Who\'s on this job'}</h3>
+    ${d.canAssign
+      ? `${(S.employees||[]).filter(e=>e.active&&e.role!=='bookkeeper').map(e=>`<div class="perm">
+           <input type="checkbox" class="sa-emp" value="${esc(e.email)}" id="sa_${esc(e.email)}" ${asg.has(e.email)?'checked':''}>
+           <label for="sa_${esc(e.email)}" style="margin:0">${esc(e.name)}</label></div>`).join('')
+           || '<p class="muted small">No active employees to assign.</p>'}
+         <button style="width:100%;margin-top:10px" onclick="schedSave('${k}',this)">Save assignments</button>`
+      : (ev.assigned.length
+          ? ev.assigned.map(a=>`<div class="list-item"><b>${esc(a.name)}</b></div>`).join('')
+          : '<p class="muted small">Just you so far.</p>')}`;
+  const shell=(mid)=>`<h2>${esc(ev.title)}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(when)}</p>
+    ${ev.location?`<p class="small">📍 <a href="https://maps.google.com/?q=${encodeURIComponent(ev.location)}" target="_blank" style="color:var(--accent2)">${esc(ev.location)}</a></p>`:''}
+    ${mid}
+    ${ev.desc?`<details style="margin:10px 0"><summary class="small" style="color:var(--accent2);cursor:pointer">📋 Calendar notes</summary>
+       <div class="card" style="margin:6px 0 0"><div class="small" style="white-space:pre-wrap">${schedLinkify(ev.desc)}</div></div></details>`:''}
+    ${crewHtml}
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">Close</button>`;
+
+  if(!d.canAssign){ sheet(shell('')); return; }
+  sheet(shell('<p class="center small muted" style="margin:14px 0"><span class="spin"></span> looking up the job…</p>'));
+  const mine=S._sheet;
+  let info=null, err='';
+  // v65 — this one reads the calendar AND the Requests tab, so on a cold Apps Script start it
+  // can take well past the usual 30 s. Given longer rather than failing on a slow morning.
+  try{ info=await api('eventInfo',{eventId:ev.id},{bg:true, timeout:75000}); }
+  catch(e){ err=e.message||'Could not reach the office.'; }
+  if(S._sheet!==mine) return;                       // they moved on while it loaded
+
+  if(!info){ sheet(shell(`<p class="small" style="color:var(--bad);margin:10px 0">${esc(err)}</p>`)); return; }
+  const key=reg(info);
+  let bi=info.kind==='request'?schedBookedIndex(info.requestId):-1;
+  // The booked list is what the Move / Cancel / Correct buttons index into. If this session has
+  // not opened the Requests tab yet it is empty, and the job would wrongly look unactionable.
+  if(info.kind==='request' && bi<0 && S.online){
+    try{ await loadRequests(); if(S._sheet!==mine) return; bi=schedBookedIndex(info.requestId); }catch(e){}
+  }
+  const who=[info.customer, info.po].filter(Boolean).join(' · ');
+  const mid=`
+    ${who?`<p class="small" style="margin:6px 0 0"><b>${esc(info.customer||'')}</b>${info.po?` <span class="muted">${esc(info.po)}</span>`:''}</p>`:''}
+    ${info.phone?`<p class="small" style="margin:2px 0">📞 <a href="tel:${esc(String(info.phone).replace(/[^0-9+]/g,''))}" style="color:var(--accent2)">${esc(info.phone)}</a></p>`:''}
+    ${info.email?`<p class="small" style="margin:2px 0">✉️ <a href="mailto:${esc(info.email)}" style="color:var(--accent2)">${esc(info.email)}</a></p>`:''}
+    ${info.scope?`<div class="banner" style="background:var(--panel2);margin-top:8px">${esc(info.scope)}</div>`:''}
+    ${info.detail?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openSchedEnquiry('${key}')">📨 Original inquiry</button>`:''}
+    ${info.kind==='visit'?`<p class="small muted" style="margin:8px 0 0">This is a <b>return visit</b> — it continues ${info.po?esc(info.po):'an earlier job'}, so the details above are the original job's.</p>`:''}
+    ${info.isJob
+      ? `<button style="width:100%;margin-top:12px" onclick="openSchedModify('${key}',${bi})">✏️ Modify this booking</button>`
+      : `<p class="small muted" style="margin:10px 0 0">Not a job — nothing to change here.</p>`}`;
+  sheet(shell(mid));
+}
+/* v67 — ONE DOOR, NOT FOUR.
+   The sheet used to carry Move it / Cancel / Change the details side by side, and a return visit
+   got only two of them — so the one booking on a quiet calendar was also the one you could not
+   correct. Everything you can do to a booking now lives behind one Modify button, the same list
+   whatever created the booking, with each entry saying plainly what it will and will not touch. */
+function openSchedModify(key,bi){
+  const info=dereg(key); if(!info) return;
+  const isReq=info.kind==='request' && bi>=0;
+  const isVisit=info.kind==='visit';
+  const row=(icon,label,sub,onclick,cls)=>`<button class="${cls||'secondary'}" style="width:100%;margin-top:8px;text-align:left;padding:14px"
+      onclick="${onclick}"><div style="font-size:1.02rem">${icon}&nbsp;&nbsp;${label}</div>
+      ${sub?`<div class="small muted" style="margin-top:2px;white-space:normal">${sub}</div>`:''}</button>`;
+  sheet(`<h2>Modify</h2>
+    <p class="small muted" style="margin-top:-4px">${esc([info.customer,info.po,fmtDay(info.start)+' '+fmtTime(info.start)].filter(Boolean).join(' · '))}</p>
+    ${row('📅','Date &amp; time',
+        isReq?'Moves the calendar event and the PO Log start date, and asks the customer to confirm again.'
+             :'Moves this visit only. '+(info.po?esc(info.po)+' keeps its start date.':'Calendar only.'),
+        isReq?`closeSheetDom();openReqMove(${bi})`:`openVisitMove('${key}')`)}
+    ${info.jobRequestId
+      ? row('👤','Customer &amp; job details',
+          'Name, phone, email, address, scope, materials, hours and the quoted range.'
+          +(isVisit?' These belong to the job, so they change on '+(info.po?esc(info.po):'the original booking')+' too.':'')
+          +' Goes through to the PO Log.',
+          `openSchedEditJob('${key}')`)
+      : row('👤','Customer &amp; job details','No job record behind this booking — nothing to correct.','toast(\'This booking has no job record behind it.\')','ghost')}
+    ${info.jobRequestId && !isVisit
+      ? row('🔁','What it is — appointment or estimate',
+          info.po?('This already has job number '+esc(info.po)+', so it cannot go back to being an estimate. Tap to see why.')
+                 :'Switch between an estimate call and a booked job.',
+          `openSchedSetType('${key}')`)
+      : ''}
+    ${row('📨','Original inquiry', info.detail?'What the customer wrote, with their photos.':'Nothing on file for this one.',
+        info.detail?`openSchedEnquiry('${key}')`:`toast('No enquiry on file for this one.')`, info.detail?'secondary':'ghost')}
+    ${isReq
+      ? row('❌','Cancel the job','Frees the slot and marks '+(info.po?esc(info.po):'the job')+' Cancelled. The job number is kept, never reused.',
+          `closeSheetDom();openReqCancel(${bi})`,'danger')
+      : row('❌','Call off this visit',
+          isVisit?('Removes this trip only. '+(info.po?esc(info.po):'The job')+' stays open and still gets invoiced.')
+                 :'Removes it from the calendar.',
+          `openVisitCancel('${key}')`,'danger')}
+    <button class="ghost" style="width:100%;margin-top:12px" onclick="closeSheet()">Back</button>`);
+}
+/* Correct the job behind a booking — the same editor the Requests tab uses, reached from the
+   calendar. For a return visit this edits the job it continues, which is the right row: a phone
+   number is a fact about the customer, not about one trip out to them. */
+function openSchedEditJob(key){
+  const info=dereg(key); if(!info) return;
+  const q={ id:info.jobRequestId, customer:info.customer, company:info.company, phone:info.phone,
+            email:info.email, address:info.address, scope:info.scope, materials:info.materials,
+            hours:info.estHours, bookedHours:info.estHours,
+            priceLow:info.priceLow, priceHigh:info.priceHigh, po:info.po };
+  const k=reg(q);
+  sheet(`<h2>Correct ${esc(info.customer||'this job')}</h2>
+    <p class="small muted" style="margin-top:-4px">${info.po?esc(info.po)+' · ':''}Goes to the request, the calendar title and the PO Log. Use “Date &amp; time” to change when it happens.</p>
+    <label>Customer name</label><input id="edCustomer" value="${esc(q.customer||'')}">
+    <label>Company (blank for a homeowner)</label><input id="edCompany" value="${esc(q.company||'')}">
+    <div class="row"><div class="grow"><label>Phone</label><input id="edPhone" type="tel" value="${esc(q.phone||'')}"></div>
+      <div class="grow"><label>Email</label><input id="edEmail" type="email" value="${esc(q.email||'')}"></div></div>
+    <label>Address</label><input id="edAddress" value="${esc(q.address||'')}">
+    <label>Scope</label><textarea id="edScope" rows="3">${esc(q.scope||'')}</textarea>
+    <label>Materials</label><textarea id="edMaterials" rows="2">${esc(q.materials||'')}</textarea>
+    <div class="row">
+      <div class="grow"><label>Job length (hours)</label><input id="edHours" type="number" step="0.25" min="0" value="${q.hours||''}"></div>
+      <div class="grow"><label>Quoted from ($)</label><input id="edLow" type="number" step="1" min="0" value="${q.priceLow||''}"></div>
+      <div class="grow"><label>to ($)</label><input id="edHigh" type="number" step="1" min="0" value="${q.priceHigh||''}"></div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Back</button>
+      <button class="grow" onclick="schedSaveJob('${k}',this)">💾 Save</button>
+    </div>`);
+}
+async function schedSaveJob(k,btn){
+  const q=dereg(k); if(!q) return;
+  if(!S.online) return toast('You need signal to save.');
+  const p={id:q.id, customer:val('edCustomer'), company:val('edCompany'), phone:val('edPhone'),
+    email:val('edEmail'), address:val('edAddress'), scope:val('edScope'), materials:val('edMaterials'),
+    hours:val('edHours'), bookedHours:val('edHours'), priceLow:val('edLow'), priceHigh:val('edHigh')};
+  if(!String(p.customer).trim()) return toast('The customer needs a name.');
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const r=await api('requestUpdate',p,{timeout:120000});
+    toast(r&&r.changed&&r.changed.length?('Saved ✓ — '+r.changed.join(', ')):'Nothing changed');
+    if(r&&r.note&&/NOT |failed|not found/i.test(r.note)) setTimeout(()=>toast(r.note),2600);
+    closeSheet(); schedRefreshAll(); loadRequests();
+  }catch(e){ toast(e.message,8000); btn.disabled=false; btn.textContent='💾 Save'; }
+}
+/* Estimate call or booked job. The server refuses the two changes that would cost a PO number;
+   the refusal explains itself, so it is shown as-is rather than second-guessed here. */
+function openSchedSetType(key){
+  const info=dereg(key); if(!info) return;
+  const now=info.type==='ESTIMATE'?'an estimate call':'a booked job';
+  const want=info.type==='ESTIMATE'?'APPOINTMENT':'ESTIMATE';
+  sheet(`<h2>What is this?</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(info.customer||'')}${info.po?' · '+esc(info.po):''}</p>
+    <div class="banner" style="background:var(--panel2)">Right now it is <b>${now}</b>.</div>
+    <p class="small muted">An estimate call is a 15–120 minute phone call with no job number. A booked job burns the next job number, which becomes its QuickBooks invoice number.</p>
+    <button style="width:100%;margin-top:10px" onclick="schedSetTypeGo('${key}','${want}',this)">Change it to ${want==='ESTIMATE'?'an estimate call':'a booked job'}</button>
+    <button class="ghost" style="width:100%;margin-top:8px" onclick="closeSheet()">Leave it as it is</button>`);
+}
+async function schedSetTypeGo(key,want,btn){
+  const info=dereg(key); if(!info) return;
+  if(!S.online) return toast('You need signal.');
+  btn.disabled=true; btn.textContent='Changing…';
+  try{
+    await api('requestSetType',{id:info.jobRequestId, type:want},{timeout:90000});
+    toast('Changed to '+want+' ✓');
+    closeSheet(); schedRefreshAll(); loadRequests();
+  }catch(e){ toast(e.message,12000); btn.disabled=false; btn.textContent='Change it'; }
+}
+
+/* v68 — AFTER A CHANGE, TELL THEM OR DON'T.
+   Every screen that changes a booking had the customer email buried as a tick-box you had to
+   notice before you hit the button, and nothing at all for ringing them. Now the change happens
+   first and the choice comes after, in plain words, with "nothing for now" as a real option —
+   because a date moved by ten minutes needs no phone call and the app should not imply it does.
+   The phone makes the call; this only records that it happened, so weeks later there is an
+   answer to "did anyone actually ring them". */
+function afterChange(who, what, already){
+  const k=reg(who||{});
+  const tel=String((who&&who.phone)||'').replace(/[^0-9+]/g,'');
+  const mail=String((who&&who.email)||'').trim();
+  sheet(`<h2>Tell ${esc((who&&who.customer)||'the customer')}?</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(what||'')}</p>
+    ${already?`<div class="banner" style="background:var(--panel2)">✉️ ${esc(already)}</div>`:''}
+    ${tel?`<a href="tel:${esc(tel)}" style="text-decoration:none" onclick="tellCustomer('${k}','called',null)">
+        <button class="secondary" style="width:100%;margin-top:10px;padding:15px;text-align:left;font-size:1.02rem">📞&nbsp;&nbsp;Call ${esc(who.phone)}</button></a>`
+      :'<p class="small muted" style="margin-top:10px">No phone number on file for them.</p>'}
+    ${(mail&&!already)?`<button class="secondary" style="width:100%;margin-top:8px;padding:15px;text-align:left;font-size:1.02rem"
+        onclick="tellCustomer('${k}','email',this)">📧&nbsp;&nbsp;Email ${esc(mail)}</button>`:''}
+    ${(!mail&&!already)?'<p class="small muted" style="margin-top:8px">No email address on file for them.</p>':''}
+    <button class="ghost" style="width:100%;margin-top:12px;padding:14px" onclick="closeSheet()">Nothing for now</button>`);
+}
+async function tellCustomer(k,how,btn){
+  const who=dereg(k); if(!who||!who.eventId){ if(how==='called') closeSheetDom(); return; }
+  if(how==='called'){
+    try{ await api('eventTell',{eventId:who.eventId, how:'called'},{timeout:90000});
+         toast('Noted — marked as called'); loadRequests(); }
+    catch(e){ /* the call itself matters more than the record of it */ }
+    setTimeout(()=>closeSheetDom(),400);
+    return;
+  }
+  // v69 — read it before it goes. Fetch the letter, show it, let Paul rewrite the one paragraph
+  // that is his to write, and only then send.
+  if(!S.online) return toast('You need signal to email them.');
+  if(btn){ btn.disabled=true; btn.textContent='Opening…'; }
+  try{
+    const pv=await api('eventTell',{eventId:who.eventId, how:'email', preview:true},{timeout:90000});
+    openEmailDraft(k, pv);
+  }catch(e){
+    toast(e.message,8000);
+    if(btn){ btn.disabled=false; btn.textContent='📧  Email'; }
+  }
+}
+/* The letter, before it posts. The message box is Paul's; everything under it is built by the
+   script and shown read-only, because the Yes / Reschedule / Cancel links carry one-off tokens
+   and an edited link is a link that no longer works. */
+function openEmailDraft(k, pv){
+  sheet(`<h2>Email ${esc(pv.customer||'the customer')}</h2>
+    <p class="small muted" style="margin-top:-4px">To ${esc(pv.to)}</p>
+    <label>Subject <span class="muted">(set by the app)</span></label>
+    <input value="${esc(pv.subject)}" readonly style="opacity:.75">
+    <label>Your message — change it to whatever fits</label>
+    <textarea id="emMsg" rows="4">${esc(pv.suggestion||'')}</textarea>
+    <p class="small muted" style="margin-top:-2px">This is the only part that is yours. The time, the address${pv.buttons?', and the Yes / Reschedule / Cancel buttons':''} are filled in below it.</p>
+    <label>How it will look</label>
+    <div class="card" style="margin:0"><pre class="small" style="white-space:pre-wrap;word-break:break-word;margin:0">${esc(pv.body)}</pre></div>
+    ${pv.buttons?'<p class="small muted">The three buttons are live links. Tapping Yes turns the job green in the app; Reschedule turns it red and puts them on your list to ring.</p>':''}
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Don't send</button>
+      <button class="grow" onclick="sendEmailDraft('${k}',this)">📧 Send it</button>
+    </div>`);
+}
+async function sendEmailDraft(k,btn){
+  const who=dereg(k); if(!who) return;
+  if(!S.online) return toast('You need signal to send.');
+  const message=val('emMsg');
+  btn.disabled=true; btn.textContent='Sending…';
+  try{
+    const r=await api('eventTell',{eventId:who.eventId, how:'email', message},{timeout:120000});
+    toast('Emailed ✓'+(r&&r.note&&!/^emailed$/i.test(r.note)?' — '+r.note:''),6000);
+    closeSheet(); loadRequests();
+  }catch(e){ toast(e.message,9000); btn.disabled=false; btn.textContent='📧 Send it'; }
+}
+
+/* v70/v71 — THE ENQUIRY IN THREE LAYERS.
+   What is stored on a lead is the ball-park block: Claude's tidy write-up of the form, the
+   scenario pricing, and the swing question. The customer's OWN words are not in it — and the
+   phrasing matters, because "the breaker keeps going" and "replace the panel" get written up the
+   same way and are very different jobs. So:
+     1. what they sent      — fetched from the form email, plus their photos
+     2. the numbers         — the scenarios, the totals, the open question
+     3. everything          — the whole block, untouched
+   The email is fetched only when this sheet opens, and its absence is normal for a job Paul
+   typed in himself, so it says so rather than looking broken. */
+/* v71 — pull a priced figure off the lines of a scenario that talk about one thing.
+   The shapes these blocks actually use, all four seen in live data:
+       Labour (RSJ Red Seal): 3.0 hrs @ $105/hr = $315.00
+       Total Labour + Travel (4.0 hrs): $420.00
+       Materials - 2x extension ring, connectors: $215.00
+       - Material: ~$18.50  (cost ~$14.80 + 25% markup)
+   Three rules, in this order, and all four come out right:
+     - throw away anything in brackets, or the last dollar figure on the Material line is the
+       SUPPLIER's cost, which is not what the customer is being charged;
+     - throw away a rate, so "@ $105/hr" is never mistaken for a total;
+     - an "= $x" wins; otherwise the last figure on the line; and a line whose own label says
+       "Total" replaces the sum rather than adding to it. */
+/* v71 — reading the printed figures off a ball-park block.
+   Every one of these is here because the obvious version got a real lead wrong:
+     - the GRAND total was being read as "Total labour: $367.50" on Dawn Lewis #45 and
+       "Total Labour + Travel: $420.00" on Barry Toker #48, because "Total" matched first;
+     - hours were coming out as 1.5 instead of 3.5 because the blocks write "1.5 hrs × $105/hr"
+       with a multiplication sign, and the old pattern only knew "@" and the letter x;
+     - the parts list was coming out as ": ~" because on half these lines the list of parts is
+       inside the brackets, which had been thrown away to protect the prices.
+   So: tested against five live blocks (#41, #45, #46, #48, #49), not against the template. */
+function bpTidy(s){
+  return String(s||'').replace(/\$\s*[\d,.]+(?:\s*\/\s*h(?:r|our)?)?/gi,'')
+    .replace(/\b(?:estimated|est|e\.g|i\.e|approx)\b\.?,?/gi,'')
+    .replace(/\s{2,}/g,' ')
+    .replace(/^[\s:;—–\-•*.,~]+/,'')
+    .replace(/[\s:;—–\-=~.,]+$/,'')
+    .trim();
+}
+/* The grand total. A line whose own label says Total but ALSO says labour, travel, materials
+   or parts is a sub-line, not the total — and "Subtotal" is the pre-GST figure, which the
+   \b in \btotals?\b already excludes since there is no word break inside the word.
+   The last qualifying line wins, because the grand total is written last. A line carrying two
+   figures is a range ("estimated $2,968-$4,552") and is shown as one. */
+function bpTotal(body){
+  var pick=null;
+  String(body||'').split('\n').forEach(function(ln){
+    var head=ln.split(':')[0]||ln;
+    if(!/\btotals?\b/i.test(head)) return;
+    if(/labou?r|travel|material|part/i.test(head)) return;
+    var clean=ln.replace(/\$\s*[\d,.]+\s*\/\s*h(?:r|our)?\b/gi,' '), m, got=[];
+    var re=/\$\s*([\d,]+(?:\.\d{2})?)/g;
+    while((m=re.exec(clean))) got.push(m[1]);
+    if(got.length) pick=got;
+  });
+  if(!pick) return '';
+  var a=pick[0], b=pick[pick.length-1];
+  return a===b ? ('$'+b) : ('$'+a+'–$'+b);
+}
+/* Field hours. A "Total ... N hrs" line wins; otherwise add up the hours on the lines that
+   actually carry a price, so an aside like "~0.5 hr each way" is not counted twice. The LAST
+   hours figure on a line is the one that counts: "~0.5 hr each way = 1.0 hr" means 1.0. */
+function bpHours(body){
+  var stated=0, sum=0;
+  String(body||'').split('\n').forEach(function(ln){
+    if(!/labou?r|travel|drive time|on[- ]site/i.test(ln)) return;
+    var m, h=0, re=/([\d.]+)\s*hrs?\b/gi;
+    while((m=re.exec(ln))) h=Number(m[1])||h;
+    if(!h) return;
+    var head=ln.split(/[:—–]/)[0]||ln;
+    if(/\btotals?\b/i.test(head)) stated=h; else if(/\$/.test(ln)) sum+=h;
+  });
+  var hrs=stated||sum;
+  return hrs ? Math.round(hrs*10)/10 : '';
+}
+/* What the parts actually are. Bracketed text is the list more often than not, so it is tried
+   first; a bracket holding nothing but "estimated" falls through to the text after the label. */
+function bpPartsText(body){
+  var out=[];
+  String(body||'').split('\n').forEach(function(ln){
+    if(!/materials?\b|parts\b/i.test(ln)) return;
+    var head=ln.split('=')[0], br=/\(([^)]{8,})\)/.exec(head), txt=br?bpTidy(br[1]):'';
+    if(txt.length<6) txt=bpTidy(head.replace(/\([^)]*\)/g,' ')
+      .replace(/^[\s\-•*]*(?:additional\s+|extra\s+)?(?:materials?|parts)\b/i,''));
+    if(txt && txt.length>4 && out.indexOf(txt)<0) out.push(txt);
+  });
+  return out.join('; ');
+}
+function bpLineMoney(body,rx){
+  var sum=0, stated=0, got=false, lines=0, extras=0;
+  String(body||'').split('\n').forEach(function(ln){
+    if(!rx.test(ln)) return;
+    var clean=ln.replace(/\([^)]*\)/g,' ').replace(/\$\s*[\d,.]+\s*\/\s*h(?:r|our)?\b/gi,' ');
+    var v='', eq=/=\s*~?\$\s*([\d,]+(?:\.\d{2})?)/.exec(clean);
+    if(eq) v=eq[1];
+    else { var m2, re2=/\$\s*([\d,]+(?:\.\d{2})?)/g; while((m2=re2.exec(clean))) v=m2[1]; }
+    if(!v) return;
+    var n=Number(String(v).replace(/,/g,'')); if(!isFinite(n)) return;
+    var head=(clean.split(/[:\u2014\u2013-]/)[0]||clean);
+    if(/\btotals?\b/i.test(head)) stated=n; else sum+=n;
+    got=true; lines++;
+    if(/\badditional\b|\bextra\b/i.test(head)) extras++;
+  });
+  var amt=stated||sum;
+  return { amount: got&&amt ? amt : 0, extra: lines>0 && extras===lines };
+}
+function bpMoney(n){ return '$'+Number(n||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
+function bpParse(detail){
+  const t=String(detail||'').replace(/\r/g,''), out={scope:'',scenarios:[],flag:'',travel:'',sizing:''};
+  const HEAD='SCENARIO|FLAG|RFI|PHOTOS|TRAVEL|SIZING|NOTE:|Fixtures|Source:|PROVISIONAL';
+  const block=(name)=>{
+    const re=new RegExp('(?:^|\\n)'+name+'[^\\n]*\\n([\\s\\S]*?)(?=\\n(?:'+HEAD+')|$)','i');
+    const m=re.exec(t); return m?m[1].trim():'';
+  };
+  out.scope=block('SCOPE');
+  out.sizing=block('SIZING');
+  // Scenarios: "Scenario A — Straightforward (…):" and "SCENARIO A - {assumption} (ASSUMED):"
+  const re=/(?:^|\n)\s*SCENARIO\s+([A-Z])\s*[-–—:]+\s*([^\n]*)\n([\s\S]*?)(?=\n\s*SCENARIO\s+[A-Z]\s*[-–—:]|\n(?:FLAG|RFI|PHOTOS|TRAVEL|SIZING|NOTE:|Fixtures|Source:)|$)/gi;
+  let m;
+  while((m=re.exec(t))){
+    const body=(m[3]||'').trim();
+    const mny=bpLineMoney(body,/labou?r|travel|drive time|on[- ]site/i),
+          prt=bpLineMoney(body,/materials?\b|parts\b/i),
+          prm=bpLineMoney(body,/permit/i);
+    out.scenarios.push({ letter:m[1].toUpperCase(), label:(m[2]||'').replace(/[:\s]+$/,'').trim(),
+      total:bpTotal(body), hours:bpHours(body), body:body,
+      labour:mny.amount, parts:prt.amount, partsText:bpPartsText(body), permit:prm.amount,
+      labourExtra:mny.extra, partsExtra:prt.extra });
+  }
+  // FLAG, either as its own heading or inline after a colon
+  let f=/(?:^|\n)(?:FLAG|RFI)[^\n]*?:\s*([^\n][\s\S]*?)(?=\n(?:PHOTOS|TRAVEL|SIZING|Source:)|$)/i.exec(t);
+  if(!f) f=/(?:^|\n)(?:FLAG|RFI)[^\n]*\n([\s\S]*?)(?=\n(?:PHOTOS|TRAVEL|SIZING|Source:)|$)/i.exec(t);
+  out.flag=f?f[1].trim():'';
+  let tr=/(?:^|\n)TRAVEL:\s*([^\n]+)/i.exec(t);
+  if(!tr) tr=/(?:^|\n)TRAVEL[^\n]*\n([^\n]+)/i.exec(t);
+  out.travel=tr?tr[1].trim():'';
+  return out;
+}
+/* v71 — the website form, as the customer filled it in.
+   Verbatim: not one word is rewritten. What is thrown away is the plugin's own packaging -
+   the "You have a new website form submission:" line, the numbering, the asterisks, the
+   "sent from proes.ca" footer - and what is left is the questions with their answers under
+   them, with what they wrote about the job itself given room to breathe. */
+function formEmailHtml(raw){
+  let t=String(raw||'').replace(/\r/g,'');
+  t=t.replace(/^[\s\S]*?new website form submission:[ \t]*\n?/i,'')
+     .replace(/\n-{3,}[ \t]*\nThis message was sent from[\s\S]*$/i,'');
+  const fields=[]; let cur=null;
+  t.split('\n').forEach(ln=>{
+    const h=/^\s*\d+\.\s*\*(.+?)\*\s*$/.exec(ln);
+    if(h){ cur={label:h[1].trim(), lines:[]}; fields.push(cur); return; }
+    if(cur) cur.lines.push(ln.replace(/^[ \t]{0,4}/,''));
+  });
+  const filled=fields.filter(f=>f.lines.join('').trim());
+  // Not a form email at all (Paul forwarding a customer's note, say) - show it as it came.
+  if(!filled.length) return `<pre class="small" style="white-space:pre-wrap;word-break:break-word;margin:0">${esc(t.trim())}</pre>`;
+  return filled.map(f=>{
+    const v=f.lines.join('\n').replace(/\*([^*]*?)[ \t]*:[ \t]*\*[ \t]*/g,'$1: ')
+      .replace(/\n{3,}/g,'\n\n').trim();
+    const big=/^tell us about|^describe|^what.{0,12}(need|job|problem)/i.test(f.label);
+    return `<div style="margin:0 0 10px">
+      <div class="small muted" style="font-weight:700">${esc(f.label)}</div>
+      <div class="${big?'':'small'}" style="white-space:pre-wrap;word-break:break-word;margin-top:2px${big?';padding:7px 9px;background:var(--panel2);border-radius:8px;border-left:3px solid var(--accent2)':''}">${esc(v)}</div>
+    </div>`;
+  }).join('');
+}
+/* v71 — the whole ball park on a button of its own, not sitting open on the card.
+   It used to be a <details> on every lead, which made the Requests tab a wall of pricing
+   working you had to scroll past to reach the next customer. Same text, same renderer, one tap
+   away. `back` sends the Back button to wherever this was opened from. */
+function openBallPark(key,backKind,backArg){
+  const q=dereg(key); if(!q) return;
+  const back = backKind==='enq' ? `openSchedEnquiry('${backArg}')`
+             : backKind ? `openReqDetail('${backKind}',${backArg})`
+             : 'closeSheet()';
+  sheet(`<h2 style="margin-bottom:2px">📋 The whole ball park</h2>
+    <p class="small muted" style="margin-top:0">${esc([q.customer,q.po].filter(Boolean).join(' · '))} — as filed, nothing left out</p>
+    ${reqDetailHtml(q.detail)}
+    <p class="small muted" style="margin:10px 0 0">Provisional. Priced from the Materials Price List before anyone saw the job.</p>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="${back}">Back</button>`);
+}
+/* v77 - WHAT THE CUSTOMER ACTUALLY WROTE, on the Requests tab.
+ * This has existed since v65 and v71 - the email is fetched word for word, laid out question by
+ * question, with their photos - but only off the SCHEDULE tab, where it hangs on a booking. A
+ * lead sitting on the Requests tab, which is where it is read first and where it is decided,
+ * offered the ball park and nothing else. Charles, 21 Oct: "I thought we had asked to be able to
+ * see the information of the original form." He had, and it was built; it was in one place only.
+ * Same sheet, same leadEmail action, no server change: the ball-park text filed with the lead
+ * carries the link back to the email, and leadEmail can also find the row by its id.
+ * The LIVE request object is registered, not a copy, so the email fetched once (a 75-second call
+ * on a cold start) is still there when the sheet is reopened. */
+function enquiryBtn(q, backKind, backArg){
+  if (!q || !q.detail) return '';
+  if (!q.jobRequestId) q.jobRequestId = q.id || '';
+  const key = reg(q);
+  return `<button class="secondary" style="width:100%;margin-top:6px"
+    onclick="event.stopPropagation();openSchedEnquiry('${key}')">📨 Original inquiry</button>`;
+}
+function ballParkBtn(q,backKind,backArg){
+  if(!q||!q.detail) return '';
+  const key=reg({detail:q.detail, customer:q.customer, po:q.po});
+  const args=backKind?`'${key}','${backKind}',${typeof backArg==='string'?`'${backArg}'`:backArg}`:`'${key}'`;
+  return `<button class="secondary" style="width:100%;margin-top:6px"
+    onclick="event.stopPropagation();openBallPark(${args})">📋 See the full ball park</button>`;
+}
+async function openSchedEnquiry(key){
+  const info=dereg(key); if(!info) return;
+  const bp=bpParse(info.detail);
+  const head=`<h2>📨 Original inquiry</h2>
+    <p class="small muted" style="margin-top:-4px">${esc([info.customer,info.po,info.entryNo?('form #'+info.entryNo):''].filter(Boolean).join(' · '))}</p>
+    ${info.address?`<p class="small">📍 ${esc(info.address)}</p>`:''}`;
+  // What the parts are: the scenario's own materials line if it has one, otherwise the
+  // Requests row's Materials column, which is the list the picker and the invoice both use.
+  const partsList=(x)=>x.partsText||info.materials||'';
+  const short=(s)=>{ s=String(s||''); return s.length>38 ? s.replace(/\s*\([^)]*\)\s*$/,'').trim()||s : s; };
+  const line=(label,v)=>v?`<div class="row between" style="padding:1px 0"><span class="small muted">${label}</span><span class="small">${esc(v)}</span></div>`:'';
+  const money=bp.scenarios.length?`<div class="card" style="margin:8px 0">
+      <h3 style="margin-top:0">💰 What it comes to</h3>
+      ${bp.scenarios.map(x=>`<div class="list-item" style="padding:7px 0">
+        <div class="row between" style="gap:10px"><b>Scenario ${esc(x.letter)}${x.label?' — '+esc(short(x.label)):''}</b>
+          <span><b>${esc(x.total||'—')}</b></span></div>
+        ${line((x.labourExtra?'Extra labour':'Labour')+(x.hours?' · '+esc(x.hours)+' hrs':''), x.labour?bpMoney(x.labour):'')}
+        ${line(x.partsExtra?'Extra parts':'Parts', x.parts?bpMoney(x.parts):'')}
+        ${line('Permit', x.permit?bpMoney(x.permit):'')}
+        ${partsList(x)?`<div class="small" style="margin-top:3px"><span class="muted">Parts needed: </span>${esc(partsList(x))}</div>`:''}
+      </div>`).join('')}
+      ${bp.scenarios.some(x=>x.labour||x.parts)?`<p class="small muted" style="margin:6px 0 0">The total also carries GST, and the truck charge where there is one.</p>`:''}
+      ${bp.flag?`<div class="banner ot" style="margin-top:8px"><b>Open question</b><div class="small" style="margin-top:2px;white-space:pre-wrap">${esc(bp.flag)}</div></div>`:''}
+      ${bp.travel?`<div class="small muted" style="margin-top:6px">🚚 ${esc(bp.travel)}</div>`:''}
+      <p class="small muted" style="margin:8px 0 0">Provisional — priced from the Materials Price List before anyone saw the job.</p>
+    </div>`:(info.materials?`<div class="card" style="margin:8px 0">
+      <h3 style="margin-top:0">🔧 Parts needed</h3><div class="small">${esc(info.materials)}</div></div>`:'');
+  const full=ballParkBtn(info,'enq',key);
+  const render=(mail)=>sheet(`${head}
+    <div class="card" style="margin:8px 0">
+      <h3 style="margin-top:0">✍️ What the customer sent, word for word</h3>
+      <div id="leadMail">${mail}</div>
+      ${reqPhotoStrip(info)}
+    </div>
+    ${money}
+    ${full}
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  // Coming Back from the full ball park re-opens this sheet, and the email has already been
+  // fetched once — a second 75-second wait for the same text is not worth it.
+  if(info._mail){ render(info._mail); return; }
+  render('<p class="center small muted" style="margin:10px 0"><span class="spin"></span> fetching their email…</p>');
+  const mine=S._sheet;
+  try{
+    const r=await api('leadEmail',{id:info.jobRequestId||'', detail:info.detail||''},{bg:true,timeout:75000});
+    if(S._sheet!==mine) return;
+    info._mail = r&&r.found
+      ? `<p class="small muted" style="margin:0 0 8px">${esc(r.from)} · ${esc(fmtDay(r.date))}</p>
+         ${formEmailHtml(r.body)}`
+      : `<p class="small muted" style="margin:0">${esc((r&&r.why)||'Could not fetch it.')}</p>
+         ${bp.scope?`<p class="small" style="margin-top:8px"><b>What it was taken to mean:</b></p><pre class="small" style="white-space:pre-wrap;margin:0">${esc(bp.scope)}</pre>`:''}`;
+    render(info._mail);
+  }catch(e){
+    if(S._sheet!==mine) return;
+    render(`<p class="small" style="color:var(--bad);margin:0">Could not fetch it — ${esc(e.message||'no answer')}</p>
+      ${bp.scope?`<pre class="small" style="white-space:pre-wrap;margin:8px 0 0">${esc(bp.scope)}</pre>`:''}`);
+  }
+}
+
+/* Move a return visit (or any bare calendar job). Its own event only — no PO Log re-dating. */
+function openVisitMove(key){
+  const info=dereg(key); if(!info) return;
+  const cur=new Date(info.start), pad=n=>String(n).padStart(2,'0');
+  sheet(`<h2>Move ${esc(info.customer||info.title||'this visit')}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc([info.po,info.scope].filter(Boolean).join(' · '))}</p>
+    <label>How long? (hours)</label>
+    <input id="vmHours" type="number" step="0.25" min="0.25" value="${info.hours||2}">
+    <div class="row"><div class="grow"><label>New date</label><input id="vmDate" type="date" value="${cur.getFullYear()}-${pad(cur.getMonth()+1)}-${pad(cur.getDate())}"></div>
+      <div class="grow"><label>New start</label><input id="vmTime" type="time" value="${pad(cur.getHours())}:${pad(cur.getMinutes())}"></div></div>
+    <div class="perm"><input type="checkbox" id="vmNotify" checked><label for="vmNotify" style="margin:0">Email the customer the new time</label></div>
+    <div class="perm"><input type="checkbox" id="vmBump"><label for="vmBump" style="margin:0">Let it take a slot that already has a job in it</label></div>
+    <p class="small muted">${info.po?esc(info.po)+' keeps its start date':'The calendar only'} — this moves the visit, not the job.</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Back</button>
+      <button class="grow" onclick="visitMoveGo('${key}',this)">📅 Move it</button>
+    </div>`);
+}
+async function visitMoveGo(key,btn){
+  const info=dereg(key); if(!info) return;
+  if(!S.online) return toast('You need signal.');
+  const date=val('vmDate'), time=val('vmTime');
+  if(!date||!time) return toast('Pick the date and the time.');
+  const start=new Date(date+'T'+time);
+  if(isNaN(start)) return toast('That date/time did not read properly.');
+  const hours=Math.max(0.25,Number(val('vmHours'))||info.hours||2);
+  const notifyCustomer=(document.getElementById('vmNotify')||{}).checked!==false;
+  const bump=(document.getElementById('vmBump')||{checked:false}).checked===true;
+  btn.disabled=true; btn.textContent='Moving…';
+  try{
+    const r=await api('eventMove',{eventId:info.eventId, start:start.toISOString(), hours,
+      notifyCustomer, bump, allowPast:true},{timeout:120000});
+    const back=(r&&r.bumped&&r.bumped.length)||0;
+    toast('Moved to '+fmtDay(start.toISOString())+' '+fmtTime(start.toISOString())
+      +(back?' · '+back+' job(s) now need a new time':''),7000);
+    schedRefreshAll(); loadRequests();
+    afterChange({customer:info.customer, phone:info.phone, email:info.email, eventId:info.eventId},
+      'Moved to '+fmtDay(start.toISOString())+' '+fmtTime(start.toISOString()),
+      (notifyCustomer && r && r.note && /emailed at/i.test(r.note)) ? r.note : '');
+  }catch(e){ toast(e.message,8000); btn.disabled=false; btn.textContent='📅 Move it'; }
+}
+function openVisitCancel(key){
+  const info=dereg(key); if(!info) return;
+  sheet(`<h2>Call off this visit?</h2>
+    <p class="small muted" style="margin-top:-4px">${esc([info.customer,info.po].filter(Boolean).join(' · '))} — ${esc(fmtDay(info.start))} ${esc(fmtTime(info.start))}</p>
+    ${info.scope?`<div class="banner" style="background:var(--panel2)">${esc(info.scope)}</div>`:''}
+    <label>Why? (optional — goes to the customer and the log)</label>
+    <input id="vcReason" type="text" placeholder="e.g. waiting on a part">
+    ${info.email?`<div class="perm"><input type="checkbox" id="vcCust" checked><label for="vcCust" style="margin:0">Email the customer</label></div>`:'<p class="small muted">No email on file — the customer will not be told automatically.</p>'}
+    <p class="small muted">${info.po?('This does <b>not</b> cancel '+esc(info.po)+'. The job stays open and still gets invoiced under the same number — only this trip is called off.'):'Removes it from the calendar.'}</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Keep it</button>
+      <button class="grow danger" onclick="visitCancelGo('${key}',this)">Call it off</button>
+    </div>`);
+}
+async function visitCancelGo(key,btn){
+  const info=dereg(key); if(!info) return;
+  if(!S.online) return toast('You need signal.');
+  const reason=val('vcReason')||'';
+  const notifyCustomer=(document.getElementById('vcCust')||{checked:false}).checked===true;
+  btn.disabled=true; btn.textContent='Calling it off…';
+  try{
+    const r=await api('eventCancel',{eventId:info.eventId, reason, notifyCustomer},{timeout:120000});
+    toast('Called off ✓'+(r&&r.poNote?' — '+r.poNote:''),7000);
+    schedRefreshAll(); loadRequests();
+    afterChange({customer:info.customer, phone:info.phone, email:info.email, eventId:''},
+      'Called off — nothing is booked for them now',
+      (notifyCustomer && r && r.note && /emailed at/i.test(r.note)) ? r.note : '');
+  }catch(e){ toast(e.message,8000); btn.disabled=false; btn.textContent='Call it off'; }
+}
+async function schedSave(k,btn){
+  const ev=dereg(k); if(!ev) return;
+  if(!S.online) return toast('You need signal to save assignments.');
+  const emails=[...document.querySelectorAll('.sa-emp:checked')].map(c=>c.value);
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const when=`${schedDayLabel(localDateStr(new Date(ev.start)))} · ${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}`;
+    const r=await api('scheduleAssign',{eventId:ev.id, emails, title:ev.title, when, location:ev.location,
+      appUrl: location.origin+location.pathname});
+    closeSheet();
+    toast(r.notified? `Saved — ${r.notified} ${r.notified===1?'person':'people'} emailed` : 'Saved');
+    schedRefreshAll();
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Save assignments'; }
+}
+
+/* ----- JHA TAB (everyone): digital Job Hazard Assessment with real signatures -----
+   For the big projects that need the documentation. One JHA per job per day; anyone on site
+   starts it (usually the lead), the whole crew signs before work. Filed as a PDF beside the
+   job's photos in Drive — the evidence trail if there's ever an incident. Optional: small
+   jobs simply never open this tab. Needs signal (the PDF files to Drive on every signature). */
+const JHA_HAZARDS = [
+ ['Electrical', [
+   ['Shock — energized equipment','Verify de-energized, lockout/tagout, test before touch, rated gloves'],
+   ['Arc flash','De-energize where possible, arc-rated PPE, unqualified workers kept back'],
+   ['Working in live panels','Qualified workers only, insulated tools, no metal jewelry, barriers up'],
+   ['Overhead / underground utilities','Locates current & on site, limits of approach, spotter'],
+ ]],
+ ['Heights & access', [
+   ['Ladder work','Inspect first, correct angle & rating, 3-point contact, secure the top'],
+   ['Scaffold / lift work','Trained operators, guardrails in place, inspected, harness in boom lift'],
+   ['Fall hazard over 3 m','Fall protection plan, harness + anchor, guardrails, cover floor openings'],
+ ]],
+ ['Environment', [
+   ['Extreme heat / cold','Water & shade breaks, warm-up breaks, layered clothing, watch each other'],
+   ['Poor lighting','Temporary lighting or headlamps before work starts'],
+   ['Confined space','Permit + attendant, air monitoring, ventilation, rescue plan'],
+   ['Dust / fumes / insulation','Respirator or dust mask, ventilation, glasses, long sleeves'],
+   ['Wet or slippery surfaces','Keep the area dry, GFCI protection, footwear with grip'],
+ ]],
+ ['Tools & materials', [
+   ['Power tools','Guards on, cords inspected, GFCI, eye & hearing protection'],
+   ['Cuts / pinch points','Cut away from the body, gloves on, knives retracted when not in use'],
+   ['Heavy lifting','Lift with the legs, team lift over 50 lb, carts/dollies where possible'],
+   ['Wire pulling strain','Pulling lube & gear, clear communication, staged pulls, good body position'],
+ ]],
+ ['Site', [
+   ['Driving to / between sites','Seatbelts on, phone down while driving, speed to conditions, secure the load'],
+   ['Vehicle / equipment traffic','Hi-vis on, eye contact with operators, stay in designated walkways'],
+   ['Other trades overhead / nearby','Coordinate at the tailgate, hard hats, barricade drop zones'],
+   ['Housekeeping / trip hazards','Clear walkways, coil cords, clean as you go'],
+   ['Excavations / trenches','Sloped or shored, ladder access, spoil kept back, no entry unless protected'],
+   ['Noise','Hearing protection in noisy areas, limit exposure time'],
+ ]],
+];
+function jhaView(){
+  const l=S.jhaList||null, tstr=localDateStr(new Date()); // localDateStr(d) is the app-wide helper
+  const todays=(l||[]).filter(j=>j.date===tstr), earlier=(l||[]).filter(j=>j.date!==tstr).slice(0,40);
+  const item=j=>{ const k=reg(j); return `<div class="list-item row between" style="cursor:pointer" onclick="openJhaDetail('${k}')">
+      <div><b>${esc(j.jobSite)}</b><div class="small muted">${esc(j.date)} · ${j.sigs.length} signature${j.sigs.length===1?'':'s'}</div></div>
+      <div>${j.signedByMe?'<span class="small" style="color:#3fa46a">✓ signed</span>':'<span class="small" style="color:#d99a2b">sign ›</span>'}</div>
+    </div>`; };
+  return `<div class="row between"><h2>Hazard Assessment</h2>${S.jhaLoading&&!S.jhaList?'<span class="spin"></span>':''}</div>
+    <div class="card">
+      <p class="small muted" style="margin-top:0">For jobs that need the paper trail. One per job per day — whoever's leading starts it, everyone on site signs before work. Files itself as a PDF in the job's folder.</p>
+      <button style="width:100%" onclick="openJhaCreate()">🦺 Start today's JHA</button>
+    </div>
+    ${todays.length?`<h3>Today</h3>${todays.map(item).join('')}`:''}
+    ${earlier.length?`<h3>Earlier</h3>${earlier.map(item).join('')}`:''}
+    ${l&&!l.length?'<p class="muted small">No JHAs filed yet.</p>':''}
+    ${!l&&!S.jhaLoading?'<p class="muted small">Open this tab while online to load past JHAs.</p>':''}`;
+}
+async function loadJha(){
+  if (S.jhaLoading) return;
+  if (!S.jhaList){ const c=await DB.getCache('jhaList'); if(c){ S.jhaList=c; if(S.tab==='jha') render(); } }
+  S.jhaLoading=true; if(S.tab==='jha') render();
+  try{ const r=await apiBg('jhaList',{}); S.jhaList=r.jhas||[]; DB.setCache('jhaList',S.jhaList); }
+  catch(e){ if(!S.jhaList) toast(e.message); }
+  S.jhaLoading=false; if(S.tab==='jha') render();
+}
+
+/* Finger-drawn signature pad. White canvas + dark ink so it prints clean on the PDF. */
+let _sigDrawn=false;
+function sigPadHtml(){
+  return `<canvas id="sigPad" width="600" height="220" style="width:100%;height:150px;background:#fff;border:1.5px dashed #8a8f98;border-radius:12px;touch-action:none;display:block"></canvas>
+    <div class="row between" style="margin-top:6px"><span class="small muted">Sign above with your finger</span>
+    <button class="secondary" style="padding:6px 14px" onclick="sigClear()">Clear</button></div>`;
+}
+function sigInit(){
+  const c=document.getElementById('sigPad'); if(!c) return;
+  _sigDrawn=false;
+  const r=c.getBoundingClientRect();
+  if(r.width>0){ c.width=Math.round(r.width*2); c.height=Math.round(r.height*2); } // match on-screen aspect, 2x for crispness
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,c.width,c.height);
+  ctx.strokeStyle='#14213d'; ctx.lineWidth=3.5; ctx.lineCap='round'; ctx.lineJoin='round';
+  let draw=false,last=null;
+  const pos=e=>{ const r=c.getBoundingClientRect(); return {x:(e.clientX-r.left)*c.width/r.width, y:(e.clientY-r.top)*c.height/r.height}; };
+  c.onpointerdown=e=>{ draw=true; last=pos(e); try{c.setPointerCapture(e.pointerId);}catch(_){} e.preventDefault(); };
+  c.onpointermove=e=>{ if(!draw) return; const p=pos(e); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; _sigDrawn=true; e.preventDefault(); };
+  c.onpointerup=c.onpointercancel=()=>{ draw=false; };
+}
+function sigClear(){ sigInit(); }
+function sigData(){ if(!_sigDrawn) return null; const c=document.getElementById('sigPad'); return c?c.toDataURL('image/png'):null; }
+
+let jhaDraft=null;
+function openJhaCreate(){
+  const jobs=openPOs('').concat(companyOptions().map(o=>({name:(o.noPO?(o.c==='PCW'?'Farm work':'Shop work'):o.c+' (internal)'), po:''}))); // shop/farm days need JHAs too
+  if(!jobs.length && !S.customers) { toast('Job list still loading — try again in a second.'); loadCustomers(true); return; }
+  jhaDraft={ jobs };
+  sheet(`<h2>Start today's JHA</h2>
+    <p class="small muted">Check every hazard that applies to today's work — the standard controls are listed under each. Add anything site-specific, then sign.</p>
+    <label>Job</label>
+    <select id="jhaJob"><option value="">— pick the job —</option>${jobs.map((c,i)=>`<option value="${i}">${esc(c.name)}${c.po?(' — PO '+esc(c.po)):''}</option>`).join('')}</select>
+    ${JHA_HAZARDS.map((g,gi)=>`<h3 style="margin:14px 0 4px">${esc(g[0])}</h3>`+g[1].map((h,hi)=>`
+      <label class="list-item" style="display:flex;gap:10px;align-items:flex-start;cursor:pointer">
+        <input type="checkbox" data-jha="${gi}:${hi}" style="width:auto;margin:3px 0 0">
+        <span><b>${esc(h[0])}</b><span class="small muted" style="display:block">${esc(h[1])}</span></span>
+      </label>`).join('')).join('')}
+    <h3 style="margin:14px 0 4px">Site-specific (optional)</h3>
+    <div id="jhaCustom"></div>
+    <button class="secondary" style="width:100%" onclick="jhaAddCustom()">+ Add your own hazard</button>
+    <label style="margin-top:10px">Notes — muster point, first aid, permits… (optional)</label>
+    <textarea id="jhaNotes" rows="2"></textarea>
+    <button style="width:100%;margin-top:12px" onclick="jhaToSign()">Continue — sign the form</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
+}
+function jhaAddCustom(){
+  const d=document.getElementById('jhaCustom'); if(!d) return;
+  d.appendChild(el(`<div class="jha-row" style="margin-bottom:8px">
+    <input class="jh" placeholder="Hazard (e.g. crane lifts overhead)" style="margin-bottom:4px">
+    <input class="jc" placeholder="Controls — what keeps it safe">
+  </div>`));
+}
+function jhaToSign(){
+  const sel=document.getElementById('jhaJob');
+  if(!sel || sel.value==='') return toast('Pick the job first.');
+  const job=jhaDraft.jobs[Number(sel.value)];
+  const hazards=[...document.querySelectorAll('[data-jha]:checked')].map(cb=>{
+    const [gi,hi]=cb.dataset.jha.split(':').map(Number); const h=JHA_HAZARDS[gi][1][hi];
+    return {hazard:h[0], controls:h[1]}; });
+  const custom=[...document.querySelectorAll('#jhaCustom .jha-row')].map(r=>({
+    hazard:r.querySelector('.jh').value.trim(), controls:r.querySelector('.jc').value.trim() })).filter(c=>c.hazard);
+  if(!hazards.length && !custom.length) return toast('Check at least one hazard that applies today.');
+  jhaDraft.jobSite=job.name; jhaDraft.po=job.po||''; jhaDraft.hazards=hazards; jhaDraft.custom=custom;
+  jhaDraft.notes=(document.getElementById('jhaNotes')?.value||'').trim();
+  sheet(`<h2>Sign the JHA</h2>
+    <p class="small muted"><b>${esc(job.name)}</b> · ${hazards.length+custom.length} hazard${hazards.length+custom.length===1?'':'s'} identified.
+      Signing confirms you led or took part in this assessment before work.</p>
+    ${sigPadHtml()}
+    <button style="width:100%;margin-top:12px" onclick="jhaSubmitCreate(this)">File the JHA</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
+  sigInit();
+}
+async function jhaSubmitCreate(btn){
+  const sig=sigData(); if(!sig) return toast('Draw your signature first.');
+  if(!S.online) return toast('You need signal to file a JHA — it saves the PDF to Drive.');
+  btn.disabled=true; btn.textContent='Filing…';
+  try{
+    await api('jhaCreate',{ jobSite:jhaDraft.jobSite, poNumber:jhaDraft.po, hazards:jhaDraft.hazards,
+      custom:jhaDraft.custom, notes:jhaDraft.notes, sigDataUrl:sig });
+    closeSheet(); toast('JHA filed — now have the rest of the crew sign it from this tab.'); loadJha();
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='File the JHA'; }
+}
+function openJhaDetail(k){
+  const j=dereg(k); if(!j) return;
+  const d=j.data||{}, all=(d.hazards||[]).concat(d.custom||[]);
+  sheet(`<h2>${esc(j.jobSite)}</h2>
+    <p class="small muted">${esc(j.date)}${j.po?' · PO '+esc(j.po):''} · started by ${esc(String(j.createdBy).split('@')[0])}</p>
+    ${all.map(h=>`<div class="list-item"><b>${esc(h.hazard)}</b><div class="small muted">${esc(h.controls)}</div></div>`).join('')}
+    ${d.notes?`<p class="small"><b>Notes:</b> ${esc(d.notes)}</p>`:''}
+    <h3 style="margin:12px 0 4px">Signatures (${j.sigs.length})</h3>
+    ${j.sigs.map(s=>`<div class="list-item row between"><b>${esc(s.name)}</b><span class="small muted">${fmtDay(s.at)} · ${fmtTime(s.at)}</span></div>`).join('')}
+    ${j.pdfUrl?`<p class="small"><a href="${esc(j.pdfUrl)}" target="_blank" style="color:var(--accent2)">open the filed PDF ↗</a></p>`:''}
+    ${j.signedByMe
+      ? '<p class="small" style="color:#3fa46a">✓ You have signed this JHA.</p>'
+      : `<h3 style="margin:12px 0 4px">Your signature</h3>${sigPadHtml()}
+         <button style="width:100%;margin-top:10px" onclick="jhaSubmitSign('${k}',this)">✍️ Sign — I took part in this JHA</button>`}
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+  if(!j.signedByMe) sigInit();
+}
+async function jhaSubmitSign(k,btn){
+  const j=dereg(k); if(!j) return;
+  const sig=sigData(); if(!sig) return toast('Draw your signature first.');
+  if(!S.online) return toast('You need signal to sign — it refiles the PDF with your name on it.');
+  btn.disabled=true; btn.textContent='Signing…';
+  try{ await api('jhaSign',{jhaId:j.id, sigDataUrl:sig}); closeSheet(); toast('Signed — you are on the JHA.'); loadJha(); }
+  catch(e){ toast(e.message); btn.disabled=false; btn.textContent='✍️ Sign — I took part in this JHA'; }
+}
+
+/* ----- ONBOARDING (everyone): new-hire checklist with in-app videos + signed completion -----
+   Checklist rows live in the master sheet's 'Onboarding' tab (edit there, no code). Videos are
+   Drive/YouTube links embedded IN the app — the new hire never leaves it. Nag-not-block: they
+   can clock in from day one, but a banner sits on the Clock tab until they finish and sign.
+   Completion files a signed PDF training record in Drive (Onboarding Records folder). */
+async function loadOnboarding(force){
+  if (S._obLoading) return;
+  if (!S.onboard){ const c=await DB.getCache('onboard'); if(c){ S.onboard=c; S.onboardAt=c._at||0; if(S.tab==='clock') render(); } }
+  if (!S.online) return;
+  // v60 — every other loader skips the call when its cache is fresh; this one refetched on every
+  // single app open. The checklist changes when someone edits the Onboarding sheet, not hourly.
+  if (!force && S.onboard && (Date.now()-(S.onboardAt||0)) < CUST_TTL) return;
+  S._obLoading=true;
+  try{ S.onboard = await apiBg('onboardingGet',{}); S.onboardAt=Date.now();
+       DB.setCache('onboard', Object.assign({_at:S.onboardAt}, S.onboard)); if(S.tab==='clock') render(); }
+  catch(e){ /* non-critical — banner just won't show */ }
+  S._obLoading=false;
+}
+function obReqProgress(){
+  // Defensive: a half-formed response from the server must never white-screen the Clock tab.
+  const ob=S.onboard; if(!ob || !Array.isArray(ob.items)) return null;
+  const done=ob.done||{};
+  const req=ob.items.filter(i=>i && i.required);
+  return { done:req.filter(i=>done[i.id]).length, total:req.length };
+}
+function obBanner(){
+  const ob=S.onboard;
+  if(!ob || ob.completedAt || !Array.isArray(ob.items) || !ob.items.length) return '';
+  if(!obReqProgress()) return '';
+  const p=obReqProgress();
+  return `<div class="banner" style="background:#dbeafe;color:var(--accent2);border:1px solid #b6d4f5;cursor:pointer" onclick="openOnboarding()">
+    🎓 <b>Finish your onboarding</b> — ${p.done} of ${p.total} done · tap to continue</div>`;
+}
+function obEmbed(link){
+  let m=/drive\.google\.com\/(?:file\/d\/|open\?id=)([-\w]{25,})/.exec(link);
+  if(m) return `https://drive.google.com/file/d/${m[1]}/preview`;
+  m=/(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([-\w]{6,})/.exec(link);
+  if(m) return `https://www.youtube.com/embed/${m[1]}`;
+  return null;
+}
+function obTypeIcon(t){ return t==='video'?'🎬':(t==='task'?'📝':'📄'); }
+function openOnboarding(){
+  const ob=S.onboard;
+  if(!ob){ toast(S.online?'Still loading — try again in a second.':'You need signal to load onboarding.'); loadOnboarding(); return; }
+  const p=obReqProgress();
+  const rows=ob.items.map(it=>{
+    const k=reg(it), did=!!ob.done[it.id];
+    return `<div class="list-item row between" style="cursor:pointer" onclick="openObItem('${k}')">
+      <div class="row" style="gap:8px"><span style="font-size:1.1rem">${did?'✅':obTypeIcon(it.type)}</span>
+        <div><b style="${did?'opacity:.55':''}">${esc(it.title)}</b>
+        ${!it.required?'<div class="small muted">optional</div>':''}</div></div>
+      <span class="small muted">›</span></div>`;
+  }).join('');
+  const allDone=p.done>=p.total;
+  sheet(`<h2>Onboarding</h2>
+    <p class="small muted">${ob.completedAt
+      ? `✓ Completed ${fmtDay(ob.completedAt)}${ob.pdfUrl?` · <a href="${esc(ob.pdfUrl)}" target="_blank" style="color:var(--accent2)">your signed record ↗</a>`:''} — everything stays available below for review.`
+      : `Work through each item — tap it, read or watch, mark it done. ${p.done} of ${p.total} required items done.`}</p>
+    ${rows}
+    ${!ob.completedAt && allDone ? `<button style="width:100%;margin-top:12px" onclick="obFinish()">✍️ Sign &amp; finish onboarding</button>`:''}
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+}
+function openObItem(k){
+  const it=dereg(k); if(!it) return;
+  const ob=S.onboard, did=!!ob.done[it.id];
+  const embed=it.link?obEmbed(it.link):null;
+  sheet(`<h2>${esc(it.title)}</h2>
+    ${embed?`<div style="position:relative;width:100%;aspect-ratio:16/9;border-radius:12px;overflow:hidden;background:#000">
+      <iframe src="${esc(embed)}" style="position:absolute;inset:0;width:100%;height:100%;border:0" allow="autoplay; fullscreen" allowfullscreen></iframe></div>`:''}
+    ${it.link&&!embed?`<p class="small"><a href="${esc(it.link)}" target="_blank" style="color:var(--accent2)">open link ↗</a></p>`:''}
+    ${it.details?`<p style="white-space:pre-wrap">${esc(it.details)}</p>`:''}
+    <button style="width:100%;margin-top:10px" onclick="obToggle('${k}',${did?'false':'true'},this)">${did?'Undo — mark as not done':'✓ Mark as done'}</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="openOnboarding()">Back to the list</button>`);
+}
+async function obToggle(k,done,btn){
+  const it=dereg(k); if(!it) return;
+  if(!S.online) return toast('You need signal to save progress.');
+  btn.disabled=true;
+  try{
+    const r=await api('onboardingCheck',{itemId:it.id,done:done});
+    S.onboard.done=r.done;
+    openOnboarding(); render(); // refresh list + banner count
+  }catch(e){ toast(e.message); btn.disabled=false; }
+}
+function obFinish(){
+  sheet(`<h2>Sign to finish</h2>
+    <p class="small muted">By signing you confirm you completed the orientation, understand the safety practices and expectations, and agree to work by them. A signed PDF files to the office automatically.</p>
+    ${sigPadHtml()}
+    <button style="width:100%;margin-top:12px" onclick="obSubmit(this)">Finish onboarding</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="openOnboarding()">Back</button>`);
+  sigInit();
+}
+async function obSubmit(btn){
+  const sig=sigData(); if(!sig) return toast('Draw your signature first.');
+  if(!S.online) return toast('You need signal to finish — it files your signed record.');
+  btn.disabled=true; btn.textContent='Filing…';
+  try{
+    const r=await api('onboardingComplete',{sigDataUrl:sig});
+    S.onboard.completedAt=new Date().toISOString(); S.onboard.pdfUrl=r.pdfUrl;
+    closeSheet(); render();
+    toast('🎉 Onboarding complete — welcome to the crew!');
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Finish onboarding'; }
+}
+/* Admin: who's finished, who's stalled (loaded when the Admin tab opens). */
+async function loadObStatus(){
+  if(S._obsLoading) return;
+  if(!S.obStatus){ const c=await DB.getCache('obStatus'); if(c){ S.obStatus=c; if(S.tab==='admin') render(); } }
+  S._obsLoading=true;
+  try{ const r=await apiBg('onboardingStatus',{}); S.obStatus=r.employees||[]; DB.setCache('obStatus',S.obStatus); if(S.tab==='admin') render(); }
+  catch(e){}
+  S._obsLoading=false;
+}
+async function loadAllowAdmin(){
+  if(S._alaLoading) return; S._alaLoading=true;
+  try{ S.allowAdmin=await apiBg('allowanceList',{}); if(S.tab==='admin') render(); }catch(e){}
+  S._alaLoading=false;
+}
+function allowAdminCard(){
+  const a=S.allowAdmin; const pend=(a&&a.claims||[]).filter(c=>c.status==='pending');
+  return `<div class="card">
+    <div class="row between"><h3>Allowance claims</h3><span class="pill pending">${pend.length}</span></div>
+    ${pend.length? pend.map(c=>{ const k=reg(c); return `<div class="list-item">
+        <div class="row between"><div><b>${esc(c.name)}</b> · ${esc(c.typeName)} · ${esc(c.date)}${c.km?` · ${c.km} km`:''}
+          ${c.note?`<div class="small muted">${esc(c.note)}</div>`:''}</div><b>$${c.amount.toFixed(2)}</b></div>
+        <div class="row" style="margin-top:6px">
+          <button class="grow" onclick="alDecide('${k}',true,this)">Approve</button>
+          <button class="secondary grow" onclick="alDecide('${k}',false,this)">Deny</button></div>
+      </div>`; }).join('') : '<p class="muted small">Nothing waiting.</p>'}
+    <p class="small muted" style="margin-bottom:0">Who can claim what is set per employee (tap a name above → Allowances). Approved claims land in the payroll CSV.</p>
+  </div>`;
+}
+async function alDecide(k,approve,btn){
+  const c=dereg(k); if(!c) return; btn.disabled=true;
+  try{ await api('allowanceDecide',{id:c.id,approve}); toast((approve?'Approved':'Denied')+' — $'+c.amount.toFixed(2)); loadAllowAdmin(); }
+  catch(e){ toast(e.message); btn.disabled=false; }
+}
+function obStatusCard(){
+  const st=S.obStatus;
+  return `<div class="card">
+    <h3>Onboarding</h3>
+    ${!st?(S.online?'<p class="muted small">Loading…</p>':'<p class="muted small">Open while online to load.</p>'):(st.length?st.map(e=>`<div class="list-item row between">
+      <div><b>${esc(e.name)}</b></div>
+      <div>${e.completedAt
+        ? `<span class="pill approved">✓ ${fmtDay(e.completedAt)}</span>${e.pdfUrl?` <a class="small" href="${esc(e.pdfUrl)}" target="_blank" style="color:var(--accent2)">record ↗</a>`:''}`
+        : `<span class="pill pending">${e.done}/${e.total}</span>`}</div>
+    </div>`).join(''):'<p class="muted small">No active employees.</p>')}
+    <p class="small muted" style="margin-bottom:0">Edit the checklist in the <b>Onboarding</b> tab of your master sheet — add video links there and they play inside the app.</p>
+  </div>`;
+}
+
+/* ----- HOURS TAB (admin + bookkeeper): monthly hours in-app, no CSV required -----
+   Overview: one row per active employee (bookkeeper excluded server-side — subcontracted)
+   with approved + pending hours and estimated pay for the picked month. Tap a name for
+   the day-by-day breakdown. The CSV download in Admin still exists for reconciliation. */
+function curMonthStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+function monthLabel(m){ const p=String(m).split('-'); return new Date(Number(p[0]),Number(p[1])-1,1).toLocaleDateString([],{month:'long',year:'numeric'}); }
+/* Employee's own hours: the period card that used to crowd the Clock tab, plus the
+   week-by-week breakdown of the month with dates and estimated amount (2.2). */
+function myWeekRows(mStart, mEnd){
+  const rate=Number(S.me&&S.me.hourlyRate)||0;
+  // Monday-start weeks overlapping the month, clipped to the month for sums/labels
+  const first=new Date(mStart); const dow=(first.getDay()+6)%7; first.setDate(first.getDate()-dow);
+  let rows='', monthAppr=0, monthPend=0;
+  for(let ws=new Date(first); ws<mEnd; ws.setDate(ws.getDate()+7)){
+    const we=new Date(ws); we.setDate(we.getDate()+7);
+    const s=new Date(Math.max(ws,mStart)), e=new Date(Math.min(we,mEnd));
+    let appr=0, pend=0;
+    (S.entries||[]).forEach(en=>{
+      const t=new Date(en.ClockIn||en.Date); if(isNaN(t)||t<s||t>=e) return;
+      const h=Number(en.Hours)||0; if(!h) return;
+      if(en.Status==='approved') appr+=h; else if(en.Status==='pending') pend+=h;
+    });
+    appr=roundQ(appr); if(pend) pend=roundQ(pend); // weekly totals round up to ¼ h (3.5)
+    monthAppr+=appr; monthPend+=pend;
+    const lbl=s.toLocaleDateString([],{month:'short',day:'numeric'})+' – '+new Date(e-86400000).toLocaleDateString([],{month:'short',day:'numeric'});
+    rows+=`<div class="row between list-item"><span>${esc(lbl)}</span>
+      <span style="text-align:right"><b>${appr.toFixed(1)} hrs</b>${pend?`<span class="small" style="color:var(--pending)"> +${pend.toFixed(1)} pend.</span>`:''}
+      ${rate?`<div class="small muted">≈ $${(appr*rate).toFixed(2)}</div>`:''}</span></div>`;
+  }
+  const total=`<div class="row between" style="margin-top:8px"><b>Month total</b>
+    <span style="text-align:right"><b>${monthAppr.toFixed(1)} hrs</b>${monthPend?`<span class="small" style="color:var(--pending)"> +${monthPend.toFixed(1)} pend.</span>`:''}
+    ${rate?`<div class="small muted">≈ $${(monthAppr*rate).toFixed(2)}</div>`:''}</span></div>`;
+  return rows+total;
+}
+/* Allowances (3.3): employee claims here; status pills track admin approval. */
+async function loadMyAllow(){
+  if(S._alLoading||!S.online) return; S._alLoading=true;
+  try{ S.myAllow=await apiBg('allowanceList',{}); if(S.tab==='hours') render(); }catch(e){}
+  S._alLoading=false;
+}
+/* The allowance rows on their own, so they can sit INSIDE the admin's "Me" card next to his
+   own hours (v24) as well as in their own card for everyone else. */
+function allowRows(){
+  const a=S.myAllow;
+  if(!a || (!a.eligible.length && !a.claims.length)) return ''; // not set up for allowances
+  const pill=s=>`<span class="pill ${s==='approved'?'approved':(s==='pending'?'pending':'rejected')}">${esc(s)}</span>`;
+  return `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+    <div class="small muted" style="margin-bottom:4px">My allowances</div>
+    ${a.claims.length? a.claims.map(c=>{ const k=reg(c); return `<div class="list-item row between">
+        <div>${esc(c.typeName)} · ${esc(c.date)}${c.km?` · ${c.km} km`:''}${c.note?`<div class="small muted">${esc(c.note)}</div>`:''}</div>
+        <div class="row"><b>$${c.amount.toFixed(2)}</b>${pill(c.status)}${c.status==='pending'?`<button class="ghost" onclick="alCancel('${k}',this)">✕</button>`:''}</div>
+      </div>`; }).join('') : '<p class="muted small">No claims yet.</p>'}
+    ${a.eligible.length?`<button class="secondary" style="width:100%;margin-top:8px;padding:14px" onclick="openAllowClaim()">＋ Claim an allowance</button>`:''}
+  </div>`;
+}
+function allowCard(){
+  const rows=allowRows();
+  return rows ? `<div class="card"><h3>Allowances</h3>${rows}</div>` : '';
+}
+async function alCancel(k,btn){
+  const c=dereg(k); if(!c) return; btn.disabled=true;
+  try{ await api('allowanceCancel',{id:c.id}); toast('Cancelled'); loadMyAllow(); }
+  catch(e){ toast(e.message); btn.disabled=false; }
+}
+function myHoursView(){
+  const off=S.myHoursOff||0; // 0 = this month, -1 = last month
+  const now=new Date(); const mStart=new Date(now.getFullYear(),now.getMonth()+off,1), mEnd=new Date(now.getFullYear(),now.getMonth()+off+1,1);
+  const lbl=mStart.toLocaleDateString([],{month:'long',year:'numeric'});
+  return `<h2>My hours</h2>
+    ${periodCard(periodTotals())}
+    <div class="card">
+      <div class="row between"><h3>${esc(lbl)} — week by week</h3>
+        <button class="ghost" style="padding:4px 8px" onclick="S.myHoursOff=${off===0?-1:0};render()">${off===0?'‹ last month':'this month ›'}</button></div>
+      ${myWeekRows(mStart,mEnd)}
+      <p class="small muted" style="margin-bottom:0">Amounts are estimates (approved hours × your current rate; weekly totals rounded up to the ¼ hour). Official pay comes from the approved payroll.</p>
+    </div>
+    ${allowCard()}`;
+}
+function hoursView(){
+  const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
+  if(!canTeam) return myHoursView();
+  const month=S.hoursMonth||curMonthStr();
+  const d=(S.hoursData && S.hoursData.month===month)? S.hoursData : null;
+  let rows='';
+  if (d){
+    rows = d.rows.map(r=>{ const k=reg(r); return `<div class="list-item row between" style="cursor:pointer" onclick="openHoursDetail('${k}')">
+        <div><b>${esc(r.name)}</b><div class="small muted">$${r.rate||0}/hr</div></div>
+        <div style="text-align:right"><b>${r.approved.toFixed(2)} hrs</b>
+          ${r.pending?`<div class="small" style="color:var(--pending)">+ ${r.pending.toFixed(2)} pending</div>`:''}
+          <div class="small muted">≈ $${(r.estPay||0).toFixed(2)}</div></div>
+      </div>`; }).join('') || '<p class="muted small">No active employees.</p>';
+    if (d.rows.length) rows += `<div class="list-item row between" style="border-top:2px solid var(--line)">
+        <b>Everyone</b>
+        <div style="text-align:right"><b>${d.totals.approved.toFixed(2)} hrs</b>
+          ${d.totals.pending?`<div class="small" style="color:var(--pending)">+ ${d.totals.pending.toFixed(2)} pending</div>`:''}
+          <div class="small muted">≈ $${d.totals.estPay.toFixed(2)}</div></div>
+      </div>`;
+  }
+  // v24: an admin's OWN hours and allowances come first. Before this the admin saw everyone's
+  // hours and had to scroll past the whole team to find their own cellphone claim at the very
+  // bottom — the one thing on the screen that was actually theirs.
+  const myEmail=String((S.me||{}).email||'').toLowerCase();
+  const mine=d ? d.rows.find(r=>String(r.email||'').toLowerCase()===myEmail) : null;
+  const myCard=`<div class="card">
+      <div class="row between"><h3>Me — ${esc(monthLabel(month))}</h3>${S.hoursLoading?'<span class="spin"></span>':''}</div>
+      ${mine?`<div class="row between" style="margin-bottom:2px">
+          <div><b>${esc(mine.name)}</b><div class="small muted">$${mine.rate||0}/hr</div></div>
+          <div style="text-align:right"><b>${mine.approved.toFixed(2)} hrs</b>
+            ${mine.pending?`<div class="small" style="color:var(--pending)">+ ${mine.pending.toFixed(2)} pending</div>`:''}
+            <div class="small muted">≈ $${(mine.estPay||0).toFixed(2)}</div></div>
+        </div>`:'<p class="muted small">No hours recorded for you this month.</p>'}
+      ${allowRows()}
+    </div>`;
+  return `<div class="row between"><h2>Hours</h2>
+      <input type="month" value="${esc(month)}" style="width:auto;margin:0" onchange="setHoursMonth(this.value)"></div>
+    ${myCard}
+    <div class="card">
+      <div class="row between"><h3>The team — ${esc(monthLabel(month))}</h3>${S.hoursLoading?'<span class="spin"></span>':''}</div>
+      <p class="small muted" style="margin-top:-4px">Tap an employee for their day-by-day entries. Pay is estimated from approved hours × current rate.</p>
+      ${rows || (S.hoursLoading?'<p class="muted small">Loading…</p>':'<p class="muted small">No data yet — pull up this tab while online.</p>')}
+    </div>`;
+}
+async function loadHours(){
+  if (S.hoursLoading) return;
+  const month=S.hoursMonth||curMonthStr();
+  if (!S.hoursData || S.hoursData.month!==month){
+    const c=await DB.getCache('hours_'+month); if(c){ S.hoursData=c; if(S.tab==='hours') render(); } // paint instantly
+  }
+  S.hoursLoading=true; if(S.tab==='hours') render();
+  try{ const r=await apiBg('hoursOverview',{month}); S.hoursData=r; DB.setCache('hours_'+month,r); }
+  catch(e){ if(!(S.hoursData&&S.hoursData.month===month)) toast(e.message); }
+  S.hoursLoading=false; if(S.tab==='hours') render();
+}
+function setHoursMonth(m){ if(!m) return; S.hoursMonth=m; S.hoursData=null; loadHours(); }
+async function openHoursDetail(k){
+  const ref=dereg(k); if(!ref) return;
+  const month=S.hoursMonth||curMonthStr();
+  const p=month.split('-'); const start=new Date(Number(p[0]),Number(p[1])-1,1), end=new Date(Number(p[0]),Number(p[1]),1);
+  const days=Math.max(1, Math.ceil((Date.now()-start.getTime())/86400000)+1);
+  sheet(`<h2>${esc(ref.name)}</h2><p class="small muted">${esc(monthLabel(month))}</p><p class="center"><span class="spin"></span></p>`);
+  const mine=S._sheet; // dismissed while loading? stay dismissed
+  try{
+    const r=await api('listEntries',{email:ref.email, days, maxRows:20000});
+    if (S._sheet!==mine) return;
+    const inMonth=(r.entries||[]).filter(e=>{ const t=new Date(e.ClockIn||e.Date); return !isNaN(t)&&t>=start&&t<end; });
+    let appr=0,pend=0;
+    const items=inMonth.map(e=>{ const h=Number(e.Hours)||0;
+      if(e.Status==='approved')appr+=h; else if(e.Status==='pending')pend+=h;
+      return `<div class="list-item row between">
+        <div><b>${fmtDay(e.ClockIn||e.Date)}</b><div class="small muted">${esc(e['Customer/Job Site']||e.Company||'—')} · ${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)}</div></div>
+        <div style="text-align:right"><b>${(e.Hours!==''&&e.Hours!=null)?e.Hours+' hrs':'—'}</b>
+          <div class="small"><span class="pill ${esc(e.Status)}">${esc(e.Status)}</span></div></div>
+      </div>`; }).join('') || '<p class="muted small">No entries this month.</p>';
+    sheet(`<h2>${esc(ref.name)}</h2>
+      <p class="small muted">${esc(monthLabel(month))} · <b>${(Math.round(appr*100)/100).toFixed(2)} hrs approved</b>${pend?` · ${(Math.round(pend*100)/100).toFixed(2)} pending`:''}</p>
+      <div style="max-height:60vh;overflow:auto">${items}</div>
+      <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  }catch(e){ toast(e.message); if (S._sheet===mine) closeSheet(); }
+}
+async function loadPending(){
+  try{ const r=await apiBg('pendingApprovals'); S.pending=r.pending||[]; if(S.tab==='admin') render(); }
+  catch(e){ /* keep stale list */ }
+}
+
+/* ============================================================================
+ * TIMER + TOTALS
+ * ==========================================================================*/
+let timerInt=null;
+function fmtDur(ms){ const s=Math.max(0,Math.floor(ms/1000)),h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;
+  return h+':'+String(m).padStart(2,'0')+':'+String(ss).padStart(2,'0'); }
+function tickTimer(){
+  // On break: BIG number = current break counting up, small line = work so far (paused).
+  // Working: BIG number = TODAY'S cumulative net time on this job (earlier stretches +
+  // this one), so resuming a paused job continues from where it left off instead of 0:00.
+  const node=document.getElementById('runningTimer'); const sub=document.getElementById('timerSub');
+  if (!node || !S.openEntry){ if(timerInt){clearInterval(timerInt); timerInt=null;} return; }
+  // While the clock-out review screen is open, the clock is frozen at the moment Clock Out
+  // was confirmed — time spent filling in the form doesn't count as work.
+  const now = coState ? new Date(coState.stopAt).getTime() : Date.now();
+  const startMs=new Date(S.openEntry.ClockIn).getTime();
+  const prevMs = resumedPrevMs(); // continues the count ONLY when resuming a paused job
+  let closedBrkMs=0, curBrkStart=null;
+  for (const b of openBreaks()){
+    if (b.e) closedBrkMs += Math.max(0, new Date(b.e)-new Date(b.s));
+    else curBrkStart = new Date(b.s).getTime();
+  }
+  if (curBrkStart){
+    node.textContent = fmtDur(now-curBrkStart);
+    const workedMs = prevMs + (curBrkStart-startMs) - closedBrkMs;
+    if (sub) sub.textContent = 'Worked today ' + fmtDur(workedMs) +
+      (closedBrkMs ? ' · earlier breaks ' + Math.round(closedBrkMs/60000) + ' min' : '');
+  } else {
+    const stretchMs = now-startMs-closedBrkMs;
+    node.textContent = fmtDur(prevMs + stretchMs);
+    let bits=[];
+    if (prevMs>0) bits.push('this stretch '+fmtDur(stretchMs));
+    else { const tMs=hrsTodayFor(jobKey(S.openEntry))*3600000;
+      if (tMs>0) bits.push('earlier today '+fmtDur(tMs)); } // context without inflating the big number
+    if (closedBrkMs) bits.push('breaks '+Math.round(closedBrkMs/60000)+' min');
+    if (sub) sub.textContent = bits.join(' · ');
+  }
+}
+function currentPeriodLabel(){
+  const d=new Date();
+  if ((S.config.payPeriodType||'SEMI_MONTHLY')==='MONTHLY') return d.toLocaleDateString([], {month:'long', year:'numeric'});
+  const half = d.getDate()<=15 ? '1st–15th' : '16th–end';
+  return d.toLocaleDateString([], {month:'long'}) + ' ' + half;
+}
+function inCurrentPeriod(e){
+  const d = new Date(e.ClockIn||e.Date); const n=new Date();
+  if (d.getFullYear()!==n.getFullYear() || d.getMonth()!==n.getMonth()) return false;
+  if ((S.config.payPeriodType||'SEMI_MONTHLY')==='MONTHLY') return true;
+  return (d.getDate()<=15) === (n.getDate()<=15);
+}
+function periodTotals(){
+  let approved=0, pending=0;
+  (S.entries||[]).forEach(e=>{ if(!inCurrentPeriod(e)||!e.Hours) return;
+    if(e.Status==='approved') approved+=Number(e.Hours)||0; else if(e.Status==='pending') pending+=Number(e.Hours)||0; });
+  if (S.openEntry && S.openEntry._local){} // running time not counted until clock-out
+  return {approved, pending};
+}
+function roundQ(h){ return Math.ceil(h*4 - 1e-9)/4; } // weekly totals round UP to the quarter hour (3.5)
+function weekHours(){
+  const start=new Date(); const day=start.getDay(); const diff=(day===0?6:day-1);
+  start.setHours(0,0,0,0); start.setDate(start.getDate()-diff);
+  let total=0;
+  (S.entries||[]).forEach(e=>{ const t=new Date(e.ClockIn||e.Date); if(t>=start && e.Status!=='rejected') total+=Number(e.Hours)||0; });
+  return roundQ(total);
+}
+
+/* ============================================================================
+ * MODALS / SHEETS
+ * ==========================================================================*/
+let _popIgnore=0;
+function closeSheetDom(){ if(S._sheet){ S._sheet.remove(); S._sheet=null; } } // no history side effects
+function sheet(inner){
+  const had=!!S._sheet;
+  closeSheetDom(); // replacing sheet-to-sheet keeps the single history entry for the flow
+  const s = el(`<div class="sheet" onclick="if(event.target===this)closeSheet()"><div class="panel">${inner}</div></div>`);
+  document.body.appendChild(s); S._sheet=s;
+  // Phone Back support: ONE history entry per open sheet flow, so Back closes the popup
+  // instead of exiting the app (2.6).
+  if(!had){ try{ history.pushState({s:1},''); }catch(e){} }
+}
+function closeSheet(){
+  if(!S._sheet) return;
+  closeSheetDom();
+  if(history.state&&history.state.s){ _popIgnore++; try{ history.back(); }catch(e){} }
+}
+window.addEventListener('popstate', (ev)=>{
+  if(_popIgnore>0){ _popIgnore--; return; }              // our own programmatic back
+  if(S._sheet){ S._sheet.remove(); S._sheet=null; if(camStream) camStop(); return; } // Back closes the open popup (and the camera with it)
+  const st=ev.state||{};
+  if(st.tab && st.tab!==S.tab){ S.tab=st.tab; render(); }   // Back = previous tab
+});
+
+/* Speech-to-text into any field: uses the browser's built-in recognition where available
+   (Chrome on Android), otherwise points at the keyboard's mic key. */
+function dictate(btnId, targetId){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  const btn=document.getElementById(btnId), el=document.getElementById(targetId);
+  if(!el) return;
+  if(!SR){ el.focus(); toast('Tap the microphone key on your keyboard to talk.'); return; }
+  try{
+    const r=new SR(); r.lang='en-CA'; r.interimResults=false; r.maxAlternatives=1;
+    if(btn) btn.textContent='🎙️ Listening…';
+    r.onresult=(ev)=>{ const t=ev.results[0][0].transcript;
+      el.value=(el.value?el.value.trim()+' ':'')+t; el.dispatchEvent(new Event('input')); };
+    r.onend=()=>{ if(btn) btn.textContent='🎤 Talk'; };
+    r.onerror=()=>{ if(btn) btn.textContent='🎤 Talk'; toast("Didn't catch that — try again or type."); };
+    r.start();
+  }catch(e){ el.focus(); toast('Tap the microphone key on your keyboard to talk.'); }
+}
+
+/* ---- Forgotten clock-out: guided fix ----
+   One tap: "when did you actually stop working that day?" → that entry closes there
+   (pending admin approval) and today starts clean. Prevents the two-days-merged-into-
+   one-20-hour-entry problem. */
+/* v75 - TWO things Paul asked for on 16 Oct, both visible in his screenshots.
+   (1) A DAY as well as a time. The old sheet only asked for a time and pinned it to the
+       clock-in date, rolling it forward a day only if the time came out before the clock-in.
+       A shift left open for 48 hours could not be closed at the right moment at all.
+   (2) It queues. This used to refuse to run without signal and then sit on "Fixing..." for the
+       whole round trip - and when that trip timed out the sheet simply reset itself to "Fix it"
+       and the shift was still open, which is exactly the pair of screenshots he sent. Now the
+       entry is closed on the phone first and the correction is written to the queue BEFORE the
+       network is tried, like a punch: the person can clock in for today immediately, signal or
+       no signal, and the office gets the fix when the phone can reach it. */
+function openForgotFix(){
+  const e=S.openEntry; if(!e) return;
+  const inD=new Date(e.ClockIn);
+  const inDay=localDateStr(inD), today=localDateStr(new Date());
+  sheet(`<h2>Forgot to clock out?</h2>
+    <p class="small muted">You clocked in <b>${fmtDay(e.ClockIn)} at ${fmtTime(e.ClockIn)}</b>${e['Customer/Job Site']?` on <b>${esc(e['Customer/Job Site'])}</b>`:''} and never clocked out.</p>
+    <label>When did you actually stop working?</label>
+    <div class="row">
+      <div class="grow"><label style="margin-top:0">Day</label>
+        <input id="ffDate" type="date" value="${esc(inDay)}" min="${esc(inDay)}" max="${esc(today)}"></div>
+      <div class="grow"><label style="margin-top:0">Time</label>
+        <input id="ffTime" type="time" value="17:00"></div>
+    </div>
+    <p class="small muted">The entry closes then and goes to Paul for approval — you can clock in for today straight away, even with no signal.</p>
+    <button style="width:100%;margin-top:12px" onclick="submitForgotFix(this)">Fix it</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel — I really am still working</button>`);
+}
+async function submitForgotFix(btn){
+  const e=S.openEntry; if(!e) return;
+  const tv=val('ffTime'); if(!tv) return toast('Pick the time you stopped.');
+  const inD=new Date(e.ClockIn);
+  const dv=val('ffDate') || localDateStr(inD);
+  const out=new Date(dv+'T'+tv);
+  if(isNaN(out)) return toast('Pick the day and the time you stopped.');
+  if(out<=inD) return toast(`That is before you clocked in (${fmtDay(e.ClockIn)} ${fmtTime(e.ClockIn)}) — check the day.`);
+  if(out.getTime() > Date.now()+5*60000) return toast('That is still in the future — pick when you actually stopped.');
+  const gross=(out-inD)/3600000;
+  if(gross>16) return toast(`That would be ${gross.toFixed(1)} hours on one entry — pick the day and time you actually stopped.`, 6000);
+  btn.disabled=true; btn.textContent='Fixing…';
+  // Closed on the phone FIRST, sent after - nobody waits on the office to clock in again.
+  const brk=Math.min(breakHrsSoFar(out.toISOString())||0, gross);
+  const net=Math.max(0, Math.round((gross-brk)*100)/100);
+  const before={ ...e };
+  S.mutSeq++;
+  upsertLocalEntry({ ...e, ClockOut:out.toISOString(), Hours:net,
+    'Gross Hours':Math.round(gross*100)/100, 'Break Hrs':Math.round(brk*100)/100,
+    Status:'pending', Source:'live', _pending:true });
+  S.openEntry=null; closeSheet(); render();
+  saveBootCache();  // reopening the app mid-request must not resurrect the open shift
+  let r=null;
+  try { r = await apiMutate('fixForgotClockout', { entryId:e.EntryID, outISO:out.toISOString() }); }
+  catch(err){
+    if (/already clocked out/i.test(err.message||'')){ refresh(true); toast('That entry was already closed — you can clock in now.'); return; }
+    // Refused outright: put the running clock back, because the shift really is still open.
+    S.openEntry=before;
+    const i=(S.entries||[]).findIndex(x=>x.EntryID===before.EntryID); if(i>=0) S.entries.splice(i,1);
+    S.mutSeq++; render(); saveBootCache();
+    toast('Could not fix it: '+(err.message||'no answer from the office'), 9000);
+    return;
+  }
+  if (r && r.queued) toast(`Closed at ${fmtTime(out.toISOString())} — ${net} hrs will reach the office when you have signal. Clock in for today whenever you like.`, 8000);
+  else { toast(`Fixed — ${(r && r.hours!=null ? r.hours : net)} hrs sent for approval. You can clock in for today now.`); refresh(true); }
+}
+
+/* ---- Job / customer picker ---- */
+let pickerState = null;
+let poResults=[]; // index-referenced by tap (apostrophe-safe)
+/* THE double-punch guard (v38). It lives in the click handler, not in the rendered markup,
+   because the markup cannot be trusted to be current: doClockIn opens the greeting popup, so the
+   re-render that would have disabled the button is skipped, and the button sits there looking
+   tappable for the whole 4-6s round trip. On 2026-09-10 that produced a Clock Out at 19:25:31
+   and a Clock In at 19:25:42 on the same job, and Paul stayed clocked in for four days.
+   Checked here, no render timing can defeat it. */
+function punchGuard_(){
+  if (!punchBusy()) return false;
+  toast('Still saving your last punch — one moment.');
+  return true;
+}
+function openJobPicker(isSwitch){
+  if (punchGuard_()) return;
+  pickerState = { isSwitch, mode:null, company:'', jobSite:'', poNumber:'', isNew:false, newType:'', notes:'' };
+  custHydrateSync_();   // v75 - the saved list, read synchronously, BEFORE the first paint
+  renderPicker(); // paints instantly from the cached list — nobody waits on the network
+  // Stale-while-revalidate: ALWAYS re-fetch in the background (force=true skips the 10-min
+  // TTL) so a PO row added by hand in the sheet shows up here within ~a minute, then swap
+  // the fresh list into the open picker when it lands.
+  loadCustomers(true).then(()=>{ if (S._sheet && pickerState) refreshPoList(); });
+}
+/* Open POs = rows in the PO Log whose Status is "In progress". Done jobs are hidden.
+   v79 — and ONLY "In progress". It used to count a BLANK status as open too, from back when new
+   rows arrived with nothing in that column; the Status dropdown has been back on the PO Log since
+   v76 and the script writes "In progress" on every row it creates, so a blank is now an oversight
+   rather than a new job, and Charles asked for the Switch-to list to be just the jobs in progress.
+   A job whose status has been left blank is still reachable — the customer search underneath the
+   list does not filter on status — so nobody is stuck, and the fix is one tap in the dropdown. */
+function poOpen(status){ return /in.?progress/i.test(String(status||'').trim()); }
+function poArchived(status){ return /(done|closed|invoice)/i.test(String(status||'')); } // Jobs-tab archive bucket
+function openPOs(q){
+  q=(q||'').trim().toLowerCase();
+  return (S.customers||[]).filter(c=>c.po && poOpen(c.status))
+    // v74 — the project name is searchable too, so "boathouse" or "panel" finds the job
+    // without anybody having to remember which number it was given.
+    .filter(c=>!q || c.name.toLowerCase().includes(q) || c.po.toLowerCase().includes(q)
+                  || String(c.project||'').toLowerCase().includes(q));
+}
+/* v74 — ONE row for a job, used by all three pickers: clock in, add time, and the job swap on
+   the clock-out review. The contact or company name leads because that is what the crew call the
+   job; the PO number and the project name sit underneath it together. Before this the row was
+   "R26191 · Brett Meston" and nothing said what the work was. */
+/* v75 - Paul: "the project name should be as bold as the company name but in a different dark
+   blue". Two identical rows reading "House on the Hill Renovation / PO C26197" and "... C26198"
+   is how you clock in to the wrong job. So: the name, then the project in its own weight and
+   colour, then the PO number small underneath. */
+function poRowHtml(c){
+  const proj = c.project ? `<div style="color:var(--proj);font-weight:700;line-height:1.25">${esc(c.project)}</div>` : '';
+  const po   = c.po ? `<div class="small muted" style="margin-top:1px">PO ${esc(c.po)}</div>` : '';
+  return `<b>${esc(c.name)}</b>${proj}${po}`;
+}
+function poListHtml(q){
+  const pos=openPOs(q);
+  poResults=pos;
+  if (!S.customers) return `<p class="small muted">${S.online?'Loading open jobs…':'No job list saved on this phone yet — open the app once with signal and it will be here offline.'}</p>`;
+  if (!pos.length) return `<p class="small muted">${q?'No open POs match — try the customer search below.':'No open POs found (only “In Progress” jobs are shown).'}</p>`;
+  return pos.map((c,i)=>`<div class="list-item row between" onclick="pickPO(${i})" style="cursor:pointer">
+      <div style="min-width:0">${poRowHtml(c)}</div>
+      ${pickerState.poNumber===c.po?'<span style="color:var(--ok);font-weight:700;flex:0 0 auto">✓</span>':''}
+    </div>`).join('');
+}
+function refreshPoList(){ const el=document.getElementById('poList'); if(el) el.innerHTML=poListHtml((document.getElementById('custSearch')||{}).value||''); }
+function pickPO(i){
+  const c=poResults[i]; if(!c) return;
+  pickerState.jobSite=c.name; pickerState.poNumber=c.po; pickerState.company=''; pickerState.isNew=false; pickerState.newType='';
+  renderPicker();
+}
+function renderPicker(){
+  const liveNotes=document.getElementById('pnotes'); if(liveNotes) pickerState.notes=liveNotes.value; // survive re-renders
+  const comp = companyOptions().map((o,i)=>`<span class="chip ${pickerState.company===o.c?'sel':''}" onclick="pickCompany(companyOptions()[${i}].c)">${o.noPO?esc(o.label):coFace(o.c)}</span>`).join('');
+  sheet(`
+    <h2>${pickerState.isSwitch?'Switch to…':'Clock in'}</h2>
+    ${pickerState.poNumber?`<div class="banner sync">Selected: <b>${esc(pickerState.poNumber)}</b> · ${esc(pickerState.jobSite)}</div>`:''}
+    <label>Open jobs — tap the one you're working on</label>
+    <div id="poList" style="max-height:34vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:0 12px">${poListHtml('')}</div>
+    <label style="margin-top:14px">No PO? Search customers, add a new job, or filter the list above</label>
+    <input id="custSearch" placeholder="Search…" autocomplete="off"
+      oninput="onCustSearch(this.value)" value="${esc(pickerState.poNumber?'':pickerState.jobSite)}">
+    <div id="suggest"></div>
+    <label style="margin-top:12px">Internal company time (no PO)</label>
+    <div>${comp}</div>
+    <label style="margin-top:12px">Notes (optional)</label>
+    <textarea id="pnotes" rows="2" placeholder="What are you working on?">${esc(pickerState.notes)}</textarea>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Cancel</button>
+      <button class="grow" onclick="submitPicker()">${pickerState.isSwitch?'Switch':'Clock in'}</button>
+    </div>
+  `);
+}
+function pickCompany(c){ pickerState.company=c; pickerState.jobSite=''; pickerState.poNumber=''; pickerState.isNew=false; pickerState.newType='';
+  const inp=document.getElementById('custSearch'); if(inp) inp.value=''; document.getElementById('suggest').innerHTML=''; renderPicker(); }
+
+let custDebounce=null;
+let custResults=[];   // index-referenced by suggestion clicks (apostrophe-safe, render-safe)
+
+/* Client-side customer cache: fetched once (10-min TTL), persisted in IndexedDB so
+   autocomplete is instant — and works offline. Falls back to server search if not loaded. */
+const CUST_TTL = 10*60*1000;
+/* v75 - THE OPEN-JOB LIST HAS TO BE THERE AT THE TAP.
+ *
+ * It was already cached on the phone - but only in IndexedDB, which can only be read with an
+ * await. openJobPicker paints the sheet synchronously, so the first picker of a session painted
+ * while S.customers was still empty ("Loading open jobs..."), and the only thing that repainted
+ * it was the FORCED network fetch landing. On a slow connection that is a wait of seconds; on no
+ * connection it never repaints at all. That is Paul's 16 Oct screenshot, and it is also why the
+ * list felt like it needed the internet when the data was sitting on the phone the whole time.
+ *
+ * So the list is mirrored into localStorage, which reads synchronously, and every picker
+ * hydrates from it BEFORE it paints. IndexedDB stays the primary copy (bigger, and the service
+ * worker reads it); localStorage is the copy that can be read in time to draw a screen. */
+const CUST_LS_KEY = 'pcwCustomers';
+function custSave_(list, ts){
+  try { localStorage.setItem(CUST_LS_KEY, JSON.stringify({ list, ts })); }
+  catch(e){
+    // Over quota: keep the rows the pickers actually need - the open jobs with a PO number.
+    try { localStorage.setItem(CUST_LS_KEY, JSON.stringify({
+      list:(list||[]).filter(c=>c && c.po && poOpen(c.status)), ts, part:true })); }
+    catch(_){}
+  }
+}
+/* Synchronous: safe to call on the line before a picker paints. */
+function custHydrateSync_(){
+  if (S.customers && S.customers.length) return true;
+  try {
+    const o = JSON.parse(localStorage.getItem(CUST_LS_KEY) || 'null');
+    if (o && o.list && o.list.length){ S.customers=o.list; S.customersAt=o.ts||0; return true; }
+  }catch(e){}
+  return false;
+}
+/* Repaint whichever job list is on screen the moment a better one arrives - from the phone's
+   own storage or from the office. Keyed on the DOM, so it is right whatever sheet is open. */
+function custPaint_(){
+  try{
+    if (pickerState && document.getElementById('poList')) refreshPoList();
+    if (coState && document.getElementById('coJobList')) coJobFilter(val('coJobSearch'));
+    if (mnState && document.getElementById('mnJobList')) mnJobFilter(val('mnJobSearch'));
+    if (edState && document.getElementById('edJobList')) edJobFilter(val('edJobSearch'));
+    if (document.getElementById('sjList')) sjFilter(val('sjSearch'));
+  }catch(e){}
+}
+async function loadCustomers(force){
+  // cache key v2: entries now carry PO Status for the open-jobs list
+  custHydrateSync_();
+  if (!force && S.customers && (Date.now()-S.customersAt) < CUST_TTL) return;
+  const cached = await DB.getCache('customers2');
+  if (cached && cached.list && cached.list.length){
+    S.customers=cached.list; S.customersAt=cached.ts;   // the fuller copy wins
+    custSave_(cached.list, cached.ts); custPaint_();
+  }
+  if (!S.online) return;
+  if (!force && cached && (Date.now()-cached.ts) < CUST_TTL) return;
+  try{
+    const r = await apiBg('customerList');
+    S.customers = r.customers||[]; S.customersAt = Date.now();
+    await DB.setCache('customers2', {list:S.customers, ts:S.customersAt});
+    custSave_(S.customers, S.customersAt);
+    custPaint_();
+  }catch(e){ /* keep whatever we had */ }
+}
+function levJs(a,b){ const m=a.length,n=b.length,dp=[]; for(let i=0;i<=m;i++)dp[i]=[i]; for(let j=0;j<=n;j++)dp[0][j]=j;
+  for(let i=1;i<=m;i++)for(let j=1;j<=n;j++)dp[i][j]=Math.min(dp[i-1][j]+1,dp[i][j-1]+1,dp[i-1][j-1]+(a[i-1]===b[j-1]?0:1)); return dp[m][n]; }
+function similarJs(a,b){ // mirror of the backend's "did you mean" heuristic
+  const at=a.split(/\s+/), bt=b.split(/\s+/);
+  for (const x of at) for (const y of bt){
+    if (x.length>=3 && y.length>=3 && (x.includes(y)||y.includes(x))) return true;
+    if (Math.min(x.length,y.length)>=4 && levJs(x,y)<=2) return true;
+  }
+  return false;
+}
+function localCustSearch(q){
+  const ql=q.trim().toLowerCase(); const matches=[], suggestions=[];
+  for (const c of S.customers){
+    const n=c.name.toLowerCase();
+    if (n.includes(ql)) matches.push(c);
+    else if (similarJs(n,ql)) suggestions.push(c);
+    if (matches.length>=8 && suggestions.length>=5) break;
+  }
+  return { matches:matches.slice(0,8), suggestions:suggestions.slice(0,5) };
+}
+function renderCustResults(r, q){
+  const box=document.getElementById('suggest'); if(!box) return;
+  custResults=[]; let h='';
+  (r.matches||[]).forEach(c=>{ const i=custResults.push(c)-1; h+=`<div onclick="chooseCustomer(${i})">${esc(c.name)} ${c.po?`<span class="small muted">PO ${esc(c.po)}</span>`:''}</div>`; });
+  (r.suggestions||[]).forEach(c=>{ const i=custResults.push(c)-1; h+=`<div onclick="chooseCustomer(${i})">Did you mean <b>${esc(c.name)}</b>? ${c.po?`<span class="small muted">PO ${esc(c.po)}</span>`:''}</div>`; });
+  const exact=(r.matches||[]).some(c=>c.name.toLowerCase()===q.trim().toLowerCase());
+  if(!exact) h+=`<div onclick="chooseNewCustomer()">➕ Add new customer “${esc(q)}”</div>`;
+  box.innerHTML=`<div class="suggest">${h}</div>`;
+}
+function onCustSearch(q){
+  pickerState.jobSite=q; pickerState.company=''; pickerState.poNumber=''; pickerState.isNew=false; pickerState.newType='';
+  refreshPoList(); // the search box also live-filters the open-PO list above it
+  clearTimeout(custDebounce);
+  const haveLocal = !!S.customers;
+  custDebounce=setTimeout(async()=>{
+    const box=document.getElementById('suggest'); if(!box) return;
+    if (!q.trim()){ box.innerHTML=''; return; }
+    if (haveLocal){ renderCustResults(localCustSearch(q), q); return; }  // instant, no network
+    if (!S.online){ box.innerHTML=`<div class="suggest"><div onclick="chooseNewCustomer()">➕ Add “${esc(q)}” (offline — PO assigned on sync)</div></div>`; return; }
+    try{ renderCustResults(await api('searchCustomers',{query:q}), q); }
+    catch(e){ box.innerHTML=`<div class="small muted">${esc(e.message)}</div>`; }
+  }, haveLocal?60:250);
+}
+function chooseCustomer(i){ const c=custResults[i]; if(!c) return;
+  pickerState.jobSite=c.name; pickerState.poNumber=c.po||''; pickerState.isNew=false;
+  document.getElementById('suggest').innerHTML=''; document.getElementById('custSearch').value=c.name; renderPicker(); }
+function chooseNewCustomer(){
+  // Ask the job type first — it determines the PO letter (Commercial=C, Residential=R, Industrial=I).
+  const q=pickerState.jobSite.trim(); if(!q) return;
+  const box=document.getElementById('suggest'); if(!box) return;
+  box.innerHTML=`<div class="suggest">
+    <div class="small muted" style="border-bottom:1px solid var(--line)">What type of job is “${esc(q)}”?</div>
+    <div style="padding:10px 14px">
+      <span class="chip" onclick="createNewCustomer('Commercial')">Commercial</span>
+      <span class="chip" onclick="createNewCustomer('Residential')">Residential</span>
+      <span class="chip" onclick="createNewCustomer('Industrial')">Industrial</span>
+    </div></div>`;
+}
+async function createNewCustomer(type, force){
+  const q=pickerState.jobSite.trim(); if(!q) return;
+  pickerState.newType=type;
+  if(!S.online){
+    pickerState.isNew=true;
+    const box=document.getElementById('suggest'); if(box) box.innerHTML=`<div class="small muted">Will create ${esc(type)} job “${esc(q)}” and assign its PO when back online.</div>`;
+    return;
+  }
+  try{
+    const box=document.getElementById('suggest'); if(box) box.innerHTML='<span class="spin"></span>';
+    const r=await api('createCustomer',{name:q, type, force: !!force});
+    if(r.duplicate){
+      custResults=[r.existing];
+      box.innerHTML=`<div class="suggest"><div onclick="chooseCustomer(0)">Use existing <b>${esc(r.existing.name)}</b> (PO ${esc(r.existing.po)})</div><div onclick="createNewCustomer('${esc(type)}', true)">No, create a new ${esc(type)} PO anyway</div></div>`;
+      return;
+    }
+    pickerState.jobSite=r.customer.name; pickerState.poNumber=r.customer.po; pickerState.isNew=false;
+    if (S.customers){ S.customers.push({name:r.customer.name, po:r.customer.po, status:'In Progress'});
+      DB.setCache('customers2',{list:S.customers,ts:S.customersAt||Date.now()}); custSave_(S.customers, S.customersAt||Date.now()); }
+    renderPicker(); toast(`New ${type} job — PO ${r.customer.po}`);
+  }catch(e){ toast(e.message); }
+}
+async function submitPicker(){
+  const notes=(document.getElementById('pnotes')||{}).value||'';
+  const p={ company:pickerState.company, jobSite:pickerState.jobSite, poNumber:pickerState.poNumber, notes, newCustomer:pickerState.isNew, newType:pickerState.newType };
+  if (!p.company && !p.jobSite){ toast('Pick a company or a job site'); return; }
+  closeSheet();
+  if (pickerState.isSwitch) await doSwitchSite(p); else await doClockIn(p);
+}
+
+/* ---- Clock out: confirm → review-and-edit → Submit ----
+   The entry is only finalized when Submit is tapped. "Keep working" returns to the running
+   clock — nothing was sent, so no time is lost either way.
+   v43 — the clock-out time is the moment SUBMIT is tapped, not the moment "Yes, clock out"
+   was confirmed. Writing up the day and the materials used is the last job of the day and
+   takes a minute or two; it used to be cut off. The review screen shows the time still
+   running (coTick_). A time typed into the Clock out box wins; and if the review sat open for
+   more than LONG_REVIEW_MIN minutes (phone put down mid-form), Submit asks which time is right
+   instead of silently padding the day. */
+let coState=null, coSubmittedId=null, coJobResults=[], coMatResults=[], coTickT=null;
+const LONG_REVIEW_MIN = 15;
+/* v75 - how far ahead of the phone's own clock a TYPED clock-out time may be. Paul asked to be
+   able to round the finish up (type 5:30 at 5:20); the app used to refuse anything more than
+   five minutes ahead and the server quietly clamped it back to "now" as well. Two hours covers
+   rounding to the half hour and a finish written up a little early; past that it is a wrong day
+   or a wrong phone clock, not a rounded finish, so it is refused instead of silently changed.
+   CONFIG.CLOCKOUT_AHEAD_MIN in Code.gs is the same number - keep them in step. */
+const CLOCKOUT_AHEAD_MIN = 120;
+
+function openClockOut(){
+  if (punchGuard_()) return;
+  const site = S.openEntry && (S.openEntry['Customer/Job Site']||S.openEntry.Company) || '';
+  sheet(`<div class="center">
+    <h2>Clock out?</h2>
+    ${site?`<p class="muted">${esc(site)}</p>`:''}
+    <p class="small muted">Next you'll review your day — the clock keeps running until you hit Submit.</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Cancel</button>
+      <button class="grow" style="background:linear-gradient(135deg,#dc2626,#f97316)" onclick="startClockOutReview()">Yes, clock out</button>
+    </div></div>`);
+}
+
+function startClockOutReview(){
+  if (!S.openEntry){ closeSheet(); return; }
+  const stopAt = new Date().toISOString();
+  const brkMin = Math.round(breakHrsSoFar(stopAt)*60);
+  coState = {
+    entryId: S.openEntry.EntryID,
+    origInAt: S.openEntry.ClockIn,   // untouched original, for "did they edit it?"
+    inAt: S.openEntry.ClockIn,
+    stopAt,                          // confirm moment — only used to notice a review left open too long
+    outAt: stopAt,                   // v43: follows the clock (coTick_) until Submit, unless typed over
+    inEdited: false, outEdited: false, jobEdited: false, longReviewOk: false,
+    jobSite: S.openEntry['Customer/Job Site']||'',
+    poNumber: S.openEntry['PO#']||'',
+    company: S.openEntry.Company||'',
+    breakMin: brkMin, autoBreakMin: brkMin,
+    notes: '', items: [], media: [], gps: null,
+    rv: { on:false, hours:0, res:null, picked:null, notify:false },  // v34 return visit
+  };
+  // GPS resolves while they review; if they submit first, it patches in afterwards.
+  const eid = coState.entryId;
+  coSubmittedId=null; // set by submitClockOut — distinguishes "submitted before GPS" from "cancelled"
+  getGps(15000).then(g=>{
+    if (!g) return;
+    if (coState && coState.entryId===eid) coState.gps=g;
+    else if (coSubmittedId===eid) apiMutate('patchGps',{entryId:eid, which:'out', gps:g});
+    // cancelled → drop the fix: the entry is still open and this is NOT its clock-out location
+  });
+  loadMaterials();
+  jpLoad(coState.poNumber, coState.jobSite||coState.company, true);   // v76 - this job's own PO parts
+  custHydrateSync_();   // v75 - "Change job" opens with the saved list, not a spinner
+  // Force-refresh customers in the background (same stale-while-revalidate as the clock-in
+  // picker) and update the "Change job" list if it's showing when the fresh data lands.
+  loadCustomers(true).then(()=>{ if (coState) coJobFilter(val('coJobSearch')); });
+  renderClockOutReview();
+  clearInterval(coTickT); coTickT = setInterval(coTick_, 5000); // the Clock out box follows the clock
+}
+/* v43 — while the review is open the clock-out time is "now": keep coState.outAt and the
+   Clock out box in step with the clock, unless a time was typed in (outEdited) or the box is
+   being edited right now (a native time picker must not have the value change under it). */
+function coTick_(){
+  const c=coState; if(!c){ clearInterval(coTickT); coTickT=null; return; }
+  if (c.outEdited) return;
+  const el=document.getElementById('coOut');
+  if (el && document.activeElement===el) return; // being edited — leave both the value and outAt alone until the change event decides
+  c.outAt = new Date().toISOString();
+  if (el && el.value!==fmtHM(c.outAt)) el.value=fmtHM(c.outAt);
+  coUpdateWorked();
+}
+function coStopTick_(){ clearInterval(coTickT); coTickT=null; }
+
+function fmtHM(iso){ const d=new Date(iso); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+function localDateStr(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+
+function renderClockOutReview(){
+  if (!coState) return;
+  const c = coState;
+  sheet(`
+    <h2 style="margin-bottom:2px">Review your day</h2>
+    <p class="small muted" style="margin-top:0">Fix anything that's wrong, then Submit — your time keeps running until you do.</p>
+    <div class="card" style="margin:10px 0">
+      <div class="row between">
+        <div><b id="coJobName">${esc(c.jobSite||c.company||'—')}</b>
+          <span class="small muted" id="coJobPo">${c.poNumber?('PO '+esc(c.poNumber)):''}</span></div>
+        <button class="ghost" onclick="coToggleJob()">Change</button>
+      </div>
+      <div id="coJobPick" class="hidden">
+        <input id="coJobSearch" placeholder="Search open jobs…" autocomplete="off" oninput="coJobFilter(this.value)">
+        <div id="coJobList" style="max-height:30vh;overflow:auto"></div>
+        <label>Internal company time (no PO)</label>
+        <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="coPickCompany(companyOptions()[${i}].c)">${o.noPO?esc(o.label):coFace(o.c)}</span>`).join('')}</div>
+      </div>
+    </div>
+    <div class="card" style="margin:10px 0">
+      <div class="row">
+        <div class="grow"><label style="margin-top:0">Clock in</label>
+          <input id="coIn" type="time" value="${fmtHM(c.inAt)}" onchange="coTimes()"></div>
+        <div class="grow"><label style="margin-top:0">Clock out</label>
+          <input id="coOut" type="time" value="${fmtHM(c.outAt)}" onchange="coTimes()"></div>
+        <div style="width:104px"><label style="margin-top:0">Break (min)</label>
+          <input id="coBreak" type="number" min="0" step="5" value="${c.breakMin}" oninput="coTimes()"></div>
+      </div>
+      <div class="small muted" id="coWorked"></div>
+    </div>
+    <label>What did you work on today?</label>
+    <div class="row between" style="margin-top:2px"><span class="small" style="color:var(--navy);font-weight:700">What did you work on? (required)</span>
+      <button class="secondary" id="coMicBtn" style="padding:6px 12px" onclick="dictate('coMicBtn','coNotes')">🎤 Talk</button></div>
+    <textarea id="coNotes" rows="2" placeholder="e.g. changed light fixtures, wired panel — talk or type" oninput="coState&&(coState.notes=this.value)">${esc(c.notes)}</textarea>
+    ${coRvCard(c)}
+    <label>Bought for this job</label>
+    <div id="jp_co">${jpBlockHtml('co')}</div>
+    <label style="margin-top:14px">Anything else you used — search the inventory</label>
+    <input id="coMatSearch" placeholder="Search… e.g. half inch EMT, wago" autocomplete="off" oninput="coMatSuggest(this.value)">
+    <div id="coMatSug"></div>
+    <div id="coMatList"></div>
+    <label>Receipts from today</label>
+    <button class="secondary" style="width:100%;padding:11px 8px" onclick="coScanReceipt()">📷 Scan receipt / estimate</button>
+    ${c.scanned?`<div class="small muted" style="margin-top:4px">🧾 ${c.scanned} filed against ${esc(c.jobSite||c.company||'this job')}</div>`:''}
+    <label>Photos / videos of the job</label>
+    <div class="row">
+      <button class="secondary grow" style="padding:11px 8px" onclick="document.getElementById('coCamIn').click()">📸 Take a photo</button>
+      <button class="secondary grow" style="padding:11px 8px" onclick="document.getElementById('coGalIn').click()">🖼️ From album</button>
+    </div>
+    <!-- v44 — TWO inputs. Chrome/Android ignores capture= when multiple is set, so the old single
+         input always opened the photo album. One-shot camera input + a separate album picker. -->
+    <input id="coCamIn" type="file" accept="image/*" capture="environment" class="hidden" onchange="coAddMedia(this)">
+    <input id="coGalIn" type="file" accept="image/*,video/*" multiple class="hidden" onchange="coAddMedia(this)">
+    <div id="coMedia" class="row" style="flex-wrap:wrap;align-items:flex-start"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="cancelClockOutReview()">← Keep working</button>
+      <button class="grow" id="coSubmit" onclick="submitClockOut()">Submit</button>
+    </div>
+  `);
+  // A stray tap on the backdrop must not throw away a half-filled review.
+  if (S._sheet) S._sheet.onclick = null;
+  coUpdateWorked(); coUpdateMats(); coUpdateMedia(); coRvSlotsRender();
+}
+
+/* ---- Return visit (v34) ------------------------------------------------------------------
+   "We booked 2 hours, it isn't done, when can we come back?"  The tech ticks the box, says how
+   much longer it needs, and the app reads Paul's calendar and offers the first openings that
+   actually fit. They agree one with the customer standing there; it is booked on Submit.
+
+   Booked AFTER the clock-out lands (the server only lets you book a return visit for a job you
+   have worked on) and never queued for retry — a slot you promised a customer is taken now or
+   not at all, and a booking that fires an hour later is a booking into a slot nobody checked. */
+function coRvCard(c){
+  const rv = c.rv || {};
+  const chips = [1,2,3,4,6,8].map(h=>`<span class="chip${Number(rv.hours)===h?' sel':''}" onclick="coRvSetHours(${h})">${h} hr</span>`).join('');
+  return `<div class="card" style="margin:10px 0${rv.on?';border-color:var(--accent2)':''}">
+    <label class="row" style="gap:10px;align-items:center;margin:0;cursor:pointer">
+      <input type="checkbox" id="coRvOn" ${rv.on?'checked':''} onchange="coRvToggle(this.checked)" style="width:20px;height:20px;flex:none;margin:0">
+      <span style="font-weight:700;color:var(--navy)">Job not finished — book the return visit</span>
+    </label>
+    <div id="coRvBody" class="${rv.on?'':'hidden'}" style="margin-top:10px">
+      <label style="margin-top:0">How much longer will it take?</label>
+      <div class="row" style="flex-wrap:wrap;gap:6px;align-items:center">${chips}
+        <input id="coRvHours" type="number" step="0.5" min="0.5" max="40" value="${rv.hours||''}"
+               placeholder="or type" style="width:104px" oninput="coRvSetHours(this.value,true)">
+      </div>
+      <button class="secondary" style="width:100%;margin-top:10px;padding:11px 8px" onclick="coRvFind()">📅 Find open slots</button>
+      <div id="coRvSlots" style="margin-top:8px"></div>
+      ${(S.me&&S.me.role==='admin')?`<details id="coRvOwn" ${rv.custom?'open':''} style="margin-top:12px">
+        <summary class="small" style="color:var(--accent2);cursor:pointer;font-weight:700">🗓️ Pick my own day &amp; time (jobs already there get moved)</summary>
+        <div class="row"><div class="grow"><label>Day</label><input id="coRvOwnDate" type="date" value="${rv.custom?esc(rv.custom.date):''}"></div>
+          <div class="grow"><label>Start</label><input id="coRvOwnTime" type="time" value="${rv.custom?esc(rv.custom.time):'08:30'}"></div></div>
+        <button class="secondary" style="width:100%;margin-top:8px" onclick="coRvOwnCheck()">Check what moves</button>
+        <div id="coRvOwnPlan" style="margin-top:8px"></div>
+      </details>`:''}
+    </div>
+  </div>`;
+}
+function coRvToggle(on){
+  const c=coState; if(!c) return;
+  c.rv.on=!!on;
+  if(!on){ c.rv.picked=null; c.rv.res=null; }
+  const b=document.getElementById('coRvBody'); if(b) b.classList.toggle('hidden', !on);
+  coRvSlotsRender();
+}
+/* typed=true means the number box fired: store it WITHOUT repainting, or the keyboard closes
+   and the caret jumps on every keystroke. */
+function coRvSetHours(v, typed){
+  const c=coState; if(!c) return;
+  const h=Math.max(0, Math.min(40, Number(v)||0));
+  if (c.rv.hours!==h){ c.rv.res=null; c.rv.picked=null; }
+  c.rv.hours=h;
+  if (typed){ coRvSlotsRender(); return; }
+  const box=document.getElementById('coRvHours'); if(box) box.value=h||'';
+  document.querySelectorAll('#coRvBody .chip').forEach(el=>{
+    el.classList.toggle('sel', el.textContent.trim()===h+' hr');
+  });
+  coRvSlotsRender();
+}
+async function coRvFind(){
+  const c=coState; if(!c) return;
+  const h=Number(c.rv.hours||0);
+  if(!(h>0)){ toast('Say how much longer it needs first.'); const el=document.getElementById('coRvHours'); if(el) el.focus(); return; }
+  const box=document.getElementById('coRvSlots');
+  if(box) box.innerHTML='<p class="small muted">Reading the calendar…</p>';
+  try{
+    const r=await api('visitSlots',{hours:h, count:4});
+    c.rv.res=r; c.rv.picked=null; coRvSlotsRender();
+  }catch(e){
+    if(box) box.innerHTML='<p class="small" style="color:var(--bad)">Could not read the calendar — '+esc(e.message)+'</p>';
+  }
+}
+function coRvPick(i){ const c=coState; if(!c) return; c.rv.picked=(c.rv.picked===i?null:i);
+  if(c.rv.picked!=null && c.rv.custom){ c.rv.custom=null; const pl=document.getElementById('coRvOwnPlan'); if(pl) pl.innerHTML=''; }
+  coRvSlotsRender(); }
+/* v52 — PICK MY OWN DAY & TIME. Paul chooses any day and time.
+   v51 — and a job already there no longer gets shuffled to the next work day. It comes OFF the
+   calendar and waits under "⚡ Needs a new time" at the top of Requests, keeping its job number,
+   where Paul rings or emails the customer and then picks a time or takes the next opening. If
+   that time is taken too, that job comes back the same way — one step at a time. Estimate calls
+   and personal events never move. Nothing happens until he ticks the box under the plan, and it
+   is booked only when he hits Submit. */
+async function coRvOwnCheck(){
+  const c=coState; if(!c) return;
+  const h=Number(c.rv.hours||0);
+  if(!(h>0)){ toast('Say how much longer it needs first.'); return; }
+  const date=val('coRvOwnDate'), time=val('coRvOwnTime');
+  if(!date||!time) return toast('Pick the day and the start time.');
+  const start=new Date(date+'T'+time); if(isNaN(start)) return toast('That day/time did not read properly.');
+  const box=document.getElementById('coRvOwnPlan'); if(box) box.innerHTML='<p class="small muted">Working out what moves…</p>';
+  try{
+    const plan=await api('bumpPlan',{start:start.toISOString(), hours:h, po:c.poNumber||'', jobSite:c.jobSite||c.company||''},{timeout:60000});
+    c.rv.custom={ date, time, start:start.toISOString(), hours:h, plan, ok:false };
+    c.rv.picked=null; coRvSlotsRender();
+    if(box) box.innerHTML = bumpPlanHtml(plan)
+      + '<label class="row" style="gap:10px;align-items:center;margin-top:10px;cursor:pointer">'
+      + '<input type="checkbox" onchange="coState&&coState.rv.custom&&(coState.rv.custom.ok=this.checked)" style="width:20px;height:20px;flex:none;margin:0">'
+      + '<span class="small"><b>Yes — book it here'+(plan.moves.length?' and move '+(plan.moves.length===1?'that job':'those '+plan.moves.length+' jobs'):'')+'</b> when I hit Submit</span></label>'
+      + '<label class="row" style="gap:10px;align-items:center;margin-top:6px;cursor:pointer">'
+      + '<input type="checkbox" '+(c.rv.notify?'checked':'')+' onchange="coState&&(coState.rv.notify=this.checked)" style="width:18px;height:18px;flex:none;margin:0">'
+      + '<span class="small">Email this customer a confirmation</span></label>';
+  }catch(e){ c.rv.custom=null; if(box) box.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+}
+/* The plan, readable on a phone. Shared by the return visit and the Call-list Reschedule. */
+function bumpPlanHtml(plan){
+  const m=plan.mover;
+  let h='<div class="card" style="margin:0;padding:10px">'
+    + '<div class="small"><b>'+(m.kind==='new'?'Return visit':'This job')+':</b> '+esc(fmtDay(m.start))+' '+esc(fmtTime(m.start))+'–'+esc(fmtTime(m.end))+'</div>';
+  if(plan.moves.length){
+    // v51 — a displaced job is NOT given another time. It comes off the calendar and waits in
+    // Requests, so the time it eventually gets is one Paul chose and the customer agreed.
+    h+='<div class="small" style="margin-top:8px;font-weight:700">'
+      +(plan.moves.length===1?'This job comes off the calendar:':'These '+plan.moves.length+' jobs come off the calendar:')+'</div>';
+    h+=plan.moves.map(x=>'<div class="small" style="margin-top:6px;padding-left:8px;border-left:3px solid var(--bad)">'
+      + '<b>'+esc(x.customer||x.title)+'</b>'+(x.po?' <span class="muted">'+esc(x.po)+'</span>':'')
+      + (x.job?'<br><span class="muted">'+esc(x.job)+'</span>':'')
+      + '<br>was '+esc(fmtDay(x.from))+' '+esc(fmtTime(x.from))+' → <b>waiting for a new time</b>'
+      + (x.phone?'<br>📞 '+esc(x.phone):'<br><span style="color:var(--pending)">no phone on file</span>')
+      + '</div>').join('');
+    h+='<p class="small muted" style="margin:8px 0 0">They land under "⚡ Needs a new time" at the top of Requests, job numbers unchanged — ring or email them there, then pick a time or take the next opening. You get the same list by email.</p>';
+  } else h+='<div class="small" style="margin-top:6px;color:var(--good)">✓ Nothing needs to move.</div>';
+  if(plan.warnings&&plan.warnings.length) h+=plan.warnings.map(w=>'<div class="small" style="margin-top:6px;color:var(--pending)">⚠️ '+esc(w)+'</div>').join('');
+  return h+'</div>';
+}
+function coRvSlotsRender(){
+  const c=coState, box=document.getElementById('coRvSlots');
+  if(!c||!box) return;
+  const r=c.rv.res;
+  if(!c.rv.on || !r){ box.innerHTML=''; return; }
+  if(!r.slots.length){
+    box.innerHTML='<p class="small muted">Nothing open that long in the next '+r.horizonDays+' days. Try fewer hours, or have Paul book it by hand.</p>';
+    return;
+  }
+  const head = r.multiDay
+    ? '<p class="small muted" style="margin:0 0 6px">'+r.hours+' hrs will not fit in one day — this books <b>day 1 of '+r.daysNeeded+'</b> ('+r.perVisit+' hrs). Book the rest separately.</p>'
+    : '';
+  const list = r.slots.map((s,i)=>{
+    const on = c.rv.picked===i;
+    return '<button class="secondary" style="width:100%;margin-top:6px;padding:11px 10px;text-align:left'
+      + (on?';border-color:var(--accent2);background:rgba(46,117,182,.10)':'') + '" onclick="coRvPick('+i+')">'
+      + (on?'✅ ':'') + '<b>'+esc(fmtDay(s.start))+'</b> <span class="small muted">'
+      + esc(fmtTime(s.start))+'–'+esc(fmtTime(s.end)) + (s.wholeDay?' · day is clear':'') + '</span></button>';
+  }).join('');
+  const tail = '<label class="row" style="gap:10px;align-items:center;margin-top:10px;cursor:pointer">'
+    + '<input type="checkbox" id="coRvNotify" '+(c.rv.notify?'checked':'')
+    + ' onchange="coState&&(coState.rv.notify=this.checked)" style="width:18px;height:18px;flex:none;margin:0">'
+    + '<span class="small">Email the customer a confirmation</span></label>'
+    + '<p class="small muted" style="margin:6px 0 0">Booked when you hit Submit. Workday '
+    + esc(r.workday.start)+'–'+esc(r.workday.end)+', '+esc(r.workday.days)
+    + (r.workday.lunch?' (lunch '+esc(r.workday.lunch)+')':'')
+    + '; stat holidays, your approved time off and '+r.workday.bufferMin+' min travel either side are already out.</p>';
+  box.innerHTML = head + list + tail;
+}
+/* The booking failed after the customer was told a time — that must not be a toast they miss. */
+function coRvFailed_(msg, slot){
+  sheet('<div class="center">'
+    + '<div style="font-size:2.2rem">📅</div>'
+    + '<h2>Return visit NOT booked</h2>'
+    + '<p class="small muted" style="margin-top:0">Your time went in fine — only the calendar booking failed.</p>'
+    + '<p style="color:var(--bad)">'+esc(msg)+'</p>'
+    + (slot?'<p class="small muted">You were booking '+esc(fmtDay(slot.start))+' '+esc(fmtTime(slot.start))+'.</p>':'')
+    + '<p class="small">Tell the customer you will confirm, and ask Paul to put it on the calendar.</p>'
+    + '<button style="width:100%;margin-top:10px" onclick="closeSheet()">Got it</button>'
+    + '</div>');
+}
+
+function cancelClockOutReview(){
+  coStopTick_();
+  coState=null; closeSheet(); render(); // timer resumes — the clock never actually stopped
+  toast('Still clocked in');
+}
+
+function coTimes(){
+  const c=coState; if(!c) return;
+  const before = c.inAt+'|'+c.outAt+'|'+c.breakMin; // to reset the over-break warning on change
+  const dstr=localDateStr(new Date(c.origInAt)); // times are anchored to the shift's start date
+  const inV=val('coIn'), outV=val('coOut');
+  if (inV && inV!==fmtHM(c.origInAt)){
+    const t=new Date(dstr+'T'+inV);
+    if(!isNaN(t)){ c.inAt=t.toISOString(); c.inEdited=true; }
+  } else if (inV){ c.inAt=c.origInAt; c.inEdited=false; }
+  // v43 — the box normally tracks the clock (coTick_ keeps it equal to fmtHM(c.outAt)), so a
+  // value that differs from it can only have been typed: that time wins from here on.
+  if (outV && outV!==fmtHM(c.outAt)){
+    let t=new Date(dstr+'T'+outV);
+    if(!isNaN(t)){
+      if (t <= new Date(c.inAt)) t=new Date(t.getTime()+86400000); // out before in = overnight shift
+      c.outAt=t.toISOString(); c.outEdited=true;
+    }
+  }
+  if (document.getElementById('coBreak')) c.breakMin = Math.max(0, Number(val('coBreak'))||0); // the review sheet may already be gone (coCommit_)
+  // Any change to the numbers voids a pending "clock out anyway" confirmation.
+  if (c.breakWarned && (c.inAt+'|'+c.outAt+'|'+c.breakMin) !== before){
+    c.breakWarned = false;
+    const sub=document.getElementById('coSubmit'); if (sub) sub.textContent='Submit';
+  }
+  coUpdateWorked();
+}
+function coUpdateWorked(){
+  const box=document.getElementById('coWorked'); const c=coState; if(!box||!c) return;
+  const gms=new Date(c.outAt)-new Date(c.inAt);
+  const bmin=Number(c.breakMin)||0;
+  const net=Math.max(0, gms/3600000 - bmin/60);
+  const overnight=localDateStr(new Date(c.outAt))!==localDateStr(new Date(c.inAt));
+  box.innerHTML = `Worked <b>${fmtDur(Math.max(0,gms))}</b>${bmin?` − ${bmin} min break`:''} → <b>${net.toFixed(2)} hrs</b>`+
+    (overnight?' <span class="pill pending">overnight</span>':'')+
+    (bmin*60000>Math.max(0,gms)?' <span style="color:var(--bad)">⚠ break exceeds time worked</span>':'')+
+    (bmin!==c.autoBreakMin?` <span class="muted">(auto-tracked: ${c.autoBreakMin} min)</span>`:'');
+  const sub=document.getElementById('coSubmit');
+  if (sub) sub.disabled = !(gms>0); // over-break is warn-and-confirm, never disabled
+}
+
+/* job change (inline open-PO picker, same data as the clock-in screen) */
+function coToggleJob(){ const d=document.getElementById('coJobPick'); if(!d) return;
+  d.classList.toggle('hidden'); if(!d.classList.contains('hidden')) coJobFilter(val('coJobSearch')); }
+function coJobFilter(q){
+  const box=document.getElementById('coJobList'); if(!box) return;
+  coJobResults=openPOs(q);
+  box.innerHTML = coJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="coPickJob(${i})">${poRowHtml(c)}</div>`).join('')
+    || '<p class="small muted">No open POs match.</p>';
+}
+function coPickJob(i){ const c=coJobResults[i]; if(!c||!coState) return;
+  coState.jobSite=c.name; coState.poNumber=c.po; coState.company=''; coState.jobEdited=true;
+  coJobHeader(); coToggleJob(); jpLoad(c.po, c.name, true); jpPaint_(); }
+function coPickCompany(x){ if(!coState) return;
+  coState.company=x; coState.jobSite=''; coState.poNumber=''; coState.jobEdited=true;
+  coJobHeader(); coToggleJob(); jpLoad('', x, true); jpPaint_(); }
+function coJobHeader(){ const c=coState; if(!c) return;
+  const n=document.getElementById('coJobName'), p=document.getElementById('coJobPo');
+  if(n) n.textContent=c.jobSite||c.company||'—';
+  if(p) p.textContent=c.poNumber?('PO '+c.poNumber):''; }
+
+/* materials (running, editable list — same search as before, now inline) */
+function coMatSuggest(q){
+  const box=document.getElementById('coMatSug'); if(!box) return;
+  if(!q.trim()){ box.innerHTML=''; return; }
+  coMatResults=localMatSearch(q); let h='';
+  coMatResults.forEach((m,i)=>{ h+=`<div onclick="coMatPick(${i})">${esc(m.name)}${m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}</div>`; });
+  h+=`<div onclick="coMatTyped()">➕ Add “${esc(q)}” as typed <span class="small muted">(admin will review)</span></div>`;
+  box.innerHTML=`<div class="suggest">${h}</div>`;
+}
+function coMatPick(i){ const m=coMatResults[i]; if(!m||!coState) return;
+  coState.items.push({name:m.name, sku:m.sku||'', unit:m.unit||'', qty:1, matched:true}); coMatClear(); coUpdateMats(); }
+function coMatTyped(){ const q=val('coMatSearch').trim(); if(!q||!coState) return;
+  coState.items.push({name:q, unit:'', qty:1, matched:false}); coMatClear(); coUpdateMats(); }
+function coMatClear(){ const i=document.getElementById('coMatSearch'); if(i){ i.value=''; i.focus(); }
+  const b=document.getElementById('coMatSug'); if(b) b.innerHTML=''; }
+function coMatQty(i,v){ if(coState&&coState.items[i]) coState.items[i].qty=v; }
+function coMatRemove(i){ if(!coState) return; coState.items.splice(i,1); coUpdateMats(); jpPaint_(); }
+function coUpdateMats(){
+  const box=document.getElementById('coMatList'); const c=coState; if(!box||!c) return;
+  box.innerHTML = c.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
+    c.items.map((it,i)=>`<div class="list-item row">
+      <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}${it.fromDoc?`<div class="small muted">&#129534; ${esc(it.fromDoc)} &middot; bought ${esc(it.bought)}</div>`:''}</div>
+      <input type="number" step="any" min="0" value="${esc(it.qty)}" style="width:84px;margin:0;text-align:center" onchange="coMatQty(${i},this.value)">
+      <button class="ghost" onclick="coMatRemove(${i})" aria-label="Remove">✕</button>
+    </div>`).join('')+`</div>` : '';
+}
+
+/* photos / videos — attach to the entry right away (it already exists), local thumbnails */
+/* v44 — SCAN A RECEIPT FROM THE REVIEW SCREEN. The review sheet is replaced by the camera; the
+ * clock keeps running and coState keeps everything typed so far (notes, materials, photos).
+ * However the scan ends — filed, queued offline, discarded, cancelled — docFinish() brings the
+ * review back instead of closing the sheet. The receipt is recorded against the open job. */
+function coScanReceipt(){
+  if(!coState) return;
+  S._docBack = ()=>{ if(coState) renderClockOutReview(); else closeSheet(); };
+  openDocScan();
+}
+function docFinish(){
+  const back=S._docBack; S._docBack=null;
+  coAbsorbScan_();
+  if(back) back(); else closeSheet();
+}
+/* Receipt lines -> Materials used. The same receipt scanned twice adds nothing twice. */
+function coAbsorbScan_(){
+  const c=coState; if(!c||!c.pendingScanItems||!c.pendingScanItems.length) return;
+  const key=x=>String(x.sku||x.name||'').toLowerCase()+'|'+(x.fromDoc||'');
+  let n=0;
+  c.pendingScanItems.forEach(it=>{ if(c.items.some(x=>key(x)===key(it))) return; c.items.push(it); n++; });
+  c.pendingScanItems=null;
+  if(n) toast(n+' item(s) off the receipt - set the quantity to what you actually used');
+}
+function coAddMedia(input){
+  if(!coState) return;
+  for (const f of Array.from(input.files||[])){
+    if (f.size > MAX_MEDIA_MB*1048576){ toast(`${f.name} is too large (max ${MAX_MEDIA_MB} MB)`); continue; }
+    const item={ name:f.name, isImg:/^image\//.test(f.type), objUrl:URL.createObjectURL(f), status:'uploading' };
+    coState.media.push(item);
+    const eid=coState.entryId, job=coState.jobSite||coState.company||'Unassigned';
+    fileToB64(f)
+      .then(b64=>apiMutate('uploadMedia',{entryId:eid, jobSite:job, filename:f.name, mimeType:f.type, dataBase64:b64}))
+      .then(r=>{ item.status=(r&&r.queued)?'queued':'done'; coUpdateMedia(); })
+      .catch(e=>{ item.status='failed'; coUpdateMedia(); toast('Upload failed: '+e.message); });
+  }
+  input.value='';
+  coUpdateMedia();
+}
+function coUpdateMedia(){
+  const box=document.getElementById('coMedia'); const c=coState; if(!box||!c) return;
+  box.innerHTML = c.media.map(m=>`<div class="center" style="width:96px">
+    ${m.isImg?`<img src="${m.objUrl}" style="width:96px;height:96px;object-fit:cover;border-radius:12px">`
+      :`<div style="width:96px;height:96px;border-radius:12px;background:var(--panel2);display:flex;align-items:center;justify-content:center;font-size:2rem">🎬</div>`}
+    <div class="small muted">${m.status==='uploading'?'uploading…':m.status==='done'?'✓ saved':m.status==='queued'?'queued':'⚠ failed'}</div>
+  </div>`).join('');
+}
+
+async function submitClockOut(){
+  const c=coState; if(!c) return;
+  coTimes(); // capture any input the change-event hasn't fired for yet
+  // v43 — the clock-out time is THIS tap, to the second, unless a time was typed in.
+  if (!c.outEdited) c.outAt = new Date().toISOString();
+  if(!String(c.notes||'').trim() || String(c.notes).trim().length<3){
+    toast('Describe what you worked on before clocking out — talk or type it.');
+    const el=document.getElementById('coNotes'); if(el){ el.focus(); el.style.borderColor='var(--bad)'; }
+    return;
+  }
+  const gms=new Date(c.outAt)-new Date(c.inAt);
+  if (!(gms>0)){ toast('Clock-out must be after clock-in — check the times.'); return; }
+  const ahead = new Date(c.outAt).getTime() - Date.now();
+  if (ahead > CLOCKOUT_AHEAD_MIN*60000){
+    toast(`That clock-out is ${Math.round(ahead/60000)} min ahead of this phone's clock — pick a time within ${CLOCKOUT_AHEAD_MIN/60} hours of now.`, 6000);
+    return;
+  }
+  const bmin=Number(c.breakMin)||0;
+  if (bmin*60000 > gms && !c.breakWarned){
+    // Warn, don't hard-block: mistakes happen, but so do real short days. A second tap
+    // on Submit (now relabelled) confirms and clocks out at 0 net hours.
+    c.breakWarned = true;
+    const sub=document.getElementById('coSubmit'); if (sub) sub.textContent='Clock out anyway (0 hrs)';
+    toast('Break is longer than time worked — tap again to clock out anyway');
+    coUpdateWorked();
+    return;
+  }
+  // v43 — a review left open for a long time (phone put down mid-form) must not quietly add
+  // that time to the day: ask which time is right. A typed time is already an answer.
+  if (!c.outEdited && !c.longReviewOk && Date.now()-new Date(c.stopAt).getTime() > LONG_REVIEW_MIN*60000){ coAskLongReview_(); return; }
+  return coCommit_();
+}
+function coAskLongReview_(){
+  const c=coState; if(!c) return;
+  const mins=Math.round((Date.now()-new Date(c.stopAt).getTime())/60000);
+  sheet(`<div class="center">
+    <div style="font-size:2.2rem">⏱</div>
+    <h2>Which clock-out time?</h2>
+    <p>You tapped <b>Clock out</b> at <b>${esc(fmtTime(c.stopAt))}</b> — ${mins} minutes ago.</p>
+    <button style="width:100%;margin-top:8px" onclick="coLongReview_(true)">${esc(fmtTime(new Date().toISOString()))} (now) — I kept working</button>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="coLongReview_(false)">${esc(fmtTime(c.stopAt))} — I had stopped</button>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="renderClockOutReview()">← Back to the review</button>
+  </div>`);
+  if (S._sheet) S._sheet.onclick = null;
+}
+function coLongReview_(useNow){
+  const c=coState; if(!c) return;
+  c.longReviewOk = true;
+  if (useNow) c.outAt = new Date().toISOString();
+  else { c.outAt = c.stopAt; c.outEdited = true; }
+  coCommit_();
+}
+/* Everything after the review is accepted: close the sheet, paint clocked-out, send. */
+async function coCommit_(){
+  const c=coState; if(!c) return;
+  coStopTick_();
+  const bmin=Number(c.breakMin)||0;
+  const gms=new Date(c.outAt)-new Date(c.inAt);
+  coSubmittedId=c.entryId; // review really submitted — the late-GPS patch may now target it
+  coState=null; closeSheet();
+  S.mutSeq++; // flicker guard — invalidate any in-flight bootstrap snapshot
+  const gross=Math.round((gms/3600000)*100)/100;
+  const brkHrs=Math.min(Math.round((bmin/60)*100)/100, gross); // confirmed over-break clamps to the shift
+  const net=Math.max(0, Math.round((gross-brkHrs)*100)/100);
+  const prevOpen=S.openEntry; // kept so a refused clock-out can put the running clock back
+  const prevNotes=(S.openEntry&&S.openEntry.Notes)||'';
+  const closing={ ...(S.openEntry||{}), EntryID:c.entryId, ClockIn:c.inAt, ClockOut:c.outAt,
+    Hours:net, 'Gross Hours':gross, 'Break Hrs':brkHrs,
+    Notes: prevNotes ? (c.notes? prevNotes+' | '+c.notes : prevNotes) : c.notes,
+    Company:c.company, 'Customer/Job Site':c.jobSite, 'PO#':c.poNumber,
+    Source:'live', Date:(S.openEntry&&S.openEntry.Date)||todayStr() };
+  upsertLocalEntry(closing); // real clock-out: Source stays 'live' → drops off Paused-today
+  S.openEntry=null; render();
+  saveBootCache(); // persist the clocked-OUT state NOW — reopening the app mid-request must
+                   // paint "Clock In", not resurrect the Clock Out button
+  // Confirmation card IMMEDIATELY — it used to wait out the 4-6s server round trip. The
+  // numbers are computed locally (same math as the server); its values reconcile below.
+  // v42 — the card tells the truth. It used to show "✅ Clocked out" BEFORE the server had
+  // answered, and a failure was a 3-second toast underneath it. Now: ⏳ while sending, then
+  // ✅ once the office has it, 📶 if it is waiting on the phone for signal, ❌ if the server
+  // refused it (in which case the running clock comes straight back).
+  const ot = weekHours() > (S.config.otThreshold||44);
+  const before = prevOpen ? { ...prevOpen } : null;
+  showEncouragement(net, ot, brkHrs, 'sending');
+  const p={ entryId:c.entryId, at:c.outAt, gps:c.gps, notes:c.notes, breakMin:bmin };
+  if (c.inEdited) p.clockInAt=c.inAt;
+  if (c.jobEdited){ p.jobSite=c.jobSite; p.poNumber=c.poNumber; p.company=c.company; }
+  let r=null;
+  try { r = await apiMutate('clockOut', p, { tempId:c.entryId }); }
+  catch(e){
+    if (/Already clocked out/i.test(e.message)){ refresh(true); showEncouragement(net, ot, brkHrs, 'done'); return; } // closed from another device
+    // The server said no (or the punch could not even be kept on the phone): undo the
+    // optimistic close so the running clock is back, and say exactly why.
+    if (before && !S.openEntry){ S.openEntry = before; const i=(S.entries||[]).findIndex(x=>x.EntryID===c.entryId); if (i>=0) S.entries.splice(i,1); }
+    S.mutSeq++; render(); saveBootCache();
+    showEncouragement(net, ot, brkHrs, 'failed', e.message + (e.notQueued ? ' (and this phone could not keep a copy to retry)' : ''));
+    refresh(true); return;
+  }
+  if (r && r.queued){ showEncouragement(net, ot, brkHrs, 'queued'); }
+  else showEncouragement(r && r.hours!=null ? Number(r.hours) : net, ot, r && r.breakHrs!=null ? Number(r.breakHrs) : brkHrs, 'done'); // the office's numbers, now that we have them
+  // Fold the server-computed values into the local entry — no full refresh needed.
+  if (r && r.hours!=null){
+    const i=(S.entries||[]).findIndex(x=>x.EntryID===c.entryId);
+    if (i>=0) S.entries[i]={ ...S.entries[i], Hours:r.hours, 'Gross Hours':r.gross, 'Break Hrs':r.breakHrs };
+  }
+  if (c.items.length){
+    apiMutate('logMaterials',{ entryId:c.entryId, jobSite:c.jobSite||c.company||'', poNumber:c.poNumber||'', items:c.items });
+    const pend=c.items.filter(i=>!i.matched).length;
+    if (pend) toast(pend+' material item(s) flagged for admin review');
+  }
+  saveBootCache();
+  // v34 — the return visit, only now that the office has the clock-out (the server will not
+  // book a return visit for a job you have no entry on) and only if a slot was actually picked.
+  if (c.rv && c.rv.on && c.rv.picked!=null && c.rv.res && c.rv.res.slots[c.rv.picked]){
+    const s=c.rv.res.slots[c.rv.picked];
+    try{
+      const b = await api('visitBook',{ po:c.poNumber||'', jobSite:c.jobSite||c.company||'',
+        start:s.start, hours:s.hours, note:c.notes, notifyCustomer:!!c.rv.notify });
+      toast((b&&b.extended ? 'Booking extended — ' : 'Return visit booked — ')
+            + fmtDay(s.start)+', '+fmtTime(s.start), 5000);
+    }catch(e){ coRvFailed_(e.message, s); }
+  } else if (c.rv && c.rv.on && c.rv.custom && c.rv.custom.ok){
+    // v52 — Paul's own day and time, with the bump chain he confirmed on the review screen.
+    const k=c.rv.custom;
+    try{
+      const b = await api('bumpApply',{ start:k.start, hours:k.hours, po:c.poNumber||'', jobSite:c.jobSite||c.company||'',
+        note:c.notes, notifyCustomer:!!c.rv.notify, hash:k.plan.hash },{timeout:120000});
+      toast('Return visit booked — '+fmtDay(k.start)+', '+fmtTime(k.start)
+        + (b&&b.moved?' · '+b.moved+' job(s) came off the calendar — give them a new time in Requests › ⚡ Needs a new time':''), 8000);
+      if (b&&b.problems&&b.problems.length) setTimeout(()=>toast('Could not move: '+b.problems.join('; '), 8000), 8200);
+      loadRequests();
+    }catch(e){ coRvFailed_(e.message, {start:k.start}); }
+  }
+  if (!c.gps) retryGpsPatch(c.entryId, 'out');
+}
+
+/* ---- Manual entry (v45: "Add time") ----
+   Rebuilt so Paul can put his own time in after the fact without fighting the form:
+   - the same open-PO job picker + company chips + materials as the clock-out review and Edit;
+   - a HOURS field: type the start and how many hours and the end time is computed
+     (start + hours + break). Edit the end instead and the hours follow;
+   - a date range ("Through") so a whole week can be backdated in one go — one entry per day,
+     Sat/Sun skipped unless the box is unticked; materials go on the first day's entry;
+   - an admin's own entries land APPROVED (the backend stamps Approved By/At when the author
+     is an admin), so Paul no longer approves his own time in the Admin tab. Crew entries
+     still go to 'pending' exactly as before.
+   Reachable from the Clock screen ("Add time manually") and the Entries tab ("+ Manual"). */
+let mnState=null, mnJobResults=[], mnMatResults=[];
+function openManual(){
+  const today=todayStr(); // LOCAL date — toISOString() is UTC and prefills tomorrow every evening
+  mnState={ jobSite:'', poNumber:'', company:'', items:[] };
+  loadMaterials();
+  custHydrateSync_();   // v75
+  loadCustomers(true).then(()=>{ if (mnState) mnJobFilter(val('mnJobSearch')); }); // fresh open-PO list
+  const isAdmin = S.me && S.me.role==='admin';
+  // v56 — an admin can add time for anyone. Defaults to themself (or to whoever was passed in).
+  mnState.forEmail = (isAdmin && openManual._for) || '';
+  openManual._for = '';
+  if (isAdmin && !(S.employees&&S.employees.length) && S.online)
+    api('listEmployees').then(r=>{ S.employees=r.employees||[]; const el=document.getElementById('mnFor'); if(el) el.outerHTML=mnForSelect(); }).catch(()=>{});
+  sheet(`<h2>Add time</h2>
+    ${isAdmin?`<label style="margin-top:0">For</label>${mnForSelect()}`:''}
+    <p class="small muted">${isAdmin?'Entries you add are saved as approved. Adding for someone else emails them.':'Flagged for admin approval. You can edit it until it’s approved.'}</p>
+    <div class="card" style="margin:10px 0">
+      <div class="row between">
+        <div><b id="mnJobName">Pick a job</b> <span class="small muted" id="mnJobPo"></span></div>
+        <button class="ghost" onclick="mnToggleJob()">Change</button>
+      </div>
+      <div id="mnJobPick">
+        <input id="mnJobSearch" placeholder="Search open jobs…" autocomplete="off" oninput="mnJobFilter(this.value)">
+        <div id="mnJobList" style="max-height:30vh;overflow:auto"></div>
+        <label>Internal company time (no PO)</label>
+        <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="mnPickCompany(companyOptions()[${i}].c)">${o.noPO?esc(o.label):coFace(o.c)}</span>`).join('')}</div>
+      </div>
+    </div>
+    <div class="row"><div class="grow"><label>Date</label><input id="mDate" type="date" value="${today}" onchange="mnCalc()"></div>
+      <div class="grow"><label>Through (optional, for several days)</label><input id="mDateTo" type="date" onchange="mnCalc()"></div></div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:6px"><input type="checkbox" id="mSkipWknd" checked onchange="mnCalc()" style="width:auto;margin:0"> Skip Saturday &amp; Sunday</label>
+    <div class="row"><div class="grow"><label>Start</label><input id="mIn" type="time" oninput="mnCalc('in')"></div>
+      <div style="width:96px"><label>Hours</label><input id="mHrs" type="number" min="0" step="0.25" value="8" inputmode="decimal" oninput="mnCalc('hrs')"></div>
+      <div style="width:104px"><label>Break (min)</label><input id="mBreak" type="number" min="0" step="5" placeholder="0" inputmode="numeric" oninput="mnCalc('brk')"></div></div>
+    <label>End — computed from start + hours + break (edit it and the hours follow)</label>
+    <input id="mOut" type="time" oninput="mnCalc('out')">
+    <p class="small muted" id="mnSummary" style="margin:2px 0 0"></p>
+    <label>Notes</label><textarea id="mNotes" rows="2"></textarea>
+    <label>Bought for this job <span class="muted">(logged on the first day when several days are entered)</span></label>
+    <div id="jp_mn">${jpBlockHtml('mn')}</div>
+    <label style="margin-top:14px">Anything else you used — search the inventory</label>
+    <input id="mnMatSearch" placeholder="Search materials…" autocomplete="off" oninput="mnMatSuggest(this.value)">
+    <div id="mnMatSug"></div><div id="mnMatList"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="mnState=null;closeSheet()">Cancel</button>
+      <button class="grow" onclick="submitManual()">Save</button>
+    </div>`);
+  mnCalc();
+}
+/* Job picker — same behaviour as the Edit sheet, separate state so the two never collide. */
+function mnToggleJob(){ const d=document.getElementById('mnJobPick'); if(!d) return;
+  d.classList.toggle('hidden'); if(!d.classList.contains('hidden')) mnJobFilter(val('mnJobSearch')); }
+function mnJobFilter(q){
+  const box=document.getElementById('mnJobList'); if(!box) return;
+  mnJobResults=openPOs(q);
+  box.innerHTML = mnJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="mnPickJob(${i})">${poRowHtml(c)}</div>`).join('')
+    || `<p class="small muted">${S.customers?'No open POs match.':(S.online?'Loading open jobs…':'No job list saved on this phone yet.')}</p>`;
+}
+function mnPickJob(i){ const c=mnJobResults[i]; if(!c||!mnState) return;
+  mnState.jobSite=c.name; mnState.poNumber=c.po; mnState.company='';
+  mnJobHeader(); mnToggleJob(); jpLoad(c.po, c.name, true); jpPaint_(); }
+function mnPickCompany(x){ if(!mnState) return;
+  mnState.company=x; mnState.jobSite=''; mnState.poNumber='';
+  mnJobHeader(); mnToggleJob(); jpLoad('', x, true); jpPaint_(); }
+function mnJobHeader(){ const s=mnState; if(!s) return;
+  const n=document.getElementById('mnJobName'), p=document.getElementById('mnJobPo');
+  if(n) n.textContent=s.jobSite||s.company||'Pick a job';
+  if(p) p.textContent=s.poNumber?('PO '+s.poNumber):''; }
+/* Time arithmetic on minutes-since-midnight. The end time is written as HH:MM only; an end
+   earlier than the start is an overnight shift, which the backend already lands on the next day. */
+function mnMins_(hhmm){ const m=String(hhmm||'').match(/^(\d{1,2}):(\d{2})/); return m? (Number(m[1])*60+Number(m[2])) : null; }
+function mnHHMM_(mins){ mins=((Math.round(mins)%1440)+1440)%1440; return String(Math.floor(mins/60)).padStart(2,'0')+':'+String(mins%60).padStart(2,'0'); }
+function mnPretty_(mins){ mins=((Math.round(mins)%1440)+1440)%1440; return new Date(2000,0,1,Math.floor(mins/60),mins%60).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}); }
+/* The calendar days this sheet will write, oldest first. "Through" blank = one day. */
+function mnDays_(){
+  const from=val('mDate'), to=val('mDateTo')||from; if(!from) return [];
+  const sk=document.getElementById('mSkipWknd'); const skipW=!!(sk&&sk.checked);
+  const d=new Date(from+'T00:00:00'), end=new Date(to+'T00:00:00');
+  if(isNaN(d)||isNaN(end)) return [];
+  if(end<d) return [from];
+  const out=[];
+  for(let n=0; d<=end && n<62; n++, d.setDate(d.getDate()+1)){ // setDate, not +86400000 — DST-safe
+    const dow=d.getDay(); if(skipW && (dow===0||dow===6)) continue;
+    out.push(localDateStr(d));
+  }
+  return out;
+}
+/* src tells which field the user just changed: 'out' → hours follow the end;
+   anything else → the end follows start + hours + break. */
+function mnCalc(src){
+  const inM=mnMins_(val('mIn')), brk=Math.max(0,Number(val('mBreak'))||0);
+  const hrsEl=document.getElementById('mHrs'), outEl=document.getElementById('mOut');
+  let hrs=Number(val('mHrs'));
+  if (src==='out'){
+    const outM=mnMins_(val('mOut'));
+    if (inM!=null && outM!=null){ let span=outM-inM; if(span<=0) span+=1440;
+      hrs=Math.max(0, Math.round(((span-brk)/60)*100)/100); if(hrsEl) hrsEl.value=hrs; }
+  } else if (inM!=null && val('mHrs')!=='' && hrs>=0 && outEl){
+    outEl.value=mnHHMM_(inM+hrs*60+brk);
+  }
+  const s=document.getElementById('mnSummary'); if(!s) return;
+  const days=mnDays_();
+  if (inM==null || val('mHrs')==='' || !(hrs>=0)){ s.textContent = days.length>1 ? days.length+' days' : ''; return; }
+  const endM=inM+hrs*60+brk, nextDay=endM>=1440;
+  let t=`${mnPretty_(inM)} → ${mnPretty_(endM)}${nextDay?' (next day)':''} · ${hrs.toFixed(2)} hrs paid`;
+  if (brk) t+=` (${(hrs+brk/60).toFixed(2)}h − ${brk}m break)`;
+  if (days.length>1) t+=` · ${days.length} days · ${(hrs*days.length).toFixed(1)} hrs total`;
+  s.textContent=t;
+}
+/* Materials — mirrors the Edit sheet's helpers. */
+function mnMatSuggest(q){
+  const box=document.getElementById('mnMatSug'); if(!box) return;
+  if(!q.trim()){ box.innerHTML=''; return; }
+  mnMatResults=localMatSearch(q); let h='';
+  mnMatResults.forEach((m,i)=>{ h+=`<div onclick="mnMatPick(${i})">${esc(m.name)}${m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}</div>`; });
+  h+=`<div onclick="mnMatTyped()">➕ Add “${esc(q)}” as typed <span class="small muted">(admin will review)</span></div>`;
+  box.innerHTML=`<div class="suggest">${h}</div>`;
+}
+function mnMatPick(i){ const m=mnMatResults[i]; if(!m||!mnState) return;
+  mnState.items.push({name:m.name, sku:m.sku||'', unit:m.unit||'', qty:1, matched:true}); mnMatClear(); mnUpdateMats(); }
+function mnMatTyped(){ const q=val('mnMatSearch').trim(); if(!q||!mnState) return;
+  mnState.items.push({name:q, unit:'', qty:1, matched:false}); mnMatClear(); mnUpdateMats(); }
+function mnMatClear(){ const i=document.getElementById('mnMatSearch'); if(i){ i.value=''; i.focus(); }
+  const b=document.getElementById('mnMatSug'); if(b) b.innerHTML=''; }
+function mnMatQty(i,v){ if(mnState&&mnState.items[i]) mnState.items[i].qty=v; }
+function mnMatRemove(i){ if(!mnState) return; mnState.items.splice(i,1); mnUpdateMats(); jpPaint_(); }
+function mnUpdateMats(){
+  const box=document.getElementById('mnMatList'); const s=mnState; if(!box||!s) return;
+  box.innerHTML = s.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
+    s.items.map((it,i)=>`<div class="list-item row">
+      <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}</div>
+      <input type="number" step="any" min="0" value="${esc(it.qty)}" style="width:84px;margin:0;text-align:center" onchange="mnMatQty(${i},this.value)">
+      <button class="ghost" onclick="mnMatRemove(${i})" aria-label="Remove">✕</button>
+    </div>`).join('')+`</div>` : '';
+}
+async function submitManual(){
+  const st=mnState; if(!st) return;
+  const days=mnDays_(), inV=val('mIn'), outV=val('mOut'), hrs=Number(val('mHrs'));
+  const brk=Math.max(0,Number(val('mBreak'))||0);
+  if(!days.length||!inV||!outV){ toast('Date, start and hours (or end) are required'); return; }
+  if(!(hrs>0)){ toast('Hours must be more than 0'); return; }
+  if(!st.jobSite && !st.company){ toast('Pick a job or company first'); return; }
+  const isAdmin = S.me && S.me.role==='admin';
+  const forEmail = isAdmin ? (val('mnFor')||'') : '';
+  const forOther = !!forEmail && forEmail!==S.me.email;
+  const base={ clockIn:inV, clockOut:outV, company:st.company, jobSite:st.jobSite, poNumber:st.poNumber, notes:val('mNotes'), breakMin:brk };
+  if (forOther) base.employeeEmail = forEmail;
+  const mats=st.items.slice();
+  mnState=null; closeSheet();
+  let done=0, queued=0, firstId='', err='';
+  for (const date of days){ // one entry per day, oldest first so the sheet reads in order
+    try{
+      const r=await apiMutate('addManualEntry', { ...base, date });
+      if (r&&r.queued) queued++; else done++;
+      if (!firstId && r&&r.entry&&r.entry.EntryID) firstId=r.entry.EntryID;
+    }catch(e){ err=e.message; break; }
+  }
+  if (mats.length && (done||queued)) apiMutate('logMaterials',{ entryId:firstId, jobSite:st.jobSite||st.company||'', poNumber:st.poNumber||'', items:mats });
+  await refresh(true);
+  const n=done+queued;
+  const who = forOther ? ' for '+empName(forEmail) : '';
+  if (err) toast(`${n} of ${days.length} saved${who} — ${err}`, 5000);
+  else toast(`${n} ${n===1?'day':'days'} ${isAdmin?'saved':'submitted for approval'}${who}${queued?' (will sync)':''}`);
+}
+
+/* ---- Edit entry (after submission too — mistakes caught later) ----
+   Same fields as the clock-out review. An employee's edit to an already-approved entry
+   sends it back to 'pending' for admin re-approval; every save stamps Last Edited By/At. */
+let edState=null, edJobResults=[], edMatResults=[];
+function openEditEntry(k){
+  const ref=dereg(k); if(!ref) return; const e=ref.e;
+  edState={ e, employeeEmail:ref.employeeEmail,
+    jobSite:e['Customer/Job Site']||'', poNumber:e['PO#']||'', company:e.Company||'',
+    jobEdited:false, items:[] };
+  loadMaterials();
+  jpLoad(edState.poNumber, edState.jobSite||edState.company, true);   // v76 - this job's own PO parts
+  custHydrateSync_();   // v75
+  loadCustomers(true).then(()=>{ if (edState) edJobFilter(val('edJobSearch')); }); // fresh open-PO list here too
+  /* v81 — each end of the shift carries its OWN day now, instead of one date and two bare
+     times with the out time silently rolled forward when it came out earlier than the in.
+     Charles, 26 Oct: a shift from 10:30 pm on the 23rd to 3:45 am on the 24th should be
+     something you can just type, and read back, without the app guessing. */
+  const date= e.ClockIn? localDateStr(new Date(e.ClockIn)) : String(e.Date||'').slice(0,10);
+  const inDT = e.ClockIn ? dtLocal(e.ClockIn) : (date ? date+'T08:00' : '');
+  const outDT= e.ClockOut? dtLocal(e.ClockOut): '';
+  const brkMin=Math.round((Number(e['Break Hrs'])||0)*60);
+  const reflagNote = e.Status==='approved' && S.me.role!=='admin';
+  sheet(`<h2>Edit entry</h2>
+    ${reflagNote?'<p class="small muted">This entry was already approved — saving changes sends it back to an admin for re-approval.</p>':''}
+    <div class="card" style="margin:10px 0">
+      <div class="row between">
+        <div><b id="edJobName">${esc(edState.jobSite||edState.company||'—')}</b>
+          <span class="small muted" id="edJobPo">${edState.poNumber?('PO '+esc(edState.poNumber)):''}</span></div>
+        <button class="ghost" onclick="edToggleJob()">Change</button>
+      </div>
+      <div id="edJobPick" class="hidden">
+        <input id="edJobSearch" placeholder="Search open jobs…" autocomplete="off" oninput="edJobFilter(this.value)">
+        <div id="edJobList" style="max-height:30vh;overflow:auto"></div>
+        <label>Internal company time (no PO)</label>
+        <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="edPickCompany(companyOptions()[${i}].c)">${o.noPO?esc(o.label):coFace(o.c)}</span>`).join('')}</div>
+      </div>
+    </div>
+    <label>Clocked in — day and time</label>
+    <input id="eIn" type="datetime-local" value="${esc(inDT)}" onchange="edCalc()">
+    <label>Clocked out — day and time</label>
+    <input id="eOut" type="datetime-local" value="${esc(outDT)}" onchange="edCalc()">
+    <div class="row"><div style="width:120px"><label>Break (min)</label>
+      <input id="eBreak" type="number" min="0" step="5" value="${brkMin}" oninput="edCalc()"></div></div>
+    <p class="small" id="edWorked" style="margin:4px 0 0"></p>
+    <label>Notes</label><textarea id="eNotes" rows="2">${esc(e.Notes||'')}</textarea>
+    <label>Why the change? <span class="muted">(whoever approves it sees this)</span></label>
+    <input id="eReason" placeholder="e.g. forgot to clock out, finished at 5:30" autocomplete="off">
+    <label>Bought for this job</label>
+    <div id="jp_ed">${jpBlockHtml('ed')}</div>
+    <label style="margin-top:14px">Anything else — search the inventory</label>
+    <input id="edMatSearch" placeholder="Search materials…" autocomplete="off" oninput="edMatSuggest(this.value)">
+    <div id="edMatSug"></div><div id="edMatList"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="edState=null;closeSheet()">Cancel</button>
+      <button class="grow" onclick="submitEdit()">Save</button>
+    </div>`);
+  edCalc();
+}
+/* datetime-local wants LOCAL "YYYY-MM-DDTHH:MM" — an ISO string in there is read as UTC and the
+   box opens on the wrong hour. */
+function dtLocal(iso){
+  if(!iso) return '';
+  const d=new Date(iso); if(isNaN(d)) return '';
+  return localDateStr(d)+'T'+fmtHM(iso);
+}
+/* What the two ends add up to, under the boxes, as they are typed: the hours, the break, and
+   the day it ends on when that is not the day it started. Seeing it is the protection — the app
+   no longer has to guess, so it says plainly what it is about to save. */
+function edCalc(){
+  const box=document.getElementById('edWorked'); if(!box) return;
+  const iv=val('eIn'), ov=val('eOut');
+  const di=iv?new Date(iv):null, dout=ov?new Date(ov):null;
+  const brk=Math.max(0,Number(val('eBreak'))||0);
+  const bad=t=>`<span style="color:var(--bad)">${t}</span>`;
+  if(!di||isNaN(di)) return void(box.innerHTML=bad('Pick the day and time they clocked in.'));
+  if(!ov) return void(box.innerHTML='<span class="muted">No clock-out — this entry is still open.</span>');
+  if(!dout||isNaN(dout)) return void(box.innerHTML=bad('Pick the day and time they clocked out.'));
+  if(!(dout>di)) return void(box.innerHTML=bad('The clock-out is before the clock-in — check the days.'));
+  const gms=dout-di, net=Math.max(0,gms/3600000-brk/60);
+  const over=localDateStr(dout)!==localDateStr(di);
+  box.innerHTML=`${fmtDur(gms)}${brk?` − ${brk} min break`:''} → <b>${net.toFixed(2)} hrs</b>`
+    + (over?` <span class="pill pending">ends ${esc(fmtDay(dout.toISOString()))}</span>`:'')
+    + (gms>16*3600000?` ${bad('— over 16 hours on one entry')}`:'');
+}
+function edToggleJob(){ const d=document.getElementById('edJobPick'); if(!d) return;
+  d.classList.toggle('hidden'); if(!d.classList.contains('hidden')) edJobFilter(val('edJobSearch')); }
+function edJobFilter(q){
+  const box=document.getElementById('edJobList'); if(!box) return;
+  edJobResults=openPOs(q);
+  box.innerHTML = edJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="edPickJob(${i})">${poRowHtml(c)}</div>`).join('')
+    || '<p class="small muted">No open POs match.</p>';
+}
+function edPickJob(i){ const c=edJobResults[i]; if(!c||!edState) return;
+  edState.jobSite=c.name; edState.poNumber=c.po; edState.company=''; edState.jobEdited=true;
+  edJobHeader(); edToggleJob(); jpLoad(c.po, c.name, true); jpPaint_(); }
+function edPickCompany(x){ if(!edState) return;
+  edState.company=x; edState.jobSite=''; edState.poNumber=''; edState.jobEdited=true;
+  edJobHeader(); edToggleJob(); jpLoad('', x, true); jpPaint_(); }
+function edJobHeader(){ const s=edState; if(!s) return;
+  const n=document.getElementById('edJobName'), p=document.getElementById('edJobPo');
+  if(n) n.textContent=s.jobSite||s.company||'—';
+  if(p) p.textContent=s.poNumber?('PO '+s.poNumber):''; }
+function edMatSuggest(q){
+  const box=document.getElementById('edMatSug'); if(!box) return;
+  if(!q.trim()){ box.innerHTML=''; return; }
+  edMatResults=localMatSearch(q); let h='';
+  edMatResults.forEach((m,i)=>{ h+=`<div onclick="edMatPick(${i})">${esc(m.name)}${m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}</div>`; });
+  h+=`<div onclick="edMatTyped()">➕ Add “${esc(q)}” as typed <span class="small muted">(admin will review)</span></div>`;
+  box.innerHTML=`<div class="suggest">${h}</div>`;
+}
+function edMatPick(i){ const m=edMatResults[i]; if(!m||!edState) return;
+  edState.items.push({name:m.name, sku:m.sku||'', unit:m.unit||'', qty:1, matched:true}); edMatClear(); edUpdateMats(); }
+function edMatTyped(){ const q=val('edMatSearch').trim(); if(!q||!edState) return;
+  edState.items.push({name:q, unit:'', qty:1, matched:false}); edMatClear(); edUpdateMats(); }
+function edMatClear(){ const i=document.getElementById('edMatSearch'); if(i){ i.value=''; i.focus(); }
+  const b=document.getElementById('edMatSug'); if(b) b.innerHTML=''; }
+function edMatQty(i,v){ if(edState&&edState.items[i]) edState.items[i].qty=v; }
+function edMatRemove(i){ if(!edState) return; edState.items.splice(i,1); edUpdateMats(); jpPaint_(); }
+function edUpdateMats(){
+  const box=document.getElementById('edMatList'); const s=edState; if(!box||!s) return;
+  box.innerHTML = s.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
+    s.items.map((it,i)=>`<div class="list-item row">
+      <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}</div>
+      <input type="number" step="any" min="0" value="${esc(it.qty)}" style="width:84px;margin:0;text-align:center" onchange="edMatQty(${i},this.value)">
+      <button class="ghost" onclick="edMatRemove(${i})" aria-label="Remove">✕</button>
+    </div>`).join('')+`</div>` : '';
+}
+async function submitEdit(){
+  const st=edState; if(!st) return;
+  const e=st.e;
+  /* v81 — both ends carry their own day, so there is nothing to infer: a shift typed as
+     10:30 pm on the 23rd to 3:45 am on the 24th is saved as exactly that. The old code took one
+     date and two times and rolled the out time forward a day whenever it came out earlier than
+     the in, which got the common case right and could not express anything else. */
+  const iv=val('eIn'), ov=val('eOut');
+  const di=iv?new Date(iv):null, dout=ov?new Date(ov):null;
+  if(!di||isNaN(di)){ toast('Pick the day and time they clocked in.'); return; }
+  if(ov&&(!dout||isNaN(dout))){ toast('Pick the day and time they clocked out.'); return; }
+  if(dout&&!(dout>di)){ toast('The clock-out is before the clock-in — check the days.'); return; }
+  if(dout&&(dout-di)>16*3600000&&!st.longOk){
+    st.longOk=true;
+    toast(`That is ${((dout-di)/3600000).toFixed(1)} hours on one entry — tap Save again if that is right.`, 8000);
+    return;
+  }
+  const date=localDateStr(di);          // the entry's date is the day the shift STARTED
+  const p={ entryId:e.EntryID, employeeEmail:st.employeeEmail, date,
+    clockIn:di.toISOString(), clockOut:dout?dout.toISOString():undefined,
+    notes:val('eNotes'), breakMin:Number(val('eBreak'))||0,
+    reason:val('eReason') };   // v80 - travels to the Edit Log and onto the approvals card
+  if (st.jobEdited){ p.jobSite=st.jobSite; p.poNumber=st.poNumber; p.company=st.company; }
+  const mats=st.items.slice();
+  edState=null; closeSheet();
+  try{
+    const r=await apiMutate('editEntry', p);
+    if (mats.length) apiMutate('logMaterials',{ entryId:e.EntryID,
+      jobSite:(p.jobSite!==undefined?p.jobSite:e['Customer/Job Site'])||st.company||'',
+      poNumber:(p.poNumber!==undefined?p.poNumber:e['PO#'])||'', items:mats });
+    toast(r&&r.reflagged ? 'Saved — sent back for approval' : (r&&r.queued ? 'Saved (will sync)' : 'Saved'));
+  }catch(err){ toast(err.message); }
+  refresh(true);
+  if (canApprove()) loadApprovals();               // v56 — an edited pending entry shows its new hours
+}
+
+/* ---- Media upload ---- */
+function openUpload(k){
+  const ref=dereg(k); if(!ref) return; const e=ref.e;
+  const jobSite = e['Customer/Job Site']||e.Company||'Unassigned';
+  const uk = reg({ entryId:e.EntryID, employeeEmail:ref.employeeEmail, jobSite });
+  sheet(`<h2>Add photo / video</h2>
+    <p class="small muted">Saved to the “${esc(jobSite)}” folder in Drive.</p>
+    <label>Take or choose a file</label>
+    <input id="mediaFile" type="file" accept="image/*,video/*" capture="environment" onchange="stageUpload(this)">
+    <div id="uploadStatus" class="small muted"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Close</button>
+      <button class="grow" id="upBtn" disabled onclick="doUpload('${uk}')">Upload</button>
+    </div>`);
+}
+let stagedFile=null;
+function stageUpload(input){
+  stagedFile=input.files[0]; const st=document.getElementById('uploadStatus'); const b=document.getElementById('upBtn');
+  if(!stagedFile){ b.disabled=true; return; }
+  const mb=(stagedFile.size/1048576).toFixed(1);
+  // Hard cap: base64 adds ~33% and Google rejects POSTs over ~50 MB, so >35 MB can never
+  // upload — block it here instead of letting it fail (and jam the offline queue) later.
+  if(stagedFile.size>MAX_MEDIA_MB*1048576){
+    st.innerHTML=`<span style="color:var(--bad)">${esc(stagedFile.name)} is ${mb} MB — too large (max ${MAX_MEDIA_MB} MB). Record a shorter clip or lower the camera resolution.</span>`;
+    stagedFile=null; b.disabled=true; return;
+  }
+  st.textContent=`${stagedFile.name} · ${mb} MB`; b.disabled=false;
+  if(stagedFile.size>25*1048576) st.innerHTML+=' <span style="color:var(--bad)">(large — may be slow)</span>';
+}
+async function doUpload(uk){
+  const ref=dereg(uk); if(!ref) return; const {entryId, employeeEmail, jobSite}=ref;
+  if(!stagedFile || stagedFile.size>MAX_MEDIA_MB*1048576) return;
+  const st=document.getElementById('uploadStatus'); st.innerHTML='<span class="spin"></span> uploading…';
+  try{
+    const dataBase64 = await fileToB64(stagedFile);
+    const r = await apiMutate('uploadMedia', { entryId, employeeEmail, jobSite, filename:stagedFile.name, mimeType:stagedFile.type, dataBase64 });
+    st.textContent = r.queued ? 'Queued — will upload when online.' : 'Uploaded ✓';
+    stagedFile=null; await refresh(true);
+  }catch(e){ st.innerHTML='<span style="color:#f87171">'+esc(e.message)+'</span>'; }
+}
+function fileToB64(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(String(r.result).split(',')[1]); r.onerror=rej; r.readAsDataURL(file); }); }
+
+/* Media viewer: lets employees review what they've uploaded to an entry. Thumbnails come
+   from Drive's thumbnail endpoint; uploads are auto-shared with the uploader server-side,
+   so the links open for them (files live in the admin's Drive and are otherwise private). */
+function driveId(url){ const m=String(url).match(/[-\w]{25,}/); return m?m[0]:''; }
+function openMediaView(k){
+  const ref=dereg(k); if(!ref) return;
+  const urls=String(ref.e.Media||'').split(' | ').filter(Boolean);
+  sheet(`<h2>Photos &amp; videos</h2>
+    <p class="small muted" style="margin-top:-6px">${esc(ref.e['Customer/Job Site']||ref.e.Company||'')} · ${fmtDay(ref.e.ClockIn||ref.e.Date)}</p>
+    ${urls.map(u=>{ const id=driveId(u); return `<div class="card center" style="padding:10px">
+      ${id?`<a href="${esc(u)}" target="_blank"><img src="https://drive.google.com/thumbnail?id=${id}&sz=w480" style="max-width:100%;border-radius:12px" loading="lazy" onerror="this.replaceWith(document.createTextNode('(no preview — tap Open)'))"></a>`:''}
+      <div class="small" style="margin-top:6px"><a href="${esc(u)}" target="_blank" style="color:var(--accent2)">Open in Drive ↗</a></div>
+    </div>`; }).join('')}
+    <button class="secondary" onclick="closeSheet()">Close</button>`);
+}
+
+/* ---- Admin: approvals ---- */
+async function approve(email,entryId){
+  try{
+    await api('approveEntry',{employeeEmail:email,entryId});
+    S.pending=(S.pending||[]).filter(e=>e.EntryID!==entryId); render(); // instant local update
+    toast('Approved'); refresh(true);
+  }catch(e){toast(e.message);}
+}
+async function reject(email,entryId){
+  sheet(`<h2>Reject entry</h2><label>Reason (shown to employee)</label>
+    <textarea id="rjNote" rows="3" placeholder="Why is this rejected?"></textarea>
+    <div class="row" style="margin-top:12px"><button class="secondary grow" onclick="closeSheet()">Cancel</button>
+    <button class="grow danger" onclick="confirmReject('${esc(email)}','${esc(entryId)}')">Reject</button></div>`);
+}
+async function confirmReject(email,entryId){ const note=val('rjNote'); closeSheet();
+  try{
+    await api('rejectEntry',{employeeEmail:email,entryId,note});
+    S.pending=(S.pending||[]).filter(e=>e.EntryID!==entryId); render(); // instant local update
+    toast('Rejected'); refresh(true);
+  }catch(e){toast(e.message);} }
+
+/* ---- Admin: employees ---- */
+function openAddEmployee(){
+  sheet(`<h2>Add employee</h2>
+    <label>Email (their Google account)</label><input id="aeEmail" type="email" placeholder="name@example.com">
+    <label>Name</label><input id="aeName" placeholder="Full name">
+    <label>Role</label><select id="aeRole"><option value="employee">Employee</option><option value="admin">Admin</option><option value="bookkeeper">Bookkeeper</option></select>
+    <label>Hourly rate</label><input id="aeRate" type="number" step="0.01" value="0">
+    <label>Company access</label>
+    <select id="aeCompany">${(S.companies||[]).map((c,i)=>`<option value="${esc(c)}">${esc(c)} only${i===0?' — typical crew':''}</option>`).join('')}<option value="__ALL__">Can choose any company</option></select>
+    <div class="perm"><input type="checkbox" id="aeInvite" checked>
+      <label for="aeInvite" style="margin:0">Email them an invite with setup instructions</label></div>
+    <div class="row" style="margin-top:14px"><button class="secondary grow" onclick="closeSheet()">Cancel</button>
+    <button class="grow" onclick="submitAddEmployee()">Add</button></div>`);
+}
+async function submitAddEmployee(){
+  const inviteEl=document.getElementById('aeInvite');
+  const compSel=val('aeCompany')||'';
+  const p={ email:val('aeEmail'), name:val('aeName'), role:val('aeRole'), hourlyRate:val('aeRate'),
+    sendInvite: inviteEl? inviteEl.checked : true,
+    canChooseCompany: compSel==='__ALL__',
+    homeCompany: compSel==='__ALL__'? '' : compSel,
+    appUrl: location.origin + location.pathname }; // the backend puts this link in the invite
+  if(!p.email){ toast('Email required'); return; }
+  closeSheet();
+  try{ const r=await api('addEmployee',p);
+    toast(r&&r.invited ? 'Added — invite emailed to '+p.email : 'Added');
+    await refresh(true);
+  }catch(e){toast(e.message);}
+}
+function openEmployee(email){
+  const emp=(S.employees||[]).find(e=>e.email===email); if(!emp) return;
+  const perms=emp.permissions||{};
+  const pl=[['approveHours','Approve hours'],['editPastEntries','Edit past entries'],['manageEmployees','Add/remove employees'],
+    ['setRates','Set hourly rates'],['viewAllCompanies','Can choose company (PCW/GNG/…)'],['viewAllEmployees','View all employees'],['exportPayroll','Export payroll']];
+  sheet(`<h2>${esc(emp.name)}</h2><div class="small muted">${esc(emp.email)}</div>
+    <label>Name — what everyone sees in the app</label><input id="edName" value="${esc(emp.name||'')}" placeholder="e.g. Paul Olivares">
+    <label>Employment</label>
+    <select id="edFT"><option value="full" ${(perms.employment||'full')==='full'?'selected':''}>Full time</option>
+      <option value="part" ${perms.employment==='part'?'selected':''}>Part time</option></select>
+    <label>Role</label><select id="edRole">${['employee','admin','bookkeeper'].map(r=>`<option ${emp.role===r?'selected':''}>${r}</option>`).join('')}</select>
+    <label>Hourly rate (what they're paid)</label><input id="edRate" type="number" step="0.01" value="${emp.hourlyRate||0}">
+    <label>Charged rate (what customers are billed for their hours, e.g. 105 journeyman / 50 apprentice)</label><input id="edCharge" type="number" step="0.01" value="${(perms.chargeRate||0)}">
+    <label>Active</label><select id="edActive"><option value="true" ${emp.active?'selected':''}>Active</option><option value="false" ${!emp.active?'selected':''}>Inactive</option></select>
+    <label>Home company — which company they book when they can't choose</label>
+    <select id="edHome">${(S.companies||[]).map(c=>`<option ${(perms.homeCompany||S.companies[0])===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
+    <label>Allowances they can claim</label>
+    <div>${[['phone','Cellphone'],['food','Food'],['km','Mileage'],['other','Other']].map(([k,lbl])=>`<div class="perm"><input type="checkbox" id="al_${k}" ${(perms.allowances&&perms.allowances[k])?'checked':''}><label for="al_${k}" style="margin:0">${lbl}</label></div>`).join('')}</div>
+    <label>Permissions</label>
+    <div>${pl.map(([k,lbl])=>`<div class="perm"><input type="checkbox" id="pm_${k}" ${perms[k]?'checked':''}><label for="pm_${k}" style="margin:0">${lbl}</label></div>`).join('')}</div>
+    <div class="row" style="margin-top:14px"><button class="secondary grow" onclick="closeSheet()">Close</button>
+    <button class="grow" onclick="saveEmployee('${esc(email)}')">Save</button></div>
+    <button class="ghost" style="color:#f87171;width:100%;margin-top:6px" onclick="removeEmp('${esc(email)}')">Deactivate — keeps all their history (recommended)</button>
+    <button class="ghost" style="color:#f87171;width:100%" onclick="confirmEmpDanger('${esc(email)}','reset')">Reset — wipe hours &amp; onboarding, keep the account</button>
+    <button class="ghost" style="color:#f87171;width:100%" onclick="confirmEmpDanger('${esc(email)}','delete')">Delete completely — remove them and everything</button>`);
+}
+/* Destructive actions get an explicit consequences screen + an "I understand" gate. */
+function confirmEmpDanger(email, mode){
+  const emp=(S.employees||[]).find(e=>e.email===email); if(!emp) return;
+  const del=mode==='delete';
+  sheet(`<h2>${del?'Delete':'Reset'} ${esc(emp.name)}?</h2>
+    <p class="small">${del
+      ? 'This removes them from the employee list and <b>permanently deletes their entire hours history</b> — their logged time disappears from job costs and payroll records. Use this only for accounts added by mistake. If they actually worked here, use <b>Deactivate</b> instead.'
+      : 'This keeps them as an employee but <b>permanently wipes their hours history and onboarding progress</b> — a clean slate, as if just hired. Their logged time disappears from job costs and payroll records.'}</p>
+    <div class="perm" style="margin-top:10px"><input type="checkbox" id="dangerOk">
+      <label for="dangerOk" style="margin:0">I understand this can't be undone</label></div>
+    <button class="danger" style="width:100%;margin-top:12px" onclick="empDanger('${esc(email)}','${mode}',this)">${del?'Delete':'Reset'} ${esc(emp.name)}</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
+}
+async function empDanger(email, mode, btn){
+  const ok=document.getElementById('dangerOk');
+  if(!ok||!ok.checked) return toast('Tick the box first — this one really can\'t be undone.');
+  if(!S.online) return toast('You need signal for this.');
+  btn.disabled=true; btn.textContent='Working…';
+  try{
+    await api('deleteEmployee',{email, mode});
+    closeSheet(); toast(mode==='delete'?'Deleted.':'Reset — they start fresh.');
+    await refresh(true);
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent=(mode==='delete'?'Delete':'Reset'); }
+}
+async function saveEmployee(email){
+  const keys=['approveHours','editPastEntries','manageEmployees','setRates','viewAllCompanies','viewAllEmployees','exportPayroll'];
+  const permissions={}; keys.forEach(k=>permissions[k]=document.getElementById('pm_'+k).checked);
+  permissions.homeCompany=val('edHome')||'';
+  permissions.chargeRate=Number(val('edCharge'))||0; // customer billing rate — invoices read this
+  permissions.allowances={}; ['phone','food','km','other'].forEach(k=>{ const el=document.getElementById('al_'+k); if(el&&el.checked) permissions.allowances[k]=true; });
+  permissions.employment = val('edFT')||'full';
+  const p={ email, name:val('edName')||undefined, role:val('edRole'), hourlyRate:Number(val('edRate'))||0,
+    active: val('edActive')==='true', permissions };
+  closeSheet();
+  try{
+    const r=await api('updateEmployee',p);
+    // Trust the server's confirmed record immediately — no waiting on a background refresh
+    // to "see" the change (the old flow made successful saves look failed).
+    if(r&&r.employee&&S.employees){ const i=S.employees.findIndex(x=>x.email===email); if(i>=0) S.employees[i]={...S.employees[i],...r.employee}; }
+    if(email===S.me.email&&r&&r.employee){ Object.assign(S.me,{role:r.employee.role,hourlyRate:r.employee.hourlyRate,permissions:r.employee.permissions}); }
+    render(); toast('Saved ✓');
+    refresh(true); // background re-sync, not blocking
+  }catch(e){toast(e.message);}
+}
+async function removeEmp(email){ closeSheet(); try{ await api('removeEmployee',{email}); toast('Deactivated'); await refresh(true);}catch(e){toast(e.message);} }
+
+async function viewEmployee(email){
+  try{ const r=await api('listEntries',{email});
+    const rows=(r.entries||[]).slice(0,60).map(e=>entryRow(e,email)).join('')||'<p class="muted">No entries.</p>';
+    const isAdmin=S.me&&S.me.role==='admin';
+    sheet(`<h2>${esc(empName(email))}</h2>
+      ${isAdmin?`<p class="small muted" style="margin-top:-4px">Tap Edit on any entry to change its times, break or job. Your changes keep their approval.</p>
+        <button class="secondary" style="width:100%;margin-bottom:8px" onclick="closeSheetDom();openManualFor('${esc(email)}')">＋ Add time for ${esc(empName(email).split(' ')[0])}</button>`:''}
+      <div>${rows}</div><button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  }catch(e){toast(e.message);}
+}
+
+/* ---- Admin: payroll + log ---- */
+async function exportPayroll(){
+  try{ const r=await api('exportPayroll',{}); const blob=new Blob([r.csv],{type:'text/csv'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`payroll_${r.period}.csv`; a.click();
+    toast('CSV downloaded');
+  }catch(e){toast(e.message);}
+}
+async function openActivityLog(){
+  try{ const r=await api('activityLog',{limit:100});
+    const rows=(r.log||[]).map(l=>`<div class="list-item small"><b>${esc(l.action)}</b> · ${esc(l.actor)} → ${esc(l.target)} <span class="muted">${fmtDay(l.time)} ${fmtTime(l.time)}</span>${l.detail?`<div class="muted">${esc(l.detail)}</div>`:''}</div>`).join('');
+    sheet(`<h2>Activity log</h2><div>${rows||'<p class="muted">Empty.</p>'}</div><button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  }catch(e){toast(e.message);}
+}
+
+/* ---- Materials at clock-out ---- */
+/* Client-side materials catalog, cached like customers (IndexedDB, 10-min TTL). Fuzzy search
+   covers the item name AND its Aliases column (trade slang like "half inch EMT", "wago"). */
+async function loadMaterials(force){
+  if (!force && S.materials && (Date.now()-S.materialsAt) < CUST_TTL) return;
+  const cached = await DB.getCache('materials');
+  if (cached && cached.list){ S.materials=cached.list; S.materialsAt=cached.ts; }
+  if (!S.online) return;
+  if (!force && cached && (Date.now()-cached.ts) < CUST_TTL) return;
+  try{
+    const r = await apiBg('materialsList');
+    S.materials = r.materials||[]; S.materialsAt = Date.now();
+    await DB.setCache('materials', {list:S.materials, ts:S.materialsAt});
+  }catch(e){ /* keep what we had */ }
+}
+function localMatSearch(q){
+  const ql=q.trim().toLowerCase(); const scored=[];
+  for (const m of (S.materials||[])){
+    const name=m.name.toLowerCase(), hay=name+' '+(m.aliases||'').toLowerCase()+' '+(m.sku||'').toLowerCase();
+    let score=-1;
+    if (name.startsWith(ql)) score=0;
+    else if (hay.includes(ql)) score=1;
+    else if (similarJs(hay, ql)) score=2;
+    if (score>=0) scored.push({m, score});
+  }
+  scored.sort((a,b)=>a.score-b.score);
+  return scored.slice(0,8).map(x=>x.m);
+}
+/* The clock-out materials prompt now lives inline on the review screen (coMat*); the same
+   catalog + fuzzy search also powers the edit-entry sheet (edMat*). */
+
+/* One-tap starter catalog (backend dedupes by name — safe to tap again after adding your own). */
+async function seedMats(){
+  try{
+    const r=await api('seedMaterials');
+    toast(r.added? ('Added '+r.added+' parts'+(r.skipped?(' — '+r.skipped+' were already in the list'):'')) : 'Every starter part is already in the list');
+    loadMaterials(true); // refresh the search cache so they're usable right away
+  }catch(e){ toast(e.message); }
+}
+
+/* ---- AI receipt scan: photo → Gemini reads line items → match against catalog →
+   review screen → confirmed new parts land in the Materials sheet. Online-only. ---- */
+let rcState=null;
+function openReceiptScan(){
+  if (!S.online){ toast('Receipt scanning needs a connection'); return; }
+  rcState=null;
+  sheet(`<h2>Scan a receipt</h2>
+    <p class="small muted">Take a straight, well-lit photo of the supplier receipt. The AI reads the line items, matches them against your materials list, and you approve anything new.</p>
+    <label>Photo of receipt</label>
+    <input type="file" accept="image/*" capture="environment" onchange="rcScan(this)">
+    <div id="rcStatus" class="small muted"></div>
+    <div id="rcResults"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Close</button>
+      <button class="grow hidden" id="rcConfirm" onclick="rcAdd()">Add checked items</button>
+    </div>`);
+  if (S._sheet) S._sheet.onclick=null; // don't lose a scan to a stray backdrop tap
+}
+/* Downscale on the phone before upload: a 12MP photo becomes ~400KB at 1600px — plenty for
+   the AI and the PDF, and dramatically faster on jobsite LTE. */
+/* v39 — EXIF ORIENTATION. A phone held sideways does not rotate the pixels; it writes a
+   rotation flag into the file and leaves them as they were. Redrawing to a canvas throws that
+   flag away, so a photo taken in landscape reached the AI on its side and came back unreadable.
+   createImageBitmap with imageOrientation:'from-image' bakes the rotation into the pixels
+   before we touch them. The old <img> path stays as a fallback for anything that lacks it. */
+async function decodePhoto_(f){
+  if (window.createImageBitmap){
+    try { return await createImageBitmap(f, { imageOrientation:'from-image' }); }
+    catch(e){ /* older Safari: no options bag — fall through */ }
+    try { return await createImageBitmap(f); } catch(e){}
+  }
+  return await new Promise((res,rej)=>{ const u=URL.createObjectURL(f); const i=new Image();
+    i.onload=()=>res(i); i.onerror=rej; i.src=u; });
+}
+async function shrinkPhoto(f, maxDim){
+  try{
+    const img=await decodePhoto_(f);
+    const w=img.width, h=img.height;
+    const scale=Math.min(1, (maxDim||1600)/Math.max(w,h));
+    // Always re-encode: even a small photo may still carry an unapplied rotation flag, and a
+    // sideways page is worthless to the reader however few bytes it is.
+    const c=document.createElement('canvas');
+    c.width=Math.round(w*scale); c.height=Math.round(h*scale);
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+    try{ if(img.close) img.close(); }catch(e){}
+    return c.toDataURL('image/jpeg',0.85).split(',')[1]; // base64, no prefix
+  }catch(e){ return null; }
+}
+async function rcScan(input){
+  const f=input.files && input.files[0]; if(!f) return;
+  if (f.size > MAX_MEDIA_MB*1048576){ toast('Photo too large — lower the camera resolution'); return; }
+  const st=document.getElementById('rcStatus');
+  st.innerHTML='<span class="spin"></span> Reading the receipt… (10–20 seconds)';
+  try{
+    const shrunk=await shrinkPhoto(f,1600);
+    const b64=shrunk||await fileToB64(f);
+    const p={dataBase64:b64, mimeType:shrunk?'image/jpeg':(f.type||'image/jpeg'), filename:f.name};
+    if(S.openEntry){ p.jobSite=S.openEntry['Customer/Job Site']||''; p.poNumber=S.openEntry['PO#']||''; } // names the PDF after the job
+    const r=await api('scanReceipt',p);
+    rcState={items:r.items||[], receiptUrl:r.receiptUrl||'', vendor:r.vendor||'', rdate:r.date||'', total:r.total||0};
+    if(!r.receiptUrl){ // Drive filing failed — keep the photo ON THE PHONE and sync it later
+      try{
+        const q=(await DB.getCache('pendingReceipts'))||[];
+        q.push({dataBase64:p.dataBase64, mimeType:p.mimeType, jobSite:p.jobSite||'', poNumber:p.poNumber||'',
+          vendor:r.vendor||'', date:r.date||'', total:r.total||0, at:Date.now()});
+        await DB.setCache('pendingReceipts', q.slice(-5)); // keep the last 5 — ~2MB ceiling
+      }catch(e){}
+    }
+    rcRender();
+  }catch(e){ st.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; }
+}
+function rcRender(){
+  const st=document.getElementById('rcStatus'), box=document.getElementById('rcResults'),
+        btn=document.getElementById('rcConfirm');
+  if(!rcState||!box) return;
+  const items=rcState.items;
+  const newOnes=items.filter(i=>!i.match).length;
+  st.innerHTML=(rcState.vendor?`<b>${esc(rcState.vendor)}</b>${rcState.rdate?' · '+esc(rcState.rdate):''}${rcState.total?' · $'+Number(rcState.total).toFixed(2):''}<br>`:'')+
+    `Found <b>${items.length}</b> line item(s) — ${items.length-newOnes} already in your list, <b>${newOnes} new</b>.`+
+    (rcState.receiptUrl
+      ? ` <a href="${esc(rcState.receiptUrl)}" target="_blank" style="color:var(--accent2)">PDF saved ↗</a>`
+      : ` <span style="color:var(--warn);font-weight:700">⚠ receipt saved on the phone ONLY — will sync to Drive automatically</span>`);
+  box.innerHTML = (items.map((it,i)=>`<div class="list-item">
+      <div class="row between">
+        <div class="grow">${it.match?'':`<input type="checkbox" id="rc_${i}" checked style="width:auto;margin:0 8px 0 0">`}<b>${esc(it.desc)}</b>
+          ${it.qty?` <span class="small muted">× ${esc(it.qty)} ${esc(it.unit||'')}</span>`:''}</div>
+      </div>
+      <div class="small ${it.match?'muted':''}" style="margin-top:2px">
+        ${it.match?`✓ matches: ${esc(it.match)}`:`<span style="color:var(--pending)">new — will be added to the materials list</span>`}
+      </div>
+    </div>`).join('') || '<p class="muted small">No line items found — try a clearer photo.</p>')
+    // On the clock? Offer to log the whole receipt against the current job too.
+    + (S.openEntry && items.length ? `<div class="perm" style="margin-top:8px">
+        <input type="checkbox" id="rcLogJob" checked>
+        <label for="rcLogJob" style="margin:0">Also log these materials to <b>${esc(S.openEntry['Customer/Job Site']||S.openEntry.Company||'current job')}</b></label>
+      </div>` : '');
+  if (btn){ btn.classList.remove('hidden');
+    btn.textContent = newOnes ? `Add ${newOnes} new item(s)` : 'Done'; }
+}
+async function rcAdd(){
+  if(!rcState) return;
+  const adds=rcState.items.map((it,i)=>(!it.match && (document.getElementById('rc_'+i)||{}).checked)
+    ? {name:it.desc, unit:it.unit||'ea'} : null).filter(Boolean);
+  const logJob = S.openEntry && (document.getElementById('rcLogJob')||{}).checked;
+  const btn=document.getElementById('rcConfirm'); if(btn) btn.disabled=true;
+  try{
+    let added=0;
+    if (adds.length){ const r=await api('addMaterialsBulk',{items:adds}); added=r.added; }
+    // Log the receipt's items against the job being worked (matched name where known).
+    if (logJob){
+      const items=rcState.items.map(it=>({ name: it.match||it.desc, qty: it.qty||'',
+        unit: it.unit||'', matched: !!it.match }));
+      await apiMutate('logMaterials',{ entryId:S.openEntry.EntryID,
+        jobSite:S.openEntry['Customer/Job Site']||S.openEntry.Company||'',
+        poNumber:S.openEntry['PO#']||'', items });
+    }
+    toast((added?('Added '+added+' new item(s)'):'All items already in the list')+(logJob?' — logged to the job':''));
+    loadMaterials(true);
+    closeSheet();
+  }catch(e){ toast(e.message); if(btn) btn.disabled=false; }
+}
+
+/* ---- Materials: supplier POs, company inventory, price list (Sept 2026 round) ---- */
+// Dollar figures (supplier costs, the price list) are for admins + the bookkeeper only —
+// the server enforces it too; this just keeps the buttons honest.
+function canPrice(){ return S.me && (S.me.role==='admin'||S.me.role==='bookkeeper'); }
+function canApprove(){ return S.me && (S.me.role==='admin'||(S.me.permissions&&S.me.permissions.approveHours)); }
+
+/* ============================ IN-APP CAMERA ==================================================
+ * iOS always interposes its own Take Photo / Photo Library sheet on a file input, whatever the
+ * capture attribute says. So we run our own viewfinder: one tap, live preview, one shutter.
+ * Falls back to the file input wherever getUserMedia is unavailable or refused. ============ */
+let camStream=null, camOnShot=null;
+async function openCamera(onShot, label){
+  camOnShot=onShot;
+  // Supplier POs are letter-size portrait pages, so the viewfinder is portrait and nothing is
+  // cropped (object-fit:contain) — what you frame is exactly what gets sent to the AI.
+  sheet(`<div id="camWrap" style="margin:-18px -18px 0">
+      <div id="camBox" style="position:relative;background:#000;border-radius:24px 24px 0 0;overflow:hidden;aspect-ratio:17/22;max-height:66vh;margin:0 auto">
+        <video id="camVid" playsinline autoplay muted style="width:100%;height:100%;display:block;object-fit:contain"></video>
+        <div id="camGuide" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
+          <div style="aspect-ratio:17/22;height:92%;border:2px dashed rgba(255,255,255,.75);border-radius:6px"></div>
+        </div>
+        <div id="camMsg" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:.95rem;text-align:center;padding:20px"><span class="spin"></span></div>
+        <div id="camLens" style="position:absolute;left:0;right:0;bottom:10px;display:flex;justify-content:center;gap:8px"></div>
+      </div>
+    </div>
+    <p class="small muted center" style="margin:10px 0 6px">${esc(label||'Fill the dashed box with the page — upright or sideways, whichever fits it better.')}</p>
+    <button id="camShot" style="width:100%;padding:20px;font-size:1.15rem" onclick="camShoot()" disabled>📸 Take the picture</button>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="camNative()">📱 Too close? Use the phone's camera (0.5× wide lens)</button>
+    <button class="ghost" style="width:100%;margin-top:6px" onclick="camClose()">Cancel</button>
+    <input id="camFallback" type="file" accept="image/*" capture="environment" class="hidden" onchange="camFromFile(this)">`);
+  if (S._sheet) S._sheet.onclick=null;   // a stray backdrop tap must not kill the camera
+  try{
+    // v39 — ASK FOR AS LITTLE AS POSSIBLE FIRST. The old request pinned 1536x2048 AND a portrait
+    // aspectRatio; iPhone sensors are landscape-native and iOS Safari rejects that combination
+    // outright. Start with the back camera and nothing else, then ASK for more pixels once the
+    // stream exists — a refused upgrade costs nothing, a refused stream costs the whole feature.
+    camStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'} }, audio:false });
+    try{
+      const tr=camStream.getVideoTracks()[0];
+      // v52 — ask for the sensor's FULL 4:3 frame. A 16:9 stream is the sensor with the top and
+      // bottom cut off, which is exactly why the page had to be held so far away.
+      if (tr && tr.applyConstraints) await tr.applyConstraints({ width:{ideal:2592}, height:{ideal:1944}, aspectRatio:{ideal:4/3} });
+      // and never start zoomed in: some phones hand the web a stream at 1.x
+      const zc = tr && tr.getCapabilities ? (tr.getCapabilities().zoom||null) : null;
+      const zs = tr && tr.getSettings ? tr.getSettings().zoom : null;
+      if (zc && typeof zc.min==='number' && zs && zs > Math.max(1, zc.min)) await tr.applyConstraints({advanced:[{zoom:Math.max(1, zc.min)}]});
+    }catch(e){ /* stays at the default resolution — still readable */ }
+    const v=document.getElementById('camVid'); if(!v){ camStop(); return; }
+    v.srcObject=camStream; await v.play().catch(()=>{});
+    // Match the box to whatever the camera actually gave us, so 'contain' shows no black bars
+    // and the dashed guide sits over the real picture.
+    // Box AND guide follow the real frame, so a page shot sideways is framed sideways instead
+    // of being squeezed into a portrait cut-out that no longer matches what the camera sees.
+    const fit=()=>{ const box=document.getElementById('camBox'), g=document.getElementById('camGuide');
+      if(box && v.videoWidth && v.videoHeight){
+        box.style.aspectRatio = v.videoWidth+'/'+v.videoHeight;
+        const landscape = v.videoWidth > v.videoHeight;
+        const inner = g && g.firstElementChild;
+        if (inner){                       // letter page, the way round the camera is being held
+          inner.style.aspectRatio = landscape ? '22/17' : '17/22';
+          inner.style.height = landscape ? 'auto' : '92%';
+          inner.style.width  = landscape ? '92%'  : 'auto';
+        }
+      } };
+    fit(); v.addEventListener('loadedmetadata', fit, {once:true});
+    v.addEventListener('resize', fit);
+    const m=document.getElementById('camMsg'); if(m) m.remove();
+    const b=document.getElementById('camShot'); if(b) b.disabled=false;
+    camLensSetup_(camStream.getVideoTracks()[0]);   // v44: wide-lens / lens-switch controls where the phone offers them
+  }catch(e){
+    // v39 — SAY WHY. This used to slide silently to the photo picker, so someone who had once
+    // tapped "Don't Allow" got the library every time and never learned the camera was blocked
+    // (and the library path is the one that loses the page's rotation). Name the cause, give
+    // the fix, and let them CHOOSE the photo picker instead of being pushed into it.
+    const denied = e && /NotAllowed|Permission|SecurityError/i.test(e.name + ' ' + e.message);
+    const m=document.getElementById('camMsg');
+    if(m) m.innerHTML = denied
+      ? '<div style="line-height:1.5"><b>The camera is blocked for this app.</b><br>' +
+        '<span class="small">' + camUnblockSteps_() + '</span></div>'
+      : '<div style="line-height:1.5"><b>The camera would not start.</b><br>' +
+        '<span class="small">' + esc(String((e && e.name) || 'Unknown')) + '</span></div>';
+    const b=document.getElementById('camShot');
+    if(b){ b.textContent='🖼️ Use a photo instead'; b.disabled=false;
+      b.onclick=()=>{ const f=document.getElementById('camFallback'); if(f) f.click(); }; }
+  }
+}
+// v40 — the un-block steps depend on the phone, and Paul's is a Pixel. Telling an Android
+// user to open Safari settings is worse than saying nothing: he follows it, finds no such
+// menu, and concludes the app is broken. Detect the platform; when unsure, show both.
+function camPlatform_(){
+  const ua = navigator.userAgent || '';
+  if (/Android/i.test(ua)) return 'android';
+  // iPadOS 13+ reports as Macintosh, so the touch check is what catches an iPad.
+  if (/iPhone|iPad|iPod/i.test(ua)) return 'ios';
+  if (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1) return 'ios';
+  return 'other';
+}
+function camUnblockSteps_(){
+  const installed = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+  const android =
+    'Chrome remembers a "Block" and will not ask again.<br><br>' +
+    (installed
+      ? 'On your phone: <b>press and hold the ProES icon &rsaquo; App info &rsaquo; Permissions &rsaquo; Camera</b> &rarr; <b>Allow</b>, '
+      : 'In Chrome: tap the <b>&#9881;</b> (or lock) icon at the left of the address bar &rsaquo; <b>Permissions</b> &rsaquo; <b>Camera</b> &rarr; <b>Allow</b>, ') +
+    'then close and reopen this app.';
+  const ios =
+    'Safari remembers a "Don\'t Allow" and will not ask again.<br><br>' +
+    'On iPhone: <b>Settings &rsaquo; Apps &rsaquo; Safari &rsaquo; Camera</b> &rarr; set to <b>Ask</b>, ' +
+    'then close and reopen this app.';
+  const p = camPlatform_();
+  if (p === 'android') return android;
+  if (p === 'ios')     return ios;
+  return '<b>Android:</b> ' + android + '<br><br><b>iPhone:</b> ' + ios;
+}
+/* v44 — WIDE LENS. A long receipt held inside the truck does not fit the 1× frame at arm's length.
+ * Two ways a phone can give us the ultrawide, and we take whichever this one offers:
+ *   1. Chrome exposes the camera's zoom range and it goes below 1× (Pixel and most Android 11+
+ *      phones): show a  0.7×  /  1×  toggle that sets the zoom ratio — same as tapping 0.7 in the
+ *      camera app. Any value under 1 switches the ultrawide in.
+ *   2. The back cameras are listed as separate devices instead (Samsung, iPhone): show a Lens
+ *      button that cycles through them (an iPhone's is labelled "Ultra Wide", so it goes straight
+ *      there and back).
+ * Neither → no button is shown and nothing else changes. The guide box and the picture follow
+ * whatever lens is live, so what is framed is still exactly what is sent. */
+let camLensWide=null, camBackCams=[], camBackIdx=0;
+async function camLensSetup_(tr){
+  const bar=document.getElementById('camLens'); if(!bar||!tr) return;
+  bar.innerHTML=''; camLensWide=null; camBackCams=[];
+  const pill=(txt,fn,on)=>`<button type="button" onclick="${fn}" style="padding:7px 14px;border-radius:999px;border:1px solid rgba(255,255,255,.7);background:${on?'rgba(255,255,255,.92)':'rgba(0,0,0,.45)'};color:${on?'#111':'#fff'};font-weight:700;font-size:.9rem">${txt}</button>`;
+  let caps={}; try{ caps=tr.getCapabilities?tr.getCapabilities():{}; }catch(e){}
+  const z=caps.zoom;
+  if(z && typeof z.min==='number' && z.min<1){
+    camLensWide = Math.max(z.min, 0.7);                       // 0.7× reads a receipt end to end without the ultrawide's edge stretch
+    const cur=(tr.getSettings&&tr.getSettings().zoom)||1;
+    bar.innerHTML = pill(camLensWide.toFixed(1)+'×','camZoom_('+camLensWide+')', cur<1) + pill('1×','camZoom_(1)', cur>=1);
+    return;
+  }
+  // No zoom range below 1× — are the back cameras separate devices?
+  let devs=[]; try{ devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='videoinput'); }catch(e){}
+  const cur=(tr.getSettings&&tr.getSettings())||{};
+  camBackCams = devs.filter(d=>/back|rear|environment/i.test(d.label||'') || d.deviceId===cur.deviceId);
+  if(camBackCams.length<2) return;
+  camBackIdx = Math.max(0, camBackCams.findIndex(d=>d.deviceId===cur.deviceId));
+  const uw = camBackCams.findIndex(d=>/ultra[ -]?wide/i.test(d.label||''));
+  if(uw>=0 && uw!==camBackIdx) bar.innerHTML = pill('Wide','camLensTo_('+uw+')', false) + pill('1×','camLensTo_('+camBackIdx+')', true);
+  else bar.innerHTML = pill('🔄 Lens','camLensTo_('+((camBackIdx+1)%camBackCams.length)+')', false);
+}
+async function camZoom_(val){
+  const tr=camStream&&camStream.getVideoTracks()[0]; if(!tr) return;
+  try{ await tr.applyConstraints({advanced:[{zoom:val}]}); }
+  catch(e){
+    // 0.7 may be off this phone's step grid — the range minimum always exists
+    let ok=false;
+    if(val<1){ try{ const c=tr.getCapabilities(); await tr.applyConstraints({advanced:[{zoom:c.zoom.min}]}); val=c.zoom.min; ok=true; }catch(e2){} }
+    if(!ok){ toast('This phone will not zoom out here — try shooting the receipt sideways.'); return; }
+  }
+  const bar=document.getElementById('camLens'); if(!bar) return;
+  Array.from(bar.querySelectorAll('button')).forEach((b,i)=>{ const on=(i===0)===(val<1);
+    b.style.background=on?'rgba(255,255,255,.92)':'rgba(0,0,0,.45)'; b.style.color=on?'#111':'#fff'; });
+}
+async function camLensTo_(idx){
+  const d=camBackCams[idx]; const v=document.getElementById('camVid'); if(!d||!v) return;
+  const b=document.getElementById('camShot'); if(b) b.disabled=true;
+  camStop();
+  try{
+    camStream = await navigator.mediaDevices.getUserMedia({ video:{ deviceId:{exact:d.deviceId} }, audio:false });
+    try{ const tr=camStream.getVideoTracks()[0]; if(tr&&tr.applyConstraints) await tr.applyConstraints({ width:{ideal:2048}, height:{ideal:2048} }); }catch(e){}
+    v.srcObject=camStream; await v.play().catch(()=>{});      // the 'resize' listener refits the box and the guide
+    camBackIdx=idx;
+    const bar=document.getElementById('camLens'); const uw=camBackCams.findIndex(x=>/ultra[ -]?wide/i.test(x.label||''));
+    if(bar){
+      const pill=(txt,fn,on)=>`<button type="button" onclick="${fn}" style="padding:7px 14px;border-radius:999px;border:1px solid rgba(255,255,255,.7);background:${on?'rgba(255,255,255,.92)':'rgba(0,0,0,.45)'};color:${on?'#111':'#fff'};font-weight:700;font-size:.9rem">${txt}</button>`;
+      const main=camBackCams.findIndex((x,i)=>i!==uw && /back|rear|environment/i.test(x.label||''));
+      bar.innerHTML = (uw>=0) ? pill('Wide','camLensTo_('+uw+')', idx===uw) + pill('1×','camLensTo_('+(main>=0?main:0)+')', idx!==uw)
+                              : pill('🔄 Lens','camLensTo_('+((idx+1)%camBackCams.length)+')', false);
+    }
+  }catch(e){ toast('That lens would not start — '+String((e&&e.name)||'')); }
+  if(b) b.disabled=false;
+}
+function camStop(){ try{ if(camStream) camStream.getTracks().forEach(t=>t.stop()); }catch(e){} camStream=null; }
+/* v52 — the phone's own camera app. On Android it opens straight into the camera, where the 0.5×
+   ultra-wide lens is one tap — so a letter page fits at about 25–30 cm. The photo comes back here
+   and goes through exactly the same scan as the in-app camera. */
+function camNative(){
+  camStop();
+  const f=document.getElementById('camFallback'); if(f){ f.value=''; f.click(); }
+}
+function camClose(){ camStop(); camOnShot=null; docFinish(); }   // v44: back to the review sheet when the scan came from there
+function camShoot(){
+  const v=document.getElementById('camVid'); if(!v||!v.videoWidth) return;
+  // 2000px on the long edge ≈ 180 dpi across a letter page — enough for part numbers and
+  // per-unit prices without making the upload painful on rural LTE.
+  const max=2000, scale=Math.min(1, max/Math.max(v.videoWidth,v.videoHeight));
+  const c=document.createElement('canvas');
+  c.width=Math.round(v.videoWidth*scale); c.height=Math.round(v.videoHeight*scale);
+  const ctx=c.getContext('2d'); ctx.imageSmoothingQuality='high';
+  ctx.drawImage(v,0,0,c.width,c.height);
+  const b64=c.toDataURL('image/jpeg',0.9).split(',')[1];
+  camStop();
+  const fn=camOnShot; camOnShot=null;
+  if(fn) fn(b64,'image/jpeg');
+}
+async function camFromFile(input){
+  const f=input.files&&input.files[0]; if(!f) return;
+  const shrunk=await shrinkPhoto(f,2000);
+  const b64=shrunk||await fileToB64(f);
+  const fn=camOnShot; camOnShot=null;
+  if(fn) fn(b64, shrunk?'image/jpeg':(f.type||'image/jpeg'));
+}
+/* ---- Scan receipt / estimate (v41) --------------------------------------------------------
+ * ONE button on the home screen, clocked in or not. Photo first, then one question: was this
+ * something we bought (receipt / invoice / credit note) or an estimate / quote?
+ *   Receipt  → inventory + price list update, recorded against the current job (Stock if
+ *              clocked out), PDF filed — the old "Scan a PO" behaviour.
+ *   Estimate → price list only (newest price wins), nothing bought, nothing on the job.
+ * The results screen shows every line as old price → new price. When the AI's read of the
+ * document disagrees with the button pressed, or the printed date cannot be trusted, nothing
+ * is saved until the person confirms. Offline: the photo + answer wait on the phone and are
+ * sent when there is signal; a queued scan that then needs a decision shows a banner. */
+const SCAN_TIMEOUT = 75000;   // AI read 10–20 s + sheet/Drive writes; the general 30 s limit is too short for a long invoice
+function openDocScan(){
+  const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
+  openCamera((b64,mime)=>docScanAsk(b64,mime),
+    site?`On the clock at ${site}. Fill the frame with the itemized page.`
+        :'Fill the frame with the itemized page.');
+}
+function keepSheet_(){ if(S._sheet) S._sheet.onclick=null; }   // a stray tap outside the panel must not lose the photo
+function docScanAsk(b64, mime){
+  const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
+  S._docShot={b64,mime};
+  sheet(`<h2>What is this?</h2>
+    <p class="small muted">${site?`On the clock at <b>${esc(site)}</b> — a receipt is recorded against that job.`:'Not clocked in — a receipt is recorded against Stock.'} An estimate only updates prices.</p>
+    <button style="width:100%;padding:18px;font-size:1.05rem;margin-top:6px" onclick="docScanSend('receipt')">🧾 Receipt (we bought it)</button>
+    <button style="width:100%;padding:18px;font-size:1.05rem;margin-top:10px" onclick="docScanSend('quote')">📄 Estimate / quote</button>
+    <button class="secondary" style="width:100%;margin-top:14px" onclick="S._docShot=null;docFinish()">Cancel</button>`);
+  keepSheet_();
+}
+function docScanPayload(kind, shot){
+  const p={kind, dataBase64:shot.b64, mimeType:shot.mime||'image/jpeg'};
+  if(S.openEntry){ p.jobSite=S.openEntry['Customer/Job Site']||S.openEntry.Company||''; p.poNumber=S.openEntry['PO#']||''; }
+  return p;
+}
+async function docScanSend(kind){
+  const shot=S._docShot; S._docShot=null; if(!shot) return closeSheet();
+  const p=docScanPayload(kind, shot);
+  docScanWait(kind);
+  if(!S.online){ await docQueue(p); return; }
+  await docScanCall(p, null);
+}
+let docWaitSeq=0;   // which "Reading…" sheet is current — a result for an older one must not paint over a newer sheet
+function docScanWait(kind){
+  const seq=++docWaitSeq;
+  sheet(`<h2 id="dsHead">Reading the ${kind==='quote'?'estimate':'receipt'}…</h2>
+    <p class="center" id="dsSpin" style="margin:22px 0"><span class="spin"></span></p>
+    <p id="dsHint" class="small muted center">10–20 seconds. ${kind==='quote'?'Prices update from the quote — nothing goes into inventory.':'The items go into inventory and the price list updates itself.'}</p>
+    <div id="dsStatus" class="small muted" data-seq="${seq}"></div><div id="dsResults"></div>
+    <button class="secondary" style="width:100%;margin-top:14px" onclick="docFinish()">Close</button>`);
+  keepSheet_();
+  return seq;
+}
+function docWaitOpen(seq){ const st=document.getElementById('dsStatus'); return !!st && Number(st.dataset.seq)===seq; }
+/* Sends a scan (first round or confirm round). qid = the offline-queue id when this is a queued
+ * item being resolved, so a successful save also removes it from the queue. */
+async function docScanCall(p, qid){
+  const seq=docWaitSeq;
+  try{
+    const r=await api('scanSupplierDoc',p,{timeout:SCAN_TIMEOUT});
+    if(r&&r.needsConfirm){
+      if(docWaitOpen(seq)) docConfirm(p, r, qid);
+      else await docPark(p, r, qid);                   // the person has moved on — the banner will ask
+      return;
+    }
+    if(qid) await docQueueDel(qid);
+    if(docWaitOpen(seq)) docShowResult(p, r);
+    else toast((r.kind==='quote'?'Estimate':'Receipt')+' filed ✓'+(r.warn?' — '+r.warn:''));
+  }catch(e){
+    // v44 - an overloaded or renamed AI model is TRANSIENT, not a bad photo. It used to print the
+    // error and lose the picture; now it queues like a no-signal scan and retries on its own.
+    if(/busy right now|Failed to fetch|NetworkError|timed out|No answer from the server|No AI model answered|HTTP 4?5\d\d?|overload|UNAVAILABLE|RESOURCE_EXHAUSTED|rate.?limit|quota/i.test(e.message||'')){
+      if(qid) await docQueueUpdate(qid, {kind:p.kind, confirmed:!!p.confirmed, extract:p.extract||null, dateOverride:p.dateOverride||'', needsConfirm:false, server:null}); // keep the answers with the photo
+      else await docQueue(p);
+      if(qid){ const st=docWaitOpen(seq)?document.getElementById('dsStatus'):null;
+        if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ Saved on the phone — it will be read and filed by itself as soon as it can be.</span>';
+        else toast('No signal — your answer is saved and will be sent later'); }
+    } else {
+      const st=docWaitOpen(seq)?document.getElementById('dsStatus'):null;
+      if(st) st.innerHTML='<span style="color:var(--bad)">'+esc(e.message)+'</span>'; else toast(e.message);
+    }
+  }
+}
+/* A first-round reply that needs a decision but whose sheet is gone: keep it on the phone with
+ * the server's reply so the home-screen banner can ask later. */
+async function docPark(p, r, qid){
+  if(qid) await docQueueUpdate(qid, {needsConfirm:true, server:r});
+  else await docQueue(p, {needsConfirm:true, server:r});
+  toast('That scan needs your OK — see the banner on the home screen');
+}
+/* The AI disagrees with the button, or the date is not to be trusted: show what it read, what
+ * would change, and let the person decide before anything is saved. */
+function docConfirm(p, r, qid){
+  const typeW=(r.warnings||[]).find(w=>w.code==='type'), dateW=(r.warnings||[]).find(w=>w.code==='date');
+  const kind=r.kind||p.kind;
+  const lines=(r.items||[]).map(it=>`<div class="list-item row between">
+      <div class="grow">${esc(it.desc)}<div class="small muted">${esc(it.sku||'')}</div></div>
+      <div class="small muted" style="white-space:nowrap;text-align:right">×${esc(it.qty)}${it.price!=null?'<br>'+priceDelta(it.oldPrice,it.price):''}</div>
+    </div>`).join('');
+  sheet(`<h2>⚠ Check before saving</h2>
+    <p class="small"><b>${esc(r.supplier||'Supplier')} ${esc(r.invoiceNo||'')}</b>${r.date?' · '+esc(r.date):(r.datePrinted?' · date printed "'+esc(r.datePrinted)+'"':'')}</p>
+    ${typeW?`<div class="banner ot" style="text-align:left">${esc(typeW.text)}</div>`:''}
+    ${dateW?`<div class="banner ot" style="text-align:left">${esc(dateW.text)}</div>
+      <label>Document date</label><input id="dsDate" type="date" value="${esc(r.date||dateW.suggested||'')}">`:''}
+    <div style="margin:8px 0 4px" class="small muted">${(r.items||[]).length} line(s) read — nothing has been saved yet.</div>
+    <div style="max-height:34vh;overflow:auto">${lines}</div>
+    ${typeW
+      ? `<button style="width:100%;margin-top:12px" onclick="docConfirmSend('receipt')">🧾 Save as a receipt — we bought it</button>
+         <button style="width:100%;margin-top:8px" onclick="docConfirmSend('quote')">📄 Save as an estimate / quote</button>`
+      : `<button style="width:100%;margin-top:12px" onclick="docConfirmSend('${kind}')">Save${dateW?' with this date':''}</button>`}
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="docConfirmCancel()">Don't save</button>`);
+  keepSheet_();
+  S._docPending={p, r, qid};
+}
+async function docConfirmSend(kind){
+  const pend=S._docPending; if(!pend) return;
+  const d=document.getElementById('dsDate');
+  if(d && !d.value){ toast('Enter the document date first'); return; }   // the server refuses an unconfirmed date; ask here instead
+  S._docPending=null;
+  const ext=(pend.r.extract&&pend.r.extract.items&&pend.r.extract.items.length)?pend.r.extract:null;   // no usable extraction → the server reads the photo again
+  const p=Object.assign({}, pend.p, {kind, confirmed:true, extract:ext});
+  if(d&&d.value) p.dateOverride=d.value;
+  docScanWait(kind);
+  if(!S.online){                                   // keep the answers with the photo; send later
+    if(pend.qid){ await docQueueUpdate(pend.qid, {kind, confirmed:true, extract:ext, dateOverride:p.dateOverride||'', needsConfirm:false, server:null}); }
+    else await docQueue(p);
+    const st=document.getElementById('dsStatus');
+    if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ No signal — your answer is saved on the phone and will be sent when you\'re back online.</span>';
+    return;
+  }
+  await docScanCall(p, pend.qid);
+}
+async function docConfirmCancel(){
+  const pend=S._docPending; S._docPending=null;
+  if(pend&&pend.qid){ await docQueueDel(pend.qid); toast('Scan discarded'); }
+  docFinish();
+}
+/* "$5.52 → $5.60" in the colour of the direction; "$9.99 (new)"; "$4.90 (no change)". */
+function priceDelta(oldP, newP){
+  const f=v=>'$'+Number(v).toFixed(2);
+  if(oldP==null||oldP===0) return `<b>${f(newP)}</b> <span class="small muted">(new)</span>`;
+  if(Math.abs(oldP-newP)<0.00001) return `<b>${f(newP)}</b> <span class="small muted">(no change)</span>`;
+  const up=newP>oldP;
+  return `<span class="small muted">${f(oldP)}</span> → <b style="color:${up?'var(--bad)':'var(--good)'}">${f(newP)}</b>`;
+}
+function canSeePrices(){ return !!(S.me && (S.me.role==='admin' || S.me.role==='bookkeeper')); }
+function docShowResult(p, r){
+  const st=document.getElementById('dsStatus'); if(!st) return;      // only paint the wait sheet that is actually open
+  const isQ=r.kind==='quote';
+  const head=document.getElementById('dsHead');
+  if(head) head.textContent=r.duplicate?'Already on file':(isQ?(r.replaced?'Quote revised — prices updated':'Prices updated from the estimate'):(r.credit?'Credit note filed':'Added to inventory'));
+  const sp=document.getElementById('dsSpin'); if(sp) sp.remove();
+  const hint=document.getElementById('dsHint'); if(hint) hint.remove();
+  // v44 — the receipt's lines become the Materials used rows, quantity pre-filled with what was
+  // BOUGHT. Paul changes it to what was actually installed; leftovers stay on the truck. Each row
+  // keeps fromDoc (supplier + invoice no) so the office can tell a receipt line from a typed one.
+  if(S._docBack && coState && !r.duplicate && !r.credit && r.kind!=='quote'){
+    coState.scanned=(coState.scanned||0)+1;
+    const src=((r.supplier||'')+' '+(r.invoiceNo||'')).trim()||'receipt';
+    coState.pendingScanItems=(coState.pendingScanItems||[]).concat((r.items||[])
+      .map(it=>({ name:it.desc||it.sku||'', unit:'', qty:Math.abs(Number(it.qty))||1, matched:true,
+                  sku:it.sku||'', fromDoc:src, bought:Math.abs(Number(it.qty))||1 }))
+      .filter(x=>x.name));
+  }
+  const doc=`<b>${esc(r.supplier||'')} ${esc(r.invoiceNo||'')}</b>${r.date?' · '+esc(r.date):''}`;
+  st.innerHTML = r.duplicate
+    ? `${doc} was already filed earlier — nothing was doubled.`
+    : isQ
+      ? `${doc} — <b>${r.added}</b> price(s) read. Nothing was added to inventory and nothing was recorded against a job.`+(r.poUrl?` <a href="${esc(r.poUrl)}" target="_blank" style="color:var(--accent2)">PDF ↗</a>`:'')
+      : `${doc} — <b>${r.added}</b> item(s) ${r.credit?'taken back out of':'added to'} inventory${r.jobSite&&r.jobSite!=='Stock'?', recorded against '+esc(r.jobSite):''}.`+
+        (r.poUrl?` <a href="${esc(r.poUrl)}" target="_blank" style="color:var(--accent2)">PDF ↗</a>`:'');
+  if(!r.duplicate && !r.poUrl) st.innerHTML+=' <span style="color:var(--warn)">The PDF could not be saved to Drive — the photo is only on this phone.</span>';
+  if(r.warn) st.innerHTML+=` <span style="color:var(--warn)">${esc(r.warn)}</span>`;
+  const box=document.getElementById('dsResults');
+  const canSee=canSeePrices();
+  if(box) box.innerHTML=(r.items||[]).map(it=>{
+    let right=`×${esc(it.qty)}`, note='';
+    if(it.price!=null){
+      const cur = it.newPrice!=null ? it.newPrice : it.price;
+      if(it.isNew) right+= '<br>'+priceDelta(null, it.price);
+      else if(it.kept){ right+= `<br><span class="muted">$${Number(it.price).toFixed(2)}</span> · kept <b>$${Number(cur).toFixed(2)}</b>`;
+        note=`<div class="small muted">${r.credit?'A credit note does not change the price.':'Not replaced — a newer price is on file'+(it.oldSrc?' ('+esc(it.oldSrc)+')':'')+'.'}</div>`; }
+      else right+= '<br>'+priceDelta(it.oldPrice, it.newPrice);
+    }
+    return `<div class="list-item row between">
+        <div class="grow">${esc(it.desc)}<div class="small muted">${esc(it.sku)}${it.isNew?' · new item':''}</div>${note}</div>
+        <div class="small" style="white-space:nowrap;text-align:right">${right}</div>
+      </div>`; }).join('') + ((!canSee && (r.items||[]).length)?'<p class="small muted" style="margin-top:6px">Prices are shown to admins and the bookkeeper.</p>':'');
+}
+/* ---- offline queue for scans (IndexedDB 'pendingScans'; the older 'pendingPOs' key is folded
+ * in on first use). Each item: {qid, kind, dataBase64, mimeType, jobSite, poNumber, at,
+ * needsConfirm, server (the first-round reply), confirmed, extract, dateOverride}.
+ * Every write re-reads the queue first and changes ONE item by qid — a flush that takes 20 s per
+ * photo must never overwrite a scan that was queued, answered or discarded while it ran. */
+const SCAN_QUEUE_MAX = 5;   // ~1–1.5 MB per photo — a ceiling for IndexedDB, not a target
+async function docQueueAll(){
+  let q=(await DB.getCache('pendingScans'))||[];
+  try{
+    const old=(await DB.getCache('pendingPOs'))||[];
+    if(old.length){ old.forEach(o=>q.push(Object.assign({qid:'q'+(o.at||Date.now())+Math.random().toString(36).slice(2,6), kind:'receipt'}, o))); await DB.setCache('pendingPOs', []); await DB.setCache('pendingScans', q); }
+  }catch(e){}
+  return q;
+}
+function docQueueTrim(q){
+  // Drop the oldest scans that are NOT waiting on a person first; a pending decision is only
+  // sacrificed when the queue is entirely decisions.
+  while(q.length>SCAN_QUEUE_MAX){
+    const i=q.findIndex(x=>!x.needsConfirm);
+    q.splice(i>=0?i:0, 1);
+  }
+  return q;
+}
+async function docQueue(p, extra){
+  try{
+    const q=await docQueueAll();
+    q.push(Object.assign({qid:'q'+Date.now()+Math.random().toString(36).slice(2,6), kind:p.kind, dataBase64:p.dataBase64, mimeType:p.mimeType,
+      jobSite:p.jobSite||'', poNumber:p.poNumber||'', at:Date.now(), confirmed:!!p.confirmed, extract:p.extract||null, dateOverride:p.dateOverride||'',
+      needsConfirm:false, server:null}, extra||{}));
+    await DB.setCache('pendingScans', docQueueTrim(q));
+    docQueueCount(q);
+    if(!(extra&&extra.needsConfirm)){
+      const st=document.getElementById('dsStatus');
+      if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ No signal — the photo is saved on the phone and will be read and filed automatically once you\'re back online.</span>';
+      else toast('Saved on the phone — it will file itself when you have signal');
+    }
+  }catch(e){ toast('Could not save the photo on the phone — try again with signal.'); }
+}
+async function docQueueUpdate(qid, patch){
+  const q=await docQueueAll(); const it=q.find(x=>x.qid===qid); if(it) Object.assign(it, patch);
+  await DB.setCache('pendingScans', q); docQueueCount(q);
+}
+async function docQueueDel(qid){
+  const q=(await docQueueAll()).filter(x=>x.qid!==qid); await DB.setCache('pendingScans', q); docQueueCount(q);
+}
+function docQueueCount(q){ const n=(q||[]).filter(x=>x.needsConfirm).length; if(n!==(S.scanWaiting||0)){ S.scanWaiting=n; render(); } }
+/* v42 — punches that have not reached the office yet, and punches the office refused, live on
+   the home screen until they are sent or seen. A 3-second toast was how a lost clock-out went
+   unnoticed for six days. */
+function syncBanner(){
+  let h='';
+  if (S.refused) h += `<div class="banner ot" style="cursor:pointer;background:#fee2e2;border-color:#fca5a5;color:#991b1b" onclick="openSyncStatus()">⚠ <b>${S.refused} punch${S.refused>1?'es were':' was'} refused by the office</b> — tap to see why.</div>`;
+  if (S.stuck) h += `<div class="banner ot" style="cursor:pointer;background:#fee2e2;border-color:#fca5a5;color:#991b1b" onclick="openSyncStatus()">⚠ <b>${S.stuck} punch${S.stuck>1?'es have':' has'} been waiting more than a day</b> — the office does NOT have ${S.stuck>1?'them':'it'}. Get signal and tap to send now.</div>`;
+  else if (S.queued) h += `<div class="banner ot" style="cursor:pointer" onclick="openSyncStatus()">📶 <b>${S.queued} punch${S.queued>1?'es':''} waiting to send</b> — will go by itself when there is signal. Tap to send now.</div>`;
+  return h;
+}
+async function openSyncStatus(){
+  const items=(await DB.all()).filter(it=>PUNCH.test(it.action)).sort((a,b)=>a.ts-b.ts);
+  const refused=(await DB.getCache('syncLog'))||[];
+  sheet(`<h2>Punches not at the office yet</h2>
+    ${items.length?items.map(it=>`<div class="list-item"><b>${esc(describePunch_(it))}</b>
+        <div class="small ${isStuck_(it)?'':'muted'}" ${isStuck_(it)?'style="color:var(--bad)"':''}>${isStuck_(it)?'⚠ ':''}waiting ${esc(fmtAge_(punchAge_(it)))}${isStuck_(it)?' — more than a day, the office does not have this':''}</div>
+        <div class="small muted">${it.conflict?'⚠ ':''}${esc(it.lastError||(it.lastTry?'':'not tried yet'))}${it.lastTry?' · last try '+fmtTime(new Date(it.lastTry).toISOString()):''}${it.stuckReported?' · admin emailed':''}</div></div>`).join('')
+      :'<p class="muted">Nothing waiting — everything you punched is at the office.</p>'}
+    ${refused.length?`<h3 style="margin-top:14px;color:var(--bad)">Refused by the office</h3>`+refused.map(r=>`<div class="list-item"><b>${esc(r.what)}</b><div class="small" style="color:var(--bad)">${esc(r.why)}</div></div>`).join('')
+      +`<p class="small muted">These were not saved. Enter them as a manual entry (Entries tab) if the time is owed.</p>`:''}
+    <div class="row" style="margin-top:14px">
+      ${items.length?`<button class="grow" onclick="closeSheet();toast('Sending…');flushQueue().then(n=>{ if(!n) toast(S.online?'Still could not reach the office — will keep trying.':'No signal — will send when you are back online.'); })">Send now</button>`:''}
+      ${refused.length?`<button class="secondary grow" onclick="DB.setCache('syncLog',[]).then(()=>{closeSheet();queueCount_();})">Clear refused</button>`:''}
+      <button class="secondary grow" onclick="closeSheet()">Close</button>
+    </div>`);
+}
+function scanBanner(){
+  if(!S.scanWaiting) return '';
+  return `<div class="banner ot" style="cursor:pointer" onclick="openQueuedScan()">📷 <b>${S.scanWaiting} scanned document${S.scanWaiting>1?'s need':' needs'} your OK</b> — tap to review before it is saved.</div>`;
+}
+async function openQueuedScan(){
+  const q=await docQueueAll(); const it=q.find(x=>x.needsConfirm&&x.server); if(!it){ docQueueCount(q); return; }
+  docConfirm({kind:it.kind, dataBase64:it.dataBase64, mimeType:it.mimeType, jobSite:it.jobSite, poNumber:it.poNumber}, it.server, it.qid);
+}
+async function flushScans(){
+  if(!S.online||S._fsBusy) return; S._fsBusy=true;
+  try{
+    const snapshot=await docQueueAll();
+    for(const it of snapshot){
+      if(it.needsConfirm) continue;                            // waiting on a person
+      const p={kind:it.kind, dataBase64:it.dataBase64, mimeType:it.mimeType, jobSite:it.jobSite, poNumber:it.poNumber, queued:true};
+      if(it.confirmed){ p.confirmed=true; p.extract=it.extract; if(it.dateOverride) p.dateOverride=it.dateOverride; }
+      try{
+        const r=await apiBg('scanSupplierDoc', p);
+        // re-read: the person may have queued, answered or discarded scans while this one was being read
+        if(!(await docQueueAll()).some(x=>x.qid===it.qid)) continue;
+        if(r&&r.needsConfirm){ await docQueueUpdate(it.qid, {needsConfirm:true, server:r}); toast('A scanned document from earlier needs your OK — see the home screen'); }
+        else { await docQueueDel(it.qid); toast((it.kind==='quote'?'Estimate':'Receipt')+' from earlier was read and filed ✓'+(r&&r.warn?' — '+r.warn:'')); }
+      }catch(e){
+        const msg=e.message||'';
+        if(/does not look like|Could not read|clearer photo|could not be read/i.test(msg)){ await docQueueDel(it.qid); toast('⚠ A queued photo was unreadable — scan it again'); }
+        else if(/busy right now|Failed to fetch|NetworkError|timed out|No answer from the server|rate-limited|Session expired|Please sign in|No AI model answered|HTTP 4?5\d\d?|overload|UNAVAILABLE|RESOURCE_EXHAUSTED|quota/i.test(msg)) break;   // transient (incl. an AI model that is down or renamed) — retry on the next reconnect
+        else { await docQueueUpdate(it.qid, {needsConfirm:true, server:{needsConfirm:true, kind:it.kind, supplier:'', invoiceNo:'', date:'', items:[], extract:it.extract||{},
+                 warnings:[{code:'date', text:'This scan could not be saved: '+msg, suggested:new Date().toISOString().slice(0,10)}]}}); }   // park it with the reason instead of jamming the queue
+      }
+    }
+    docQueueCount(await docQueueAll());
+  }catch(e){}
+  S._fsBusy=false;
+}
+
+
+/* ======================= THE PARTS BOUGHT FOR THIS JOB (v76) ================================
+ * Charles, 21 Oct: clocked in to a job, the materials screen should open with the parts off that
+ * job's own supplier POs, so he ticks off what actually went in instead of searching the whole
+ * shelf for things he knows he bought for this job. The general-inventory search stays, below.
+ *
+ * Whatever is not logged needs no bookkeeping at all: every purchase is added to the count on
+ * hand when its invoice is swept in, and only logging a part as used takes it off again - so the
+ * leftover simply never leaves the shelf. That is what "if I do not use all of them, they go in
+ * the inventory" already means.
+ *
+ * Each row says bought / logged / left, and the quantity box starts at what is LEFT (Charles's
+ * choice), so one tap covers "I used the rest of it". The list is kept in localStorage per job -
+ * read synchronously, so the screen paints the parts the moment it opens, with no signal, for
+ * the same reason the open-job list does (v75). Eight jobs are kept; the oldest drops off.
+ * ========================================================================================== */
+const JP_TTL = 10*60*1000;
+const JP_LS_KEY = 'pcwJobParts';
+let jpResults = {};                 // mode -> the list the rendered rows are indexed against
+function jpKey_(po, site){
+  return String(po||'').trim().toUpperCase() || ('@' + String(site||'').trim().toLowerCase());
+}
+function jpStore_(){
+  try { return JSON.parse(localStorage.getItem(JP_LS_KEY) || '{}') || {}; } catch(e){ return {}; }
+}
+function jpCached_(po, site){
+  if (!po && !site) return null;
+  const o = jpStore_()[jpKey_(po, site)];
+  return (o && o.list) ? o : null;
+}
+function jpPut_(po, site, list){
+  if (!po && !site) return;
+  try {
+    const all = jpStore_(), k = jpKey_(po, site);
+    all[k] = { list: list||[], ts: Date.now() };
+    // The one just written is ALWAYS kept, then the seven next most recent. Sorting on the
+    // timestamp alone decided ties arbitrarily, and two jobs opened in the same millisecond
+    // could drop the one being saved.
+    const keep = Object.keys(all).filter(x=>x!==k)
+      .sort((a,b)=>(all[b].ts||0)-(all[a].ts||0)).slice(0,7);
+    const out = {}; [k].concat(keep).forEach(x=>{ out[x]=all[x]; });
+    localStorage.setItem(JP_LS_KEY, JSON.stringify(out));
+  } catch(e){}
+}
+/* Paint from the phone first, then refresh from the office and paint again. */
+async function jpLoad(po, site, force){
+  if (!po && !site) return null;
+  const cached = jpCached_(po, site);
+  if (cached) jpPaint_();
+  if (!S.online) return cached ? cached.list : null;
+  if (!force && cached && (Date.now()-cached.ts) < JP_TTL) return cached.list;
+  try {
+    const r = await apiBg('jobParts', { jobSite: site||'', poNumber: po||'' });
+    jpPut_(po, site, r.parts||[]);
+    jpPaint_();
+    return r.parts||[];
+  } catch(e){ jpPaint_(); return cached ? cached.list : null; }
+}
+/* Which job each screen is on, and where its picked items go. */
+function jpCtx_(mode){
+  if (mode==='co') return coState ? { po:coState.poNumber, site:coState.jobSite||coState.company, items:coState.items } : null;
+  if (mode==='mn') return mnState ? { po:mnState.poNumber, site:mnState.jobSite||mnState.company, items:mnState.items } : null;
+  if (mode==='ed') return edState ? { po:edState.poNumber, site:edState.jobSite||edState.company, items:edState.items } : null;
+  if (mode==='mu') return { po:(S.openEntry&&S.openEntry['PO#'])||'',
+                            site:(S.openEntry&&(S.openEntry['Customer/Job Site']||S.openEntry.Company))||'', items:null };
+  return null;
+}
+function jpPaint_(){
+  ['co','mn','ed','mu'].forEach(m=>{
+    const el = document.getElementById('jp_'+m);
+    if (el) el.innerHTML = jpBlockHtml(m);
+  });
+}
+function jpBlockHtml(mode){
+  const ctx = jpCtx_(mode); if (!ctx) return '';
+  if (!ctx.po && !ctx.site) return '<p class="small muted">Pick the job first — the parts bought for it show up here.</p>';
+  const c = jpCached_(ctx.po, ctx.site);
+  if (!c) return `<p class="small muted">${S.online?'Looking up what was bought for this job…':'No parts list saved on this phone for this job yet — it will be here once you have had signal on it.'}</p>`;
+  const list = c.list || [];
+  jpResults[mode] = list;
+  if (!list.length) return `<p class="small muted">Nothing has been bought against ${esc(ctx.po||ctx.site)} yet. Search the inventory below.</p>`;
+  const rows = list.map((x,i)=>({ left:Number(x.left)||0, html: jpRowHtml(mode, x, i) }));
+  const open = rows.filter(r=>r.left>0), done = rows.filter(r=>!(r.left>0));
+  return `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px">`
+    + (open.length ? open.map(r=>r.html).join('') : '<div class="list-item"><span class="small muted">Every part bought for this job is already logged.</span></div>')
+    + (done.length ? `<details><summary class="small muted" style="padding:8px 0;cursor:pointer">${done.length} already logged in full</summary>${done.map(r=>r.html).join('')}</details>` : '')
+    + `</div>`;
+}
+/* How much of this part is already sitting in this sheet's own list (so Add updates instead of
+   putting the same part on twice). */
+function jpInItems_(mode, x){
+  const ctx=jpCtx_(mode); if(!ctx||!ctx.items) return 0;
+  const it=ctx.items.find(y=>jpSame_(y,x));
+  return it ? (Number(it.qty)||0) : 0;
+}
+function jpSame_(it, x){
+  if (x.sku && it.sku) return String(it.sku)===String(x.sku);
+  return String(it.name||'').toLowerCase() === String(x.desc||'').toLowerCase();
+}
+function jpRowHtml(mode, x, i){
+  const u = x.unit ? (' '+esc(x.unit)) : '';
+  const already = jpInItems_(mode, x);
+  const bits = [`bought ${x.bought}${u}`];
+  if (x.used) bits.push(`${x.used} logged`);
+  bits.push(`<b>${x.left}${u} left</b>`);
+  const shelf = (x.onHand!=null) ? ` · ${x.onHand}${u} on the shelf` : '';
+  const btn = (mode==='mu')
+    ? `<button class="grow" onclick="jpUse('${mode}',${i})">Used</button>`
+    : `<button class="grow" onclick="jpAdd('${mode}',${i})">${already?'Update':'Add'}</button>`;
+  return `<div class="list-item">
+      <b>${esc(x.desc)}</b>${already?` <span class="pill approved">on the list: ${already}</span>`:''}
+      <div class="small muted">${bits.join(' · ')}${shelf}${x.supplier?' · '+esc(x.supplier):''}</div>
+      <div class="row" style="margin-top:6px">
+        <input id="jpq_${mode}_${i}" type="number" step="any" min="0" value="${esc(x.left)}" style="width:104px;margin:0;text-align:center">
+        ${btn}
+      </div>
+    </div>`;
+}
+/* Clock-out review / Add time / Edit entry: the part goes on that sheet's list and is written
+   when the sheet is submitted, so it queues offline like everything else on those screens. */
+function jpAdd(mode, i){
+  const ctx=jpCtx_(mode), x=(jpResults[mode]||[])[i];
+  if(!ctx||!x||!ctx.items) return;
+  const q=Number(val('jpq_'+mode+'_'+i));
+  if(!(q>0)) return toast('Type how many of it you used first.');
+  const same=ctx.items.find(y=>jpSame_(y,x));
+  if (same){ same.qty=q; }
+  else ctx.items.push({ name:x.desc, sku:x.sku||'', unit:x.unit||'', qty:q, matched:true,
+                        fromDoc:'PO '+(ctx.po||ctx.site), bought:x.bought });
+  if (mode==='co') coUpdateMats(); else if (mode==='mn') mnUpdateMats(); else edUpdateMats();
+  jpPaint_();
+  toast(same ? 'Updated to '+q : q+(x.unit?' '+x.unit:'')+' on the list');
+}
+/* The Materials used screen takes it off the shelf there and then, like its search box does. */
+async function jpUse(mode, i){
+  const ctx=jpCtx_(mode), list=jpResults[mode]||[], x=list[i];
+  if(!ctx||!x) return;
+  const q=Number(val('jpq_'+mode+'_'+i));
+  if(!(q>0)) return toast('Type how many of it you used first.');
+  if(!x.sku) return toast('That part has no stock number yet — search for it in the inventory below.');
+  const was={ used:x.used, left:x.left, onHand:x.onHand };
+  const r2=n=>Math.round((Number(n)||0)*100)/100;
+  x.used=r2(x.used+q); x.left=Math.max(0, r2(was.left-q));
+  if (x.onHand!=null) x.onHand=r2(x.onHand-q);
+  jpPut_(ctx.po, ctx.site, list); jpPaint_();
+  try{
+    const r=await apiMutate('takeMaterial',{ sku:x.sku, qty:q, jobSite:ctx.site,
+      poNumber:ctx.po||'', at:new Date().toISOString() });
+    toast((r&&r.queued) ? q+(x.unit?' '+x.unit:'')+' logged — will sync when you have signal'
+                        : q+(x.unit?' '+x.unit:'')+' used ✓');
+  }catch(e){
+    x.used=was.used; x.left=was.left; x.onHand=was.onHand;
+    jpPut_(ctx.po, ctx.site, list); jpPaint_();
+    toast('Not logged: '+e.message, 7000);
+  }
+}
+
+/* Materials used: the job's own PO parts first (v76), then the whole company inventory - Paul
+   buys per job, but common parts come off the shelf. */
+let muT=null;
+function openMatUse(){
+  const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
+  const po=S.openEntry?(S.openEntry['PO#']||''):'';
+  sheet(`<h2>🔩 Materials used</h2>
+    <p class="small muted">${site?`Going onto <b>${esc(site)}</b>${po?` · PO ${esc(po)}`:''}. `:'Not clocked in — this will be recorded against Stock. '}Type how many and tap Used. Anything you don't log stays in inventory.</p>
+    ${(po||site)?`<label style="margin-top:0">Bought for this job</label>
+    <div id="jp_mu">${jpBlockHtml('mu')}</div>`:''}
+    <label style="margin-top:14px">Anything else — search the whole inventory</label>
+    <input id="muQ" placeholder="Search: breaker 15a, NMD90 14/2, EMT 1/2" oninput="muSearch()">
+    <div class="perm" style="margin-top:4px"><input type="checkbox" id="muStock" checked onchange="muSearch()">
+      <label for="muStock" style="margin:0" class="small">Only show what we have on hand</label></div>
+    <div id="muList" style="margin-top:6px"><span class="spin"></span></div>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  jpLoad(po, site, true);
+  muSearch();
+}
+function muSearch(){
+  clearTimeout(muT);
+  muT=setTimeout(async ()=>{
+    const box=document.getElementById('muList'); if(!box) return;
+    // v76 - with no signal, search the catalogue the phone already has instead of showing an
+    // error. The shelf count is not in that copy, so the row says so rather than inventing one.
+    if (!S.online){
+      const q=val('muQ');
+      S.muItems=(q.trim()?localMatSearch(q):[]).map(m=>({ sku:m.sku||'', desc:m.name, unit:m.unit||'', onHand:null, price:null }));
+      muRender(S.muItems.length, true); return;
+    }
+    box.innerHTML='<span class="spin"></span>';
+    try{
+      const el=document.getElementById('muStock');
+      const r=await apiBg('inventoryList',{q:val('muQ'), inStock: el?el.checked:true, limit:40});
+      S.muItems=r.items||[]; muRender(r.total||0);
+    }catch(e){ const b=document.getElementById('muList'); if(b) b.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+  },300);
+}
+function muRender(total, offline){
+  const box=document.getElementById('muList'); if(!box) return;
+  box.innerHTML=(S.muItems||[]).map((it,i)=>`<div class="list-item">
+      <b>${esc(it.desc)}</b>
+      <div class="small muted">${esc(it.sku)} · ${it.onHand==null?'<span class="muted">count not on this phone</span>':`<b style="color:${it.onHand>0?'var(--accent2)':'var(--warn)'}">${it.onHand} ${esc(it.unit)}</b> on hand`}${it.price!=null?' · $'+Number(it.price).toFixed(2)+' ea':''}</div>
+      <div class="row" style="margin-top:6px">
+        <input id="muq_${i}" type="number" step="any" min="0" placeholder="how many" style="width:104px;margin:0;text-align:center">
+        <button class="grow" onclick="muUse(${i},1)">Used</button>
+        <button class="ghost" onclick="muUse(${i},-1)" title="Put some back">Undo</button>
+        ${canPrice()?`<button class="ghost" onclick="muReturn(${i})" title="Going back to the supplier">Return</button>`:''}
+      </div>
+    </div>`).join('') || `<p class="muted small">${offline?'Type what you are looking for — searching the copy on this phone.':'Nothing matches. Untick “only what we have on hand” to search everything, or scan the supplier PO first.'}</p>`
+    + (total>40?`<p class="small muted">Showing 40 of ${total} — refine the search.</p>`:'');
+}
+async function muUse(i,sign){
+  const it=(S.muItems||[])[i]; if(!it) return;
+  const q=Number(val('muq_'+i)); if(!q||q<=0){ toast('Enter how many first'); return; }
+  it.onHand = it.onHand - sign*q;
+  muRender();
+  const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
+  try{
+    await apiMutate('takeMaterial',{sku:it.sku, qty:sign*q, jobSite:site,
+      poNumber:S.openEntry?(S.openEntry['PO#']||''):'', at:new Date().toISOString()});
+    toast(sign>0?`${q} ${it.unit} used ✓`:'Put back ✓');
+  }catch(e){ toast(e.message); }
+}
+async function muReturn(i){
+  const it=(S.muItems||[])[i]; if(!it) return;
+  const q=Number(val('muq_'+i)); if(!q||q<=0){ toast('Enter how many first'); return; }
+  try{
+    await api('returnToSupplier',{sku:it.sku, qty:q,
+      jobSite:S.openEntry?(S.openEntry['Customer/Job Site']||''):''});
+    toast('Noted — it leaves inventory when the credit note arrives');
+  }catch(e){ toast(e.message); }
+}
+
+/* ============================ ALLOWANCES ====================================================
+ * The small button only appears once an admin has ticked what this person may claim. Cellphone
+ * is posted automatically each month, so it is deliberately NOT offered here. =============== */
+const ALLOW_LABELS={phone:'Cellphone',food:'Meals',km:'Mileage',other:'Other'};
+function allowElig(){
+  const a=(S.me&&S.me.permissions&&S.me.permissions.allowances)||{};
+  return ['food','km','other'].filter(k=>a[k]);   // phone posts itself — nothing to claim
+}
+function allowBtn(){
+  if(!allowElig().length) return '';
+  return `<button class="ghost" style="width:100%;margin-top:8px;font-size:.92rem;padding:9px"
+    onclick="openAllowClaim()">💳 Claim an allowance</button>`;
+}
+function openAllowClaim(){
+  const elig=allowElig();
+  if(!elig.length) return toast('No allowances are set up on your account yet.');
+  const cfg=(S.config&&S.config.allowances)||{km:0.60,meal:23};
+  sheet(`<h2>💳 Claim an allowance</h2>
+    <label>What kind</label>
+    <select id="alType" onchange="alSwitch()">${elig.map(t=>`<option value="${t}">${ALLOW_LABELS[t]}</option>`).join('')}</select>
+    <label>Date</label><input id="alDate" type="date" value="${todayStr()}" max="${todayStr()}">
+    <div id="alKmRow" class="hidden">
+      <label>Kilometres driven</label><input id="alKm" type="number" step="any" min="0" inputmode="decimal">
+      <label>Where did you go?</label><input id="alDest" placeholder="e.g. Peace River → Manning, EECOL run">
+      <p class="small muted" style="margin:2px 0 0">Paid at $${Number(cfg.km||0.60).toFixed(2)}/km.</p>
+    </div>
+    <div id="alAmtRow">
+      <label>Amount ($)</label><input id="alAmt" type="number" step="0.01" min="0" inputmode="decimal">
+      <label>Note (optional)</label><input id="alNote" placeholder="e.g. supper, Manning callout">
+      <p class="small muted" id="alCapNote" style="margin:2px 0 0"></p>
+    </div>
+    <div id="alPhotoRow" class="hidden">
+      <div id="alPhotoState" class="small muted" style="margin:8px 0">📷 A photo of the receipt is required.</div>
+      <button class="secondary" style="width:100%" onclick="alPhoto()">📷 Photograph the receipt</button>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheet()">Cancel</button>
+      <button class="grow" id="alSend" onclick="alSubmit(this)">Send the claim</button>
+    </div>`);
+  alSwitch();
+}
+let alPhotoB64=null, alPhotoMime=null;
+function alSwitch(){
+  const t=val('alType'), cfg=(S.config&&S.config.allowances)||{meal:23,mealNeedsPhoto:true};
+  const km=document.getElementById('alKmRow'), amt=document.getElementById('alAmtRow'),
+        ph=document.getElementById('alPhotoRow'), cap=document.getElementById('alCapNote');
+  if(km) km.classList.toggle('hidden', t!=='km');
+  if(amt) amt.classList.toggle('hidden', t==='km');
+  if(ph) ph.classList.toggle('hidden', !(t==='food'&&cfg.mealNeedsPhoto!==false));
+  if(cap) cap.textContent = t==='food' ? `Up to $${Number(cfg.meal||23).toFixed(2)} per meal goes through without question; more than that just needs Paul's nod.` : '';
+}
+function alPhoto(){
+  const back=S._sheetHtml;
+  openCamera((b64,mime)=>{
+    alPhotoB64=b64; alPhotoMime=mime;
+    openAllowClaim();
+    setTimeout(()=>{ const st=document.getElementById('alPhotoState');
+      if(st){ st.innerHTML='✓ Receipt photographed'; st.style.color='var(--good)'; } }, 60);
+  }, 'Photograph the whole receipt.');
+}
+async function alSubmit(btn){
+  const t=val('alType');
+  const p={ type:t, date:val('alDate') };
+  if(t==='km'){
+    p.km=Number(val('alKm'))||0; p.note=val('alDest');
+    if(!p.km) return toast('Enter the kilometres.');
+    if(!p.note.trim()) return toast('Where did you drive to?');
+  }else{
+    p.amount=Number(val('alAmt'))||0; p.note=val('alNote');
+    if(!p.amount) return toast('Enter the amount.');
+    if(t==='food'&&alPhotoB64){ p.dataBase64=alPhotoB64; p.mimeType=alPhotoMime||'image/jpeg'; }
+    const cfg=(S.config&&S.config.allowances)||{};
+    if(t==='food'&&cfg.mealNeedsPhoto!==false&&!alPhotoB64) return toast('Photograph the receipt first.');
+  }
+  btn.disabled=true; btn.textContent='Sending…';
+  try{
+    await api('allowanceClaim',p);
+    alPhotoB64=null; alPhotoMime=null;
+    closeSheet(); toast('Claim sent — Paul will approve it.'); loadMyAllow();
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Send the claim'; }
+}
+
+/* Admin: one place for every allowance amount (Charles, item 4). */
+async function openAllowCfg(){
+  if(!S.online) return toast('Needs a connection.');
+  try{
+    const r=await api('allowCfgGet',{});
+    const c=r.cfg||{};
+    sheet(`<h2>💳 Allowance settings</h2>
+      <p class="small muted">These apply to everyone who has the matching allowance ticked on their Team card.</p>
+      <label>Cellphone — $ per month, posted automatically, no approval needed</label>
+      <input id="acPhone" type="number" step="0.01" min="0" value="${Number(c.phone||0)}">
+      <label>Meals — reasonable amount per meal ($). Above this still goes through, but flagged for you.</label>
+      <input id="acMeal" type="number" step="0.01" min="0" value="${Number(c.meal||0)}">
+      <div class="perm"><input type="checkbox" id="acMealPhoto" ${c.mealNeedsPhoto!==false?'checked':''}>
+        <label for="acMealPhoto" style="margin:0">A photo of the receipt is required for meals</label></div>
+      <label>Mileage — $ per km</label>
+      <input id="acKm" type="number" step="0.01" min="0" value="${Number(c.km||0)}">
+      <label>Other — default $ (0 means they type the amount)</label>
+      <input id="acOther" type="number" step="0.01" min="0" value="${Number(c.other||0)}">
+      <div class="row" style="margin-top:14px">
+        <button class="secondary grow" onclick="closeSheet()">Cancel</button>
+        <button class="grow" onclick="saveAllowCfg(this)">Save</button>
+      </div>`);
+  }catch(e){ toast(e.message); }
+}
+async function saveAllowCfg(btn){
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const r=await api('allowCfgSet',{ phone:val('acPhone'), meal:val('acMeal'), km:val('acKm'),
+      other:val('acOther'), mealNeedsPhoto:(document.getElementById('acMealPhoto')||{}).checked });
+    if(S.config) S.config.allowances=r.cfg;
+    closeSheet(); toast('Saved ✓');
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Save'; }
+}
+/* Alberta general holiday pay: average daily wage, 5-of-9 eligibility, posted as approved
+   entries on the holiday itself. Safe to run twice — it skips anyone already posted. */
+async function runStatPay(btn){
+  if(!S.online) return toast('Needs a connection.');
+  btn.disabled=true; btn.textContent='Working…';
+  try{
+    const r=await api('statPayRun',{year:new Date().getFullYear()});
+    const paid=(r.posted||[]).map(x=>`<div class="list-item small"><b>${esc(x.who)}</b> · ${esc(x.holiday)} · ${x.hours} hrs ≈ $${Number(x.amount).toFixed(2)}</div>`).join('');
+    const skip=(r.skipped||[]).slice(0,40).map(x=>`<div class="list-item small muted">${esc(x.who)} · ${esc(x.holiday)} — ${esc(x.why)}</div>`).join('');
+    sheet(`<h2>🍁 Stat holiday pay ${r.year}</h2>
+      <p class="small muted">Alberta average daily wage: what they earned in the 4 weeks before, divided by days worked. Only on days that are a regular workday for them (the 5-of-9 rule).</p>
+      <h3>Posted (${(r.posted||[]).length})</h3>${paid||'<p class="muted small">Nothing new to post.</p>'}
+      <h3>Not posted (${(r.skipped||[]).length})</h3>${skip||'<p class="muted small">—</p>'}
+      <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+    refresh(true);
+  }catch(e){ toast(e.message); }
+  btn.disabled=false; btn.textContent='🍁 Post stat holiday pay';
+}
+
+/* ============================ WEBSITE REQUESTS ===============================================
+ * The ball-park sequence files leads here instead of booking Paul's calendar itself. He checks
+ * the AI's hours, picks the slot, assigns the crew — and only then does it hit the calendar. */
+/* v60 — THE REQUESTS TAB NO LONGER WAITS ON THE OFFICE.
+ * Every other tab in this app paints from what the phone already has and refreshes behind it —
+ * jobs, materials, customers, onboarding all do. Requests did not: it had no cache at all, so
+ * every single visit sat on a spinner for the whole round trip, and an Apps Script round trip is
+ * seconds. Now it paints the last answer immediately and quietly replaces it when the new one
+ * lands. The data is a few seconds stale for a moment, which for a list of leads is nothing. */
+function applyRequests(r){
+  S.requests=r.requests||[];
+  S.reqEstimates=r.estimates||[];   // v46: estimate calls held but not yet turned into jobs
+  S.reqBooked=r.booked||[];         // v46: booked jobs + whether the customer has confirmed
+  S.reqCalls=r.calls||[];           // v52: customers to ring because their job was moved
+  S.reqCollateral=r.collateral||[]; // v51: jobs that lost their slot and need a new time
+  S.pendingRequests=S.requests.length+S.reqCollateral.length;
+}
+async function loadRequests(){
+  if(S._reqLoading) return; S._reqLoading=true;
+  if(canApprove()) loadApprovals();                 // v56 — hours / time off / allowances waiting
+  if(canApprove()) loadNeo();                       // v84 — and what the inbox sweep found
+  try{
+    if(!S.requests){
+      const c=await DB.getCache('requests');
+      if(c){ applyRequests(c); if(S.tab==='requests') render(); }
+    }
+    if(!S.online){ S._reqLoading=false; return; }
+    const r=await apiBg('requestList',{});
+    applyRequests(r); S.reqErr='';
+    DB.setCache('requests', r);
+    if(S.tab==='requests') render();
+  }catch(e){ if(!S.requests) S.reqErr=e.message; if(S.tab==='requests') render(); }
+  S._reqLoading=false;
+}
+function openRequests(){ go('requests'); }   // from the pop-up and older call sites
+/* v34 — the customer's form photos, on the card itself.
+   They were already being captured: the ball-park sequence pulls the proes.ca image URLs out of
+   the form email and writes them into `detail`, and reqDetailHtml has rendered them since v46 —
+   but only once you expand "See the full estimate", which is not where you look when you are
+   scanning a list of leads. Same URLs, same source of truth, just visible up front. */
+function reqPhotoUrls(detail){
+  const out=[];
+  String(detail||'').replace(/https:\/\/proes\.ca\/wp-content\/uploads\/forminator\/[^\s"'<>]+/g,
+    u=>{ if(!out.includes(u)) out.push(u); return u; });
+  return out;
+}
+function reqPhotoStrip(q){
+  const ph=reqPhotoUrls(q&&q.detail);
+  if(!ph.length) return '';
+  return `<div class="row" style="flex-wrap:wrap;gap:6px;margin-top:6px;align-items:flex-start">
+    ${ph.slice(0,8).map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener" style="width:74px;text-decoration:none">
+      <img src="${esc(u)}" loading="lazy" alt="job photo"
+        style="width:74px;height:74px;object-fit:cover;border-radius:10px;background:var(--panel2);border:1px solid var(--line)"
+        onerror="this.replaceWith(Object.assign(document.createElement('div'),{textContent:'📷',style:'width:74px;height:74px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;border-radius:10px;background:var(--panel2);border:1px solid var(--line)'}))">
+    </a>`).join('')}
+    <span class="small muted" style="width:100%;margin-top:0">📷 ${ph.length} photo${ph.length===1?'':'s'} from the customer — tap to open</span>
+  </div>`;
+}
+
+/* ========================== NEO'S REPORT (v84) ==============================================
+ * Three times a day a scheduled task reads what is still sitting in the inbox, works out what
+ * actually needs a person, and posts a line about each one plus a suggested reply. This is where
+ * Paul reads it: a card on the Requests tab, a list behind one button, and a sheet per email with
+ * the reply ready to edit.
+ *
+ * Four things can happen to an item, and the script remembers which:
+ *   Send          the reply goes out as PRO on the original thread
+ *   Save draft    it waits in Gmail for him to send it himself
+ *   Ignore        gone, until that person writes again
+ *   Later         back on the next sweep
+ * Nothing done at all? It is in the next sweep too, because the email is still in the inbox.
+ * ========================================================================================== */
+async function loadNeo(){
+  if(!canApprove()||!S.online||S._neoLoading) return;
+  S._neoLoading=true;
+  try{ S.neo=await apiBg('neoReport',{}); }
+  catch(e){ /* older script: no report, no card */ }
+  S._neoLoading=false;
+  if(S.tab==='requests') render();
+}
+function neoCardHtml(){
+  if(!canApprove()) return '';
+  const n=S.neo, items=(n&&n.items)||[];
+  if(!n||!items.length) return '';
+  return `<div class="card" style="margin-bottom:10px">
+    <div class="row between"><h3 style="margin:0">🤖 Neo's report</h3><span class="pill pending">${items.length}</span></div>
+    <p class="small muted" style="margin:4px 0 0">${items.length===1?'One email needs':'These need'} you${n.sweepAt?` · swept ${esc(fmtDay(n.sweepAt))} ${esc(fmtTime(n.sweepAt))}`:''}</p>
+    <ul style="margin:6px 0 0;padding-left:20px">
+      ${items.slice(0,4).map(it=>`<li class="small" style="margin:2px 0">${esc(it.summary||it.subject||'(no subject)')}</li>`).join('')}
+      ${items.length>4?`<li class="small muted">and ${items.length-4} more…</li>`:''}
+    </ul>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="openNeoReport()">Open Neo's report</button>
+  </div>`;
+}
+function openNeoReport(){
+  const n=S.neo, items=(n&&n.items)||[];
+  sheet(`<h2 style="margin-bottom:2px">🤖 Neo's report</h2>
+    <p class="small muted" style="margin-top:0">${items.length?`${items.length} email${items.length===1?'':'s'} in the inbox that need you`:'Nothing in the inbox needs you.'}${n&&n.sweepAt?` · swept ${esc(fmtDay(n.sweepAt))} ${esc(fmtTime(n.sweepAt))}`:''}</p>
+    ${items.map((it,i)=>`<div class="list-item" style="cursor:pointer" onclick="openNeoItem(${i})">
+        <div class="row between"><b>${esc(it.from||'(unknown sender)')}</b>
+          <span class="small" style="color:var(--accent2)">Open ›</span></div>
+        <div class="small">${esc(it.subject||'(no subject)')}</div>
+        <div class="small muted" style="margin-top:2px">${esc(it.summary||'')}</div>
+        ${it.why?`<div class="small" style="color:var(--proj);font-weight:700;margin-top:2px">${esc(it.why)}</div>`:''}
+        ${it.date?`<div class="small muted">${esc(fmtDay(it.date))} ${esc(fmtTime(it.date))}</div>`:''}
+      </div>`).join('')}
+    <p class="small muted" style="margin-top:8px">Swept at 4:45am, 11:45am and 4:45pm. Anything you leave alone comes back on the next one.</p>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">Close</button>`);
+}
+function neoItem(i){ return ((S.neo&&S.neo.items)||[])[i]; }
+function openNeoItem(i){
+  const it=neoItem(i); if(!it) return;
+  sheet(`<h2 style="margin-bottom:2px">${esc(it.subject||'(no subject)')}</h2>
+    <p class="small muted" style="margin-top:0">${esc(it.from||'')}${it.date?` · ${esc(fmtDay(it.date))} ${esc(fmtTime(it.date))}`:''}</p>
+    ${it.why?`<div class="banner sync">${esc(it.why)}</div>`:''}
+    ${it.summary?`<p class="small">${esc(it.summary)}</p>`:''}
+    ${it.link?`<p class="small" style="margin:6px 0"><a href="${esc(it.link)}" target="_blank" rel="noopener" style="color:var(--accent2)">📧 Read the original email</a></p>`:''}
+    <label>Suggested reply — edit it before it goes</label>
+    <textarea id="neoBody" rows="9" style="font-size:.95rem">${esc(it.reply||'')}</textarea>
+    <div class="row" style="margin-top:10px">
+      <button class="grow" onclick="neoSend(${i},false,this)">📨 Send as PRO</button>
+      <button class="secondary grow" onclick="neoSend(${i},true,this)">📝 Save draft</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button class="secondary grow" onclick="neoDecide(${i},'later',this)">⏰ Remind me later</button>
+      <button class="ghost grow" onclick="neoDecide(${i},'ignore',this)">Ignore</button>
+    </div>
+    <button class="ghost" style="width:100%;margin-top:6px" onclick="openNeoReport()">← Back to the report</button>`);
+}
+function neoDrop_(i){
+  if(S.neo&&S.neo.items) S.neo.items.splice(i,1);
+  const left=(S.neo&&S.neo.items)||[];
+  if(left.length) openNeoReport(); else { closeSheet(); }
+  render();
+}
+async function neoSend(i,draft,btn){
+  const it=neoItem(i); if(!it) return;
+  if(!S.online) return toast('You need signal to send an email.');
+  const body=val('neoBody').trim();
+  if(!body) return toast('Write the reply first.');
+  btn.disabled=true; btn.textContent=draft?'Saving…':'Sending…';
+  try{
+    await api('neoReply',{id:it.id, body, draft:!!draft},{timeout:60000});
+    toast(draft?'Draft saved in Gmail — send it from there when you are ready.'
+               :`Sent to ${it.from||'them'} ✓`, 6000);
+    neoDrop_(i);
+  }catch(e){ toast(e.message,9000); btn.disabled=false; btn.textContent=draft?'📝 Save draft':'📨 Send as PRO'; }
+}
+async function neoDecide(i,action,btn){
+  const it=neoItem(i); if(!it) return;
+  if(!S.online) return toast('You need signal.');
+  btn.disabled=true;
+  try{
+    await api('neoDecide',{id:it.id, action});
+    toast(action==='later'?'Put off — it will be back on the next sweep.'
+                          :'Ignored — it stays out unless they write again.', 6000);
+    neoDrop_(i);
+  }catch(e){ toast(e.message); btn.disabled=false; }
+}
+
+function requestsView(){
+  const list=(S.requests||[]).map((q,i)=>{
+    const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
+    return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'req',${i})">
+      <div class="row between">
+        <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> <span class="pill ${q.type==='APPOINTMENT'?'approved':'live'}">${esc(q.type||'')}</span></div>
+        <span class="small" style="color:var(--accent2)">Details ›</span>
+      </div>
+      ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
+      <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
+      <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> estimated${price?` · ${price} provisional`:''}</div>
+      ${reqPhotoStrip(q)}
+      ${enquiryBtn(q)}
+      ${ballParkBtn(q)}
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="openReqSchedule(${i})">📅 Schedule it</button>
+        <button class="ghost" onclick="reqDismiss(${i})">Dismiss</button>
+      </div>
+    </div>`; }).join('');
+  /* v46 — estimate calls that have been held but never became a job. When the customer says yes,
+     this is where it turns into a PO instead of being retyped as a fresh lead. */
+  const ests=(S.reqEstimates||[]).map((q,i)=>{
+    const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
+    const when=q.start?new Date(q.start):null;
+    const called=when&&!isNaN(when)?when.toLocaleDateString(undefined,{month:'short',day:'numeric'}):'';
+    return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'est',${i})">
+      <div class="row between">
+        <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> <span class="pill pending">QUOTED</span></div>
+        <span class="small muted">${called?('called '+esc(called)):''} <span style="color:var(--accent2)">›</span></span>
+      </div>
+      ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
+      <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
+      <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> job${price?` · ${price} quoted`:''}</div>
+      ${reqPhotoStrip(q)}
+      ${enquiryBtn(q)}
+      ${ballParkBtn(q)}
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="openReqBook(${i})">🔧 They said yes — book the job</button>
+        <button class="ghost" onclick="reqNotProceeding(${i})">Didn't go ahead</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button class="secondary grow" onclick="openReqMove(${i},'est')">📅 Move the call</button>
+        <button class="secondary grow" onclick="openReqEdit('est',${i})">✏️ Change the details</button>
+      </div>
+    </div>`; }).join('');
+  /* v46 — booked jobs and where the customer stands on the time. Amber = waiting on them,
+     green = confirmed, red = they want it moved. Same colours as the calendar event. */
+  const CONF={confirmed:['🟢','Confirmed','approved'],declined:['🔴','Wants a new time','rejected'],cancelled:['⚫','Customer cancelled','rejected'],
+              waiting:['🟠','Waiting on them','pending'],'no email':['⚪','No email on file','live'],
+              none:['⚪','Not asked','live']};
+  const bk=(S.reqBooked||[]).map((q,i)=>{
+    const c=CONF[q.confirm]||CONF.none;
+    const when=q.start?new Date(q.start):null;
+    const w=when&&!isNaN(when)?when.toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
+    return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'bk',${i})">
+      <div class="row between">
+        <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> ${q.po?`<span class="small muted">${esc(q.po)}</span>`:''}</div>
+        <span class="pill ${c[2]}">${c[0]} ${esc(c[1])}</span> <span class="small" style="color:var(--accent2)">›</span>
+      </div>
+      <div class="small" style="margin-top:2px"><b>${esc(w)}</b>${(q.bookedHours||q.hours)?` · ${q.bookedHours||q.hours} hr`:''}</div>
+      ${reqPhotoStrip(q)}
+      ${q.scope?`<div class="small muted" style="margin-top:2px">${esc(q.scope)}</div>`:''}
+      ${enquiryBtn(q)}
+      <div class="row" style="margin-top:6px">
+        <button class="grow secondary" onclick="openReqMove(${i})">📅 Move it</button>
+        ${q.confirm==='waiting'?`<button class="ghost" onclick="reqRenotify(${i})">Ask again</button>`:(!q.confirm||q.confirm==='none')?`<button class="ghost" onclick="reqRenotify(${i})">📧 Email customer</button>`:''}
+        <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>
+      </div>
+    </div>`; }).join('');
+  return `${approvalsHtml()}${neoCardHtml()}${collateralCardHtml()}${callsCardHtml()}<h2>📨 Requests</h2>
+    <p class="small muted" style="margin-top:-4px">Website leads waiting to go on the calendar. Nothing is booked until you say so.</p>
+    ${canApprove()?`<div class="row" style="margin:8px 0 10px">
+      <button class="secondary grow" onclick="openAddManual('job')">⚡ Schedule a job</button>
+      <button class="secondary grow" onclick="openAddManual('call')">📞 Schedule a call</button>
+    </div>`:''}
+    ${S.reqErr?`<div class="banner ot">${esc(S.reqErr)}</div>`:''}
+    <div class="card">${list||((S._reqLoading&&!S.requests)?'<p class="center"><span class="spin"></span></p>':'<p class="muted small">Nothing waiting. 🎉</p>')}</div>
+    ${ests?`<h3 style="margin-top:18px">Quoted — waiting on the customer</h3>
+      <p class="small muted" style="margin-top:-4px">Estimate calls you've held. Booking one here gets it a PO number and a PO Log row.</p>
+      <div class="card">${ests}</div>`:''}
+    ${bk?`<h3 style="margin-top:18px">Booked jobs</h3>
+      <p class="small muted" style="margin-top:-4px">🟠 waiting on the customer · 🟢 they confirmed · 🔴 they want it moved. The calendar event is the same colour.</p>
+      <div class="card">${bk}</div>`:''}`;
+}
+function reqRender(){ if(S.tab==='requests') render(); else go('requests'); }
+
+/* v56 — EVERYTHING THAT NEEDS AN ADMIN'S OK, at the top of Requests: hours (new manual entries,
+   and entries changed after approval), time-off requests, allowance claims. Same decisions as
+   before — they used to live in Admin and Schedule, which still work too. */
+function apvCount(){ const a=S.approvals; return a?((a.entries||[]).length+(a.timeOff||[]).length+(a.allowances||[]).length):0; }
+async function loadApprovals(){
+  if(S._apvLoading||!S.online||!canApprove()) return; S._apvLoading=true;
+  try{ S.approvals=await apiBg('approvalsAll',{}); S.pending=S.approvals.entries||[]; }
+  catch(e){ /* older script: keep whatever we had */ }
+  S._apvLoading=false;
+  if(S.tab==='requests'||S.tab==='admin') render(); else { const tb=document.querySelector('.tabbar'); if(tb) tb.outerHTML=tabBar(); }
+}
+function empName(email){ const e=(S.employees||[]).find(x=>lc(x.email)===lc(email)); return (e&&e.name)||String(email||'').split('@')[0]; }
+function lc(x){ return String(x||'').trim().toLowerCase(); }
+/* v80 — WHAT CHANGED, ON THE CARD.
+ * An edited entry came back for approval showing only its new numbers, so saying yes to one
+ * meant taking it on trust. The script now records every changed field when the edit is saved
+ * (the Edit Log tab), and this puts the old value beside the new one, with the reason the person
+ * gave. Charles, 26 Oct: "we would also like to see what is the change that is asked for". */
+function editDiffHtml(e){
+  const d = e && e._edit;
+  if (!d || !d.changes || !d.changes.length) return '';
+  const who = String(d.by||'').split('@')[0];
+  return `<div style="margin:6px 0 0;padding:7px 9px;background:var(--panel2);border-radius:8px;border-left:3px solid var(--accent2)">
+    <div class="small" style="font-weight:700;color:var(--navy)">✎ What changed</div>
+    ${d.changes.map(c=>`<div class="row between small" style="gap:10px;padding:1px 0;align-items:baseline">
+        <span class="muted" style="flex:0 0 auto">${esc(c.field)}</span>
+        <span style="text-align:right;overflow-wrap:anywhere"><span class="muted" style="text-decoration:line-through">${esc(c.was)}</span> → <b>${esc(c.now)}</b></span>
+      </div>`).join('')}
+    <div class="small muted" style="margin-top:4px">${d.reason?`“${esc(d.reason)}”`:'No reason given.'}${who?` — ${esc(who)}`:''}${d.at?`, ${esc(fmtDay(d.at))} ${esc(fmtTime(d.at))}`:''}</div>
+  </div>`;
+}
+/* v83 — AN ENTRY EDITED BEFORE THE CHANGE LOG EXISTED has no before-state anywhere: the old
+ * values were simply never written down. Saying that is far better than leaving an empty space
+ * where the comparison should be, which reads as a bug. Same test as the card's "changed" marker,
+ * so a manual entry (whose Last Edited At is stamped when it is created) does not claim to have
+ * been altered. */
+function editNoDiffHtml(e){
+  if (!e || e._edit) return '';
+  const late = e['Last Edited At'] && e.ClockOut &&
+    (new Date(e['Last Edited At']) - new Date(e.ClockOut) > 5*60000);
+  if (e.Source==='manual' || !late) return '';
+  const who=String(e['Last Edited By']||'').split('@')[0];
+  return `<div style="margin:6px 0 0;padding:7px 9px;background:var(--panel2);border-radius:8px;border-left:3px solid var(--line)">
+    <div class="small" style="font-weight:700;color:var(--navy)">✎ Changed ${esc(fmtDay(e['Last Edited At']))} ${esc(fmtTime(e['Last Edited At']))}${who?` by ${esc(who)}`:''}</div>
+    <div class="small muted" style="margin-top:2px">What it was before this edit was not recorded — the change log only started on 26 October. Anything edited from now on shows the old value beside the new one, right here.</div>
+  </div>`;
+}
+/* v82 — on the CARD, one line: which fields moved. The before-and-after belongs behind View,
+   so a screen with five approvals on it stays a list you can read. */
+function editChangedLine(e){
+  const d=e&&e._edit; if(!d||!d.changes||!d.changes.length) return '';
+  const names=d.changes.map(c=>c.field);
+  const list=names.length>1 ? names.slice(0,-1).join(', ')+' and '+names[names.length-1] : names[0];
+  return `<div class="small" style="color:var(--accent2);margin-top:2px">✎ ${esc(list)} changed${d.reason?` — “${esc(d.reason)}”`:''}</div>`;
+}
+/* v82 — VIEW. Charles, 27 Oct: three buttons on the card (View, Approve, Reject), and View
+   opens the whole thing, where it can also be edited and then approved or rejected. Everything
+   the approver might want before saying yes, in the order they would ask for it: whose it is,
+   which job, the times as they now stand, what was changed and why, the notes, the GPS. */
+function openApvDetail(k){
+  const ref=dereg(k); if(!ref) return;
+  const e=ref.e, email=ref.employeeEmail;
+  const row=(label,html)=>html?`<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line);gap:12px">
+      <span class="small muted" style="flex:0 0 auto">${label}</span>
+      <span style="text-align:right;overflow-wrap:anywhere">${html}</span></div>`:'';
+  const brk=Number(e['Break Hrs'])||0;
+  const overnight = e.ClockIn && e.ClockOut && localDateStr(new Date(e.ClockOut))!==localDateStr(new Date(e.ClockIn));
+  const media=String(e.Media||'').split(' | ').filter(Boolean);
+  sheet(`<h2 style="margin-bottom:2px">${esc(e._name||email)}</h2>
+    <p class="small muted" style="margin-top:0">${esc(e.Source==='manual'?'Time added by hand':'Hours waiting for approval')} · ${esc(fmtDay(e.ClockIn||e.Date))}</p>
+    <div style="margin:8px 0 2px">
+      ${row('Job', esc(e['Customer/Job Site']||e.Company||'—')+(e['PO#']?` <span class="small muted">PO ${esc(e['PO#'])}</span>`:''))}
+      ${row('Clocked in', e.ClockIn?`${esc(fmtDay(e.ClockIn))} ${esc(fmtTime(e.ClockIn))}`:'<span class="muted">—</span>')}
+      ${row('Clocked out', e.ClockOut?`${esc(fmtDay(e.ClockOut))} ${esc(fmtTime(e.ClockOut))}${overnight?' <span class="pill pending">next day</span>':''}`:'<span class="muted">still open</span>')}
+      ${row('Break', brk?`${(brk*60).toFixed(0)} min`:'<span class="muted">none</span>')}
+      ${row('Hours', `<b>${esc(String(e.Hours===''||e.Hours==null?'?':e.Hours))} hrs</b>${e['Gross Hours']?` <span class="small muted">(${esc(String(e['Gross Hours']))} gross)</span>`:''}`)}
+      ${row('Notes', e.Notes?esc(e.Notes):'<span class="muted">none</span>')}
+      ${row('Status', `<span class="pill ${esc(e.Status)}">${esc(e.Status)}</span>`)}
+    </div>
+    ${gpsBadge(e)}
+    ${media.length?`<p class="small" style="margin:6px 0 0"><a href="#" onclick="openMediaView('${k}');return false" style="color:var(--accent2)">📎 ${media.length} photo/video</a></p>`:''}
+    ${editDiffHtml(e)||editNoDiffHtml(e)}
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="openEditEntry('${k}')">✏️ Edit</button>
+      <button class="grow" onclick="apvEntry('${k}',true,this,1)">Approve</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button class="danger grow" onclick="apvEntry('${k}',false,this,1)">Reject</button>
+      <button class="ghost grow" onclick="closeSheet()">Close</button>
+    </div>`);
+}
+function approvalsHtml(){
+  if(!canApprove()) return '';
+  const a=S.approvals||{}, isAdmin=S.me&&S.me.role==='admin';
+  const ents=a.entries||[], tos=a.timeOff||[], als=a.allowances||[];
+  const n=ents.length+tos.length+als.length;
+  const hrs=ents.map(e=>{ const k=reg({e, employeeEmail:e._employee});
+    // v80 - a recorded diff IS the evidence it was changed; the timestamp test below is only
+    // the fallback for entries edited before the Edit Log existed.
+    const changed = !!e._edit || (e['Approved By']==='' && e.Source!=='manual' && e['Last Edited At'] && e.ClockOut && (new Date(e['Last Edited At'])-new Date(e.ClockOut)>5*60000));
+    const tag = e.Source==='manual' ? 'Time added by hand' : (changed ? 'Hours changed' : 'Hours to approve');
+    return `<div class="list-item">
+      <div class="row between"><div><b>${esc(e._name||e._employee)}</b> <span class="pill pending">${tag}</span></div><span class="small muted">${fmtDay(e.ClockIn||e.Date)}</span></div>
+      <div class="small">${esc(e['Customer/Job Site']||e.Company||'—')}${e['PO#']?` <span class="muted">PO ${esc(e['PO#'])}</span>`:''}</div>
+      <div class="small muted">${fmtTime(e.ClockIn)}–${fmtTime(e.ClockOut)} · <b style="color:var(--text)">${e.Hours||'?'} hrs</b>${Number(e['Break Hrs'])?` (${(Number(e['Break Hrs'])*60).toFixed(0)} min break)`:''}</div>
+      ${gpsBadge(e)}
+      ${e.Notes?`<div class="small">${esc(e.Notes)}</div>`:''}
+      ${e._edit?editChangedLine(e):(changed?`<div class="small muted">✎ changed ${fmtDay(e['Last Edited At'])} ${fmtTime(e['Last Edited At'])} by ${esc(String(e['Last Edited By']||'').split('@')[0])}</div>`:'')}
+      <div class="row" style="margin-top:6px">
+        <button class="secondary grow" onclick="openApvDetail('${k}')">View</button>
+        <button class="grow" onclick="apvEntry('${k}',true,this)">Approve</button>
+        <button class="danger" onclick="apvEntry('${k}',false,this)">Reject</button>
+      </div></div>`; }).join('');
+  const off=tos.map(t=>{ const k=reg(t); return `<div class="list-item">
+      <div class="row between"><div><b>${esc(t.name)}</b> <span class="pill pending">Time off</span></div></div>
+      <div class="small">${esc(t.start)}${t.end!==t.start?(' → '+esc(t.end)):''}</div>
+      ${t.reason?`<div class="small muted">${esc(t.reason)}</div>`:''}
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="apvTimeOff('${k}',true,this)">Approve</button>
+        <button class="secondary grow" onclick="apvTimeOff('${k}',false,this)">Deny</button></div></div>`; }).join('');
+  const alw=als.map(c=>{ const k=reg(c); return `<div class="list-item">
+      <div class="row between"><div><b>${esc(c.name)}</b> <span class="pill pending">${esc(c.typeName)}</span></div><b>$${Number(c.amount).toFixed(2)}</b></div>
+      <div class="small">${esc(c.date)}${c.km?` · ${c.km} km`:''}</div>
+      ${c.note?`<div class="small muted">${esc(c.note)}</div>`:''}
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="apvAllow('${k}',true,this)">Approve</button>
+        <button class="secondary grow" onclick="apvAllow('${k}',false,this)">Deny</button></div></div>`; }).join('');
+  return `<h2>✅ Needs your OK${n?` <span class="pill pending">${n}</span>`:''}</h2>
+    <p class="small muted" style="margin-top:-4px">Hours, time off and allowances waiting for an admin.</p>
+    <div class="card">
+      ${hrs?`<h3 style="margin-top:0">Hours</h3>${hrs}`:''}
+      ${off?`<h3>Time off</h3>${off}`:''}
+      ${alw?`<h3>Allowances</h3>${alw}`:''}
+      ${n?'':(S.approvals?'<p class="muted small">Nothing waiting. 🎉</p>':'<p class="center"><span class="spin"></span></p>')}
+      ${isAdmin?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openHoursFor()">✏️ Add or change someone's hours</button>`:''}
+    </div>`;
+}
+function apvDrop(kind, id){ const a=S.approvals; if(!a) return;
+  if(kind==='e') a.entries=(a.entries||[]).filter(x=>x.EntryID!==id);
+  if(kind==='t') a.timeOff=(a.timeOff||[]).filter(x=>x.id!==id);
+  if(kind==='a') a.allowances=(a.allowances||[]).filter(x=>x.id!==id);
+  S.pending=a.entries||[]; render(); }
+async function apvEntry(k,ok,btn,fromSheet){
+  const ref=dereg(k); if(!ref) return; const e=ref.e, email=ref.employeeEmail;
+  if(!S.online) return toast('You need signal.');
+  if(!ok){ apvRejectAsk(email,e.EntryID); return; }   // the reject form replaces whatever is open
+  if(btn) btn.disabled=true;
+  try{
+    await api('approveEntry',{employeeEmail:email,entryId:e.EntryID});
+    if(fromSheet) closeSheetDom();                     // v82 - approved from the View sheet
+    apvDrop('e',e.EntryID); toast('Approved — '+(e._name||email));
+  }
+  catch(err){ toast(err.message); if(btn) btn.disabled=false; }
+}
+function apvRejectAsk(email,entryId){
+  sheet(`<h2>Reject entry</h2><label>Reason (shown to the employee)</label>
+    <textarea id="rjNote" rows="3" placeholder="Why is this rejected?"></textarea>
+    <div class="row" style="margin-top:12px"><button class="secondary grow" onclick="closeSheet()">Cancel</button>
+    <button class="grow danger" onclick="apvRejectGo('${esc(email)}','${esc(entryId)}')">Reject</button></div>`);
+}
+async function apvRejectGo(email,entryId){ const note=val('rjNote'); closeSheet();
+  try{ await api('rejectEntry',{employeeEmail:email,entryId,note}); apvDrop('e',entryId); toast('Rejected'); }
+  catch(err){ toast(err.message); } }
+async function apvTimeOff(k,ok,btn){
+  const t=dereg(k); if(!t) return; if(!S.online) return toast('You need signal.');
+  btn.disabled=true;
+  try{ await api('timeOffDecide',{reqId:t.id,approve:ok}); apvDrop('t',t.id);
+    toast((ok?'Approved':'Denied')+' — '+t.name+' has been emailed.'); if(S.sched) schedRefreshAll(); }
+  catch(err){ toast(err.message); btn.disabled=false; }
+}
+async function apvAllow(k,ok,btn){
+  const c=dereg(k); if(!c) return; if(!S.online) return toast('You need signal.');
+  btn.disabled=true;
+  try{ await api('allowanceDecide',{id:c.id,approve:ok}); apvDrop('a',c.id);
+    toast((ok?'Approved':'Denied')+' — '+c.name+' $'+Number(c.amount).toFixed(2)); }
+  catch(err){ toast(err.message); btn.disabled=false; }
+}
+/* v56 — admin: add or change anyone's hours. Pick the person → their entries (Edit on each) or Add time. */
+async function openHoursFor(){
+  if(!S.online) return toast('You need signal.');
+  if(!(S.employees&&S.employees.length)){ try{ const r=await api('listEmployees'); S.employees=r.employees||[]; }catch(e){ return toast(e.message); } }
+  const emps=(S.employees||[]).filter(e=>e.active&&e.role!=='bookkeeper');
+  sheet(`<h2>Whose hours?</h2>
+    <p class="small muted" style="margin-top:-4px">See and edit their entries, or add time they forgot.</p>
+    ${emps.map(e=>`<div class="list-item row between">
+      <div><b>${esc(e.name)}</b><div class="small muted">${esc(e.email)}</div></div>
+      <div class="row" style="gap:6px">
+        <button class="ghost" onclick="closeSheetDom();viewEmployee('${esc(e.email)}')">Entries</button>
+        <button class="secondary" onclick="closeSheetDom();openManualFor('${esc(e.email)}')">＋ Add</button>
+      </div></div>`).join('')}
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+}
+function openManualFor(email){ openManual._for=email; openManual(); }
+function mnForSelect(){
+  const me=S.me||{}, emps=(S.employees||[]).filter(e=>e.active&&e.role!=='bookkeeper');
+  const sel=(mnState&&mnState.forEmail)||me.email;
+  const list=emps.some(e=>lc(e.email)===lc(me.email))?emps:[{email:me.email,name:me.name||'Me'}].concat(emps);
+  return `<select id="mnFor" style="margin-bottom:4px">${list.map(e=>`<option value="${esc(e.email)}" ${lc(e.email)===lc(sel)?'selected':''}>${esc(lc(e.email)===lc(me.email)?(e.name||'Me')+' (me)':e.name)}</option>`).join('')}</select>`;
+}
+/* v52 — CALL THESE CUSTOMERS. Every job that was bumped to make room for another. Paul rings them;
+   "Called ✓" when the new day works, "Reschedule" to put it where the customer wants (that can
+   move other jobs too, and shows him the plan first). */
+function callsCardHtml(){
+  // v51 — a job displaced now goes back to Requests with NO time, and its card is
+  // collateralCardHtml above. This list is only the ones that were given a new day under the
+  // old rule and are still waiting for the confirming phone call.
+  const L=(S.reqCalls||[]).filter(x=>x&&x.now); if(!L.length) return '';
+  return `<h2>📞 Call these customers</h2>
+    <p class="small muted" style="margin-top:-4px">Their job was moved to make room for another. Ring them to confirm the new day.</p>
+    <div class="card" style="border-color:var(--pending)">${L.map((x,i)=>`<div class="list-item">
+      <div><b>${esc(x.customer||'—')}</b>${x.po?` <span class="muted small">${esc(x.po)}</span>`:''}</div>
+      ${x.job?`<div class="small muted">${esc(x.job)}</div>`:''}
+      <div class="small" style="margin-top:2px">Moved to <b>${esc(fmtDay(x.now))} ${esc(fmtTime(x.now))}</b> <span class="muted">(was ${esc(fmtDay(x.was))} ${esc(fmtTime(x.was))})</span></div>
+      <div class="row" style="margin-top:6px">
+        ${x.phone?`<a class="grow" href="tel:${esc(String(x.phone).replace(/[^0-9+]/g,''))}" style="text-decoration:none"><button class="grow" style="width:100%">📞 ${esc(x.phone)}</button></a>`:'<span class="small" style="color:var(--pending)">No phone on file</span>'}
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button class="secondary grow" onclick="callDone(${i},this)">✓ Called — day works</button>
+        <button class="ghost grow" onclick="openCallMove(${i})">📅 Reschedule</button>
+      </div>
+    </div>`).join('')}</div>`;
+}
+async function callDone(i,btn){
+  const x=(S.reqCalls||[])[i]; if(!x) return;
+  btn.disabled=true;
+  try{ await api('callDone',{id:x.id}); S.reqCalls=S.reqCalls.filter(y=>y.id!==x.id); toast('Done ✓'); render(); }
+  catch(e){ toast(e.message); btn.disabled=false; }
+}
+function openCallMove(i){
+  const x=(S.reqCalls||[])[i]; if(!x) return;
+  const d=new Date(x.now), pad=n=>String(n).padStart(2,'0');
+  sheet(`<h2>Reschedule ${esc(x.customer||'')}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(x.job||'')}${x.po?' · '+esc(x.po):''}<br>Now booked ${esc(fmtDay(x.now))} ${esc(fmtTime(x.now))}</p>
+    <div class="row"><div class="grow"><label>Day the customer wants</label><input id="cmDate" type="date" value="${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}"></div>
+      <div class="grow"><label>Start</label><input id="cmTime" type="time" value="${pad(d.getHours())}:${pad(d.getMinutes())}"></div></div>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="callMoveCheck(${i})">Check what moves</button>
+    <div id="cmPlan" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:12px">
+      <button class="secondary grow" onclick="closeSheet()">Back</button>
+      <button class="grow" id="cmGo" disabled onclick="callMoveGo(${i},this)">Confirm the move</button>
+    </div>`);
+}
+async function callMoveCheck(i){
+  const x=(S.reqCalls||[])[i]; if(!x) return;
+  const date=val('cmDate'), time=val('cmTime'); if(!date||!time) return toast('Pick the day and the time.');
+  const start=new Date(date+'T'+time); if(isNaN(start)) return toast('That day/time did not read properly.');
+  const box=document.getElementById('cmPlan'), go=document.getElementById('cmGo');
+  if(box) box.innerHTML='<p class="small muted">Working out what moves…</p>'; if(go) go.disabled=true;
+  try{
+    const plan=await api('bumpPlan',{start:start.toISOString(), eventId:x.eventId},{timeout:60000});
+    S._cmPlan={ start:start.toISOString(), plan };
+    if(box) box.innerHTML=bumpPlanHtml(plan); if(go) go.disabled=false;
+  }catch(e){ S._cmPlan=null; if(box) box.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+}
+async function callMoveGo(i,btn){
+  const x=(S.reqCalls||[])[i], k=S._cmPlan; if(!x||!k) return;
+  btn.disabled=true; btn.textContent='Moving…';
+  try{
+    const b=await api('bumpApply',{start:k.start, eventId:x.eventId, hash:k.plan.hash, callId:x.id},{timeout:120000});
+    toast('Moved to '+fmtDay(k.start)+' '+fmtTime(k.start)+(b&&b.moved?' · '+b.moved+' more job(s) came off the calendar — they are under "⚡ Needs a new time"':''), 8000);
+    S._cmPlan=null; closeSheet(); loadRequests();
+  }catch(e){
+    toast(e.message, 7000); btn.disabled=false; btn.textContent='Confirm the move';
+    if(/changed/i.test(e.message||'')) callMoveCheck(i);        // show the fresh plan
+  }
+}
+/* ============================================================================================
+ * v51 — NEEDS A NEW TIME  ·  ADD A JOB OR A CALL BY HAND  ·  THE DAY-VIEW PICKER
+ *
+ * Paul books an emergency on top of whatever is there. The job that was in that slot does NOT
+ * get quietly shuffled to tomorrow — it comes off the calendar and lands at the top of this tab
+ * under "Needs a new time", keeping its job number, its customer and its scope. From there Paul
+ * rings or emails them, then either picks a time himself or takes the next opening. If the time
+ * he picks is taken as well, THAT job comes back the same way. One step at a time, every time a
+ * decision he made rather than one the script made for him.
+ * ==========================================================================================*/
+
+/* ---- The jobs that lost their slot ------------------------------------------------------- */
+function collateralCardHtml(){
+  const L=S.reqCollateral||[]; if(!L.length) return '';
+  return `<h2>⚡ Needs a new time</h2>
+    <p class="small muted" style="margin-top:-4px">${L.length===1?'This job':'These '+L.length+' jobs'} came off the calendar to make room for something else. ${L.length===1?'It keeps its job number':'They keep their job numbers'} — only the time is gone. Tell the customer, then give it a new one.</p>
+    <div class="card" style="border-color:var(--bad)">${L.map((x,i)=>`<div class="list-item">
+      <div class="row between">
+        <div><b>${esc(x.customer||'—')}</b>${x.po?` <span class="muted small">${esc(x.po)}</span>`:''}</div>
+        ${x.told?`<span class="pill approved">✓ ${esc(x.told)}</span>`:`<span class="pill rejected">Not told yet</span>`}
+      </div>
+      ${(x.scope||x.job)?`<div class="small muted" style="margin-top:2px">${esc(x.scope||x.job)}</div>`:''}
+      <div class="small" style="margin-top:2px">Was <b>${esc(fmtDay(x.bumpedFrom))} ${esc(fmtTime(x.bumpedFrom))}</b>${x.bumpedBy?` <span class="muted">· ${esc(x.bumpedBy)} took the slot</span>`:''}</div>
+      <div class="small muted">${(x.bookedHours||x.hours)||'?'} hr${x.address?' · '+esc(x.address):''}</div>
+      <div class="row" style="margin-top:6px">
+        ${x.phone?`<a class="grow" href="tel:${esc(String(x.phone).replace(/[^0-9+]/g,''))}" style="text-decoration:none" onclick="collTold(${i},'called',null)"><button class="grow" style="width:100%">📞 ${esc(x.phone)}</button></a>`:'<span class="small" style="color:var(--pending)">No phone on file</span>'}
+        ${x.email?`<button class="secondary grow" onclick="collTold(${i},'email',this)">📧 Email them</button>`:''}
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="openCollPick(${i})">📅 Pick a time</button>
+        <button class="secondary grow" onclick="collNextOpen(${i},this)">⚡ Next opening</button>
+      </div>
+    </div>`).join('')}</div>`;
+}
+/* Rang them, or send the "we have had to move you" email. Either way the card stops nagging. */
+async function collTold(i,how,btn){
+  const x=(S.reqCollateral||[])[i]; if(!x) return;
+  if(!S.online){ if(how==='email') toast('You need signal to email them.'); return; }
+  if(btn){ btn.disabled=true; btn.textContent='Sending…'; }
+  try{
+    await api('requestTellCustomer',{id:x.id,how});
+    x.told=(how==='email'?'emailed ':'called ')+todayStr();
+    toast(how==='email'?'Emailed ✓':'Marked as called ✓'); render();
+  }catch(e){ toast(e.message,7000); if(btn){ btn.disabled=false; btn.textContent='📧 Email them'; } }
+}
+/* The first opening long enough for the job — the same finder the return visits use. */
+async function collNextOpen(i,btn){
+  const x=(S.reqCollateral||[])[i]; if(!x) return;
+  if(!S.online) return toast('You need signal.');
+  const hrs=Number(x.bookedHours||x.hours)||1;
+  btn.disabled=true; btn.textContent='Finding…';
+  try{
+    const r=await api('visitSlots',{hours:hrs,count:1},{timeout:60000});
+    const s=r&&r.slots&&r.slots[0];
+    if(!s){ toast('No opening that long in the next few weeks — pick a time by hand.',8000);
+      btn.disabled=false; btn.textContent='⚡ Next opening'; return; }
+    await api('requestSchedule',{id:x.id,start:s.start,hours:hrs,type:'APPOINTMENT'},{timeout:120000});
+    toast((x.customer||'Booked')+' — '+fmtDay(s.start)+' '+fmtTime(s.start)+(x.po?' · '+x.po+' unchanged':''),7000);
+    loadRequests();
+  }catch(e){ toast(e.message,9000); btn.disabled=false; btn.textContent='⚡ Next opening'; }
+}
+function openCollPick(i){
+  const x=(S.reqCollateral||[])[i]; if(!x) return;
+  dayPickOpen({
+    title:'Pick a time — '+(x.customer||'job'),
+    sub:[x.po,x.scope||x.job,x.address].filter(Boolean).join(' · '),
+    hours:Number(x.bookedHours||x.hours)||1,
+    onConfirm:async(start,hours,bump)=>{
+      const r=await api('requestSchedule',{id:x.id,start,hours,type:'APPOINTMENT',
+        bump:!!bump,allowPast:true},{timeout:120000});
+      const back=(r&&r.bumped&&r.bumped.length)||0;
+      return (x.customer||'Booked')+' — '+fmtDay(start)+' '+fmtTime(start)
+        +(x.po?' · '+x.po+' unchanged':'')
+        +(back?' · '+back+' job(s) now need a new time':'');
+    }
+  });
+}
+
+/* ---- THE CALENDAR PICKER -----------------------------------------------------------------
+ * TWO SCREENS, the way a calendar works. First the MONTH: every day of it, with a dot for each
+ * job booked that day, weekends and stat holidays and Paul's days off shaded. Tap a day and you
+ * get THAT DAY — what is on it, who it is for, tap any booking for its detail — and underneath, a
+ * start time and a length that accept ANYTHING: 6 AM, a Sunday, a slot with a job already in it.
+ * If a job is in the way the card says whose it is and what happens to it, and the booking does
+ * not go through until Paul ticks the box. ================================================*/
+let dpState=null;
+function dpDateStr(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function dpMonthOf(ds){ return String(ds||'').substring(0,7); }
+function dayPickOpen(o){
+  const date=o.date||todayStr();
+  dpState={ view:'month', month:dpMonthOf(date), date:date,
+            hours:Math.max(0.25,Number(o.hours)||1),
+            title:o.title||'Pick a time', sub:o.sub||'', back:o.back||'', onConfirm:o.onConfirm,
+            mdata:null, mloading:true, merr:'',
+            data:null, err:'', loading:false, time:'', bump:false };
+  dayPickRender(); dpMonthLoad();
+}
+function dayPickRender(){ if(!dpState) return; dpState.view==='month'?dpMonthRender():dpDayRender(); }
+
+/* ---- screen one: the month --------------------------------------------------------------- */
+async function dpMonthLoad(){
+  const want=dpState&&dpState.month; if(!want) return;
+  if(!S.online){ dpState.mloading=false; dpState.merr='You need signal to see the calendar.'; dayPickRender(); return; }
+  try{
+    const r=await apiBg('schedMonth',{month:want});
+    if(!dpState||dpState.month!==want) return;
+    dpState.mdata=r; dpState.mloading=false; dpState.merr='';
+  }catch(e){ if(!dpState||dpState.month!==want) return;
+    dpState.mloading=false; dpState.merr=e.message||'Could not read the calendar.'; }
+  if(dpState.view==='month') dayPickRender();
+}
+function dpMonthShift(k){
+  if(!dpState) return;
+  const p=dpState.month.split('-').map(Number), d=new Date(p[0],p[1]-1+k,1);
+  dpState.month=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  dpState.mdata=null; dpState.mloading=true; dpState.merr='';
+  dayPickRender(); dpMonthLoad();
+}
+function dpMonthRender(){
+  const d=dpState; if(!d) return;
+  const md=d.mdata, days=(md&&md.days)||[];
+  const p=d.month.split('-').map(Number);
+  const label=new Date(p[0],p[1]-1,1).toLocaleDateString([], {month:'long', year:'numeric'});
+  const today=(md&&md.today)||todayStr();
+  const blanks=days.length?days[0].dow:0;
+  const cell=(x)=>{
+    const sel=x.date===d.date, isToday=x.date===today, past=x.date<today, off=x.holiday||x.leave;
+    const bg = sel?'var(--accent2)' : off?'#f6ecd8' : x.weekend?'var(--panel2)' : 'var(--panel)';
+    const fg = sel?'#fff' : past?'var(--muted)' : 'var(--text)';
+    const dot = sel?'#fff':'var(--accent)';
+    return `<button type="button" onclick="dpOpenDay('${x.date}')"
+      aria-label="${esc(x.date+(x.jobs?(' — '+x.jobs+' job'+(x.jobs===1?'':'s')):' — nothing booked')+(off?(' — '+(x.holiday||x.leave)):''))}"
+      style="padding:5px 0 3px;border:${isToday&&!sel?'2px':'1px'} solid ${isToday&&!sel?'var(--accent)':'var(--line)'};
+             border-radius:10px;background:${bg};color:${fg};display:flex;flex-direction:column;
+             align-items:center;justify-content:flex-start;gap:3px;min-height:48px;font:inherit;cursor:pointer">
+      <span style="font-size:0.95rem;font-weight:${isToday?'800':'600'};line-height:1">${x.day}</span>
+      <span style="height:7px;display:flex;gap:2px;align-items:center;justify-content:center">
+        ${x.jobs?('<i style="width:5px;height:5px;border-radius:50%;background:'+dot+';display:block"></i>').repeat(Math.min(x.jobs,3)):''}
+        ${x.jobs>3?`<i style="font-size:0.62rem;font-style:normal;line-height:1;color:${dot}">+</i>`:''}
+        ${(!x.jobs&&x.other)?`<i style="width:4px;height:4px;border-radius:50%;background:${sel?'#fff':'var(--muted)'};display:block"></i>`:''}
+      </span></button>`;
+  };
+  sheet(`<h2>${esc(d.title)}</h2>
+    ${d.sub?`<p class="small muted" style="margin-top:-4px">${esc(d.sub)}</p>`:''}
+    <div class="row between" style="align-items:center;margin-top:6px">
+      <button class="ghost" style="flex:none;min-width:46px" onclick="dpMonthShift(-1)">‹</button>
+      <b>${esc(label)}</b>
+      <button class="ghost" style="flex:none;min-width:46px" onclick="dpMonthShift(1)">›</button>
+    </div>
+    ${d.merr?`<p class="small" style="color:var(--bad);margin:6px 0 0">${esc(d.merr)}</p>`:''}
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-top:8px">
+      ${['S','M','T','W','T','F','S'].map(x=>`<div class="small muted" style="text-align:center;padding-bottom:2px">${x}</div>`).join('')}
+      ${d.mloading?'':'<div></div>'.repeat(blanks)}
+      ${d.mloading?'':days.map(cell).join('')}
+    </div>
+    ${d.mloading?'<p class="center" style="margin:16px 0"><span class="spin"></span></p>':''}
+    <p class="small muted" style="margin-top:10px">● one dot per job booked that day. Tap a day to see what is on it and pick a start time. Shaded days are weekends, stat holidays or days you are off — you can still book them.</p>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="${d.back?esc(d.back):'closeSheet()'}">Back</button>`);
+}
+function dpOpenDay(ds){
+  if(!dpState||!ds) return;
+  dpState.view='day'; dpState.date=ds;
+  dpState.data=null; dpState.err=''; dpState.loading=true; dpState.time=''; dpState.bump=false;
+  dayPickRender(); dayPickLoad();
+}
+function dpBackToMonth(){
+  if(!dpState) return;
+  const m=dpMonthOf(dpState.date);
+  dpState.view='month';
+  if(m!==dpState.month){ dpState.month=m; dpState.mdata=null; dpState.mloading=true; dayPickRender(); dpMonthLoad(); return; }
+  dayPickRender();
+}
+
+/* ---- screen two: the day ----------------------------------------------------------------- */
+function dpShift(n){ if(!dpState) return; const d=new Date(dpState.date+'T12:00:00');
+  d.setDate(d.getDate()+n); dpSetDate(dpDateStr(d)); }
+function dpSetDate(v){ if(!dpState||!v) return;
+  // Stepping off the end of the month leaves the grid behind it stale, so drop it.
+  if(dpMonthOf(v)!==dpState.month){ dpState.month=dpMonthOf(v); dpState.mdata=null; }
+  dpState.date=v; dpState.data=null; dpState.err=''; dpState.loading=true; dpState.time=''; dpState.bump=false;
+  dayPickRender(); dayPickLoad(); }
+async function dayPickLoad(){
+  const want=dpState&&dpState.date; if(!want) return;
+  if(!S.online){ dpState.loading=false; dpState.err='You need signal to see the calendar.'; dayPickRender(); return; }
+  try{
+    const r=await apiBg('schedDay',{date:want});
+    if(!dpState||dpState.date!==want) return;
+    dpState.data=r; dpState.loading=false; dpState.err='';
+  }catch(e){ if(!dpState||dpState.date!==want) return; dpState.loading=false; dpState.err=e.message||'Could not read the calendar.'; }
+  dayPickRender();
+}
+/* Everything the chosen window lands on. A JOB would be sent back to Requests; anything else
+   (an estimate call, a dentist appointment, a reminder) stays exactly where it is. */
+function dpClash(){
+  const d=dpState; if(!d||!d.data||!d.time) return [];
+  const s=new Date(d.date+'T'+d.time).getTime();
+  if(isNaN(s)) return [];
+  const e=s+(Number(d.hours)||1)*3600000;
+  return (d.data.events||[]).filter(x=>!x.allDay&&x.start&&
+    new Date(x.start).getTime()<e && new Date(x.end).getTime()>s);
+}
+function dpVerdictHtml(jobs,other){
+  const d=dpState;
+  if(!d.time) return '';
+  if(jobs.length) return `<div class="banner ot" style="margin-top:8px">
+    <b>That slot has ${jobs.length===1?'a job on it':jobs.length+' jobs on it'}.</b>
+    ${jobs.map(x=>`<div class="small" style="margin-top:4px">• ${esc(x.title)}${x.customer?' — '+esc(x.customer):''} <span class="muted">(${esc(fmtTime(x.start))}–${esc(fmtTime(x.end))})</span></div>`).join('')}
+    <div class="small" style="margin-top:6px">Booking here takes ${jobs.length===1?'it':'them'} off the calendar and puts ${jobs.length===1?'it':'them'} under <b>⚡ Needs a new time</b> at the top of the Requests tab. The job number${jobs.length===1?'':'s'} do${jobs.length===1?'es':''} not change, and nobody is given a time you have not agreed — you pick it, or take the next opening.</div>
+    <label class="row" style="gap:10px;align-items:center;margin-top:8px;cursor:pointer">
+      <input type="checkbox" ${d.bump?'checked':''} onchange="dpBump(this.checked)" style="width:20px;height:20px;flex:none;margin:0">
+      <span class="small"><b>Yes — take the slot and send ${jobs.length===1?'that job':'those jobs'} back</b></span></label>
+  </div>`;
+  if(other.length) return `<div class="small" style="margin-top:8px;color:var(--pending)">⚠️ Sits over ${esc(other.map(x=>x.title).join(', '))} — ${other.length===1?'that is not a job, so it stays':'those are not jobs, so they stay'} where ${other.length===1?'it is':'they are'}.</div>`;
+  return '<div class="small" style="margin-top:8px;color:var(--good)">✓ That slot is free.</div>';
+}
+function dpVerdict(){
+  const d=dpState; if(!d) return;
+  const clash=dpClash(), jobs=clash.filter(x=>x.isJob), other=clash.filter(x=>!x.isJob);
+  const box=document.getElementById('dpVerdict'); if(box) box.innerHTML=dpVerdictHtml(jobs,other);
+  const go=document.getElementById('dpGo');
+  if(go){
+    go.disabled=!(d.time && (!jobs.length || d.bump));
+    go.textContent=(jobs.length&&d.bump)?('Book it and move '+(jobs.length===1?'that job':'those jobs')):'Book it';
+  }
+}
+function dpTime(v){ if(!dpState) return; dpState.time=v; dpState.bump=false; dpVerdict(); }
+function dpHours(v){ if(!dpState) return; dpState.hours=Math.max(0.25,Math.min(12,Number(v)||1)); dpState.bump=false; dpVerdict(); }
+function dpBump(on){ if(!dpState) return; dpState.bump=!!on; dpVerdict(); }
+function dpDayRender(){
+  const d=dpState; if(!d) return;
+  const data=d.data, evs=(data&&data.events)||[];
+  const clash=dpClash(), jobs=clash.filter(x=>x.isJob), other=clash.filter(x=>!x.isJob);
+  const flags=data?[data.weekend?'Weekend':'',data.holiday||'',data.leave?('you are off — '+data.leave):''].filter(Boolean):[];
+  sheet(`<h2>${esc(d.title)}</h2>
+    ${d.sub?`<p class="small muted" style="margin-top:-4px">${esc(d.sub)}</p>`:''}
+    <button class="ghost" style="margin-bottom:6px" onclick="dpBackToMonth()">‹ The whole month</button>
+    <div class="row" style="align-items:flex-end;gap:6px">
+      <button class="ghost" style="flex:none;min-width:44px" onclick="dpShift(-1)">‹</button>
+      <div class="grow"><input id="dpDate" type="date" value="${esc(d.date)}" onchange="dpSetDate(this.value)"></div>
+      <button class="ghost" style="flex:none;min-width:44px" onclick="dpShift(1)">›</button>
+    </div>
+    ${flags.length?`<div class="banner ot" style="margin-top:6px">${esc(flags.join(' · '))}</div>`:''}
+    <div class="card" style="margin:8px 0;padding:8px">
+      <div class="small muted">${esc(fmtDay(d.date+'T12:00:00'))}${data&&data.day?` · you work ${esc(fmtTime(data.day.start))}–${esc(fmtTime(data.day.end))}`:''}</div>
+      ${d.loading?'<p class="center" style="margin:10px 0"><span class="spin"></span></p>'
+        : d.err?`<p class="small" style="color:var(--bad)">${esc(d.err)}</p>`
+        : evs.length?evs.map((x,j)=>`<div class="list-item" style="cursor:pointer;padding:6px 0" onclick="dpShow(${j})">
+            <div class="row between">
+              <div><b>${x.allDay?'All day':esc(fmtTime(x.start))+'–'+esc(fmtTime(x.end))}</b> <span class="small">${esc(x.title)}</span></div>
+              <span class="small" style="color:var(--accent2)">${x.isJob?'job ›':'›'}</span>
+            </div>
+            ${(x.customer||x.location)?`<div class="small muted">${esc([x.customer,x.location].filter(Boolean).join(' · '))}</div>`:''}
+          </div>`).join('')
+        :'<p class="small muted" style="margin:6px 0">Nothing booked — the day is clear.</p>'}
+    </div>
+    <div class="row">
+      <div class="grow"><label>Start</label><input id="dpTime" type="time" value="${esc(d.time)}" onchange="dpTime(this.value)"></div>
+      <div class="grow"><label>Hours</label><input id="dpHours" type="number" step="0.25" min="0.25" value="${d.hours}" onchange="dpHours(this.value)"></div>
+    </div>
+    <p class="small muted" style="margin-top:4px">Any time you like — after hours, a weekend, or a slot that already has a job in it.</p>
+    <div id="dpVerdict">${dpVerdictHtml(jobs,other)}</div>
+    <div class="row" style="margin-top:12px">
+      <button class="secondary grow" onclick="dpBackToMonth()">‹ Back</button>
+      <button class="grow" id="dpGo" ${(d.time&&(!jobs.length||d.bump))?'':'disabled'} onclick="dayPickGo(this)">${(jobs.length&&d.bump)?('Book it and move '+(jobs.length===1?'that job':'those jobs')):'Book it'}</button>
+    </div>`);
+}
+/* Tap an event on the day — the same thing Google Calendar gives you. */
+function dpShow(j){
+  const d=dpState, x=((d&&d.data&&d.data.events)||[])[j]; if(!x) return;
+  sheet(`<h2>${esc(x.title)}</h2>
+    <p class="small muted" style="margin-top:-4px">${x.allDay?'All day':esc(fmtDay(x.start))+' · '+esc(fmtTime(x.start))+'–'+esc(fmtTime(x.end))}</p>
+    ${x.po?`<div class="small" style="margin-top:2px"><b>${esc(x.po)}</b></div>`:''}
+    ${x.customer?`<div class="small" style="margin-top:4px">👤 ${esc(x.customer)}</div>`:''}
+    ${x.phone?`<div class="small" style="margin-top:2px">📞 <a href="tel:${esc(String(x.phone).replace(/[^0-9+]/g,''))}">${esc(x.phone)}</a></div>`:''}
+    ${x.location?`<div class="small" style="margin-top:2px">📍 ${esc(x.location)}</div>`:''}
+    <div style="margin-top:8px">${x.isJob?'<span class="pill live">A job — booking over it sends it back to Requests</span>':'<span class="pill">Not a job — it stays where it is</span>'}</div>
+    ${x.detail?`<pre class="small muted" style="white-space:pre-wrap;word-break:break-word;margin-top:10px">${esc(x.detail)}</pre>`:''}
+    <button class="secondary" style="width:100%;margin-top:12px" onclick="dpDayRender()">‹ Back to the day</button>`);
+}
+async function dayPickGo(btn){
+  const d=dpState; if(!d||!d.time||!d.onConfirm) return;
+  if(!S.online) return toast('You need signal to book.');
+  const start=new Date(d.date+'T'+d.time);
+  if(isNaN(start)) return toast('That time did not read properly.');
+  btn.disabled=true; btn.textContent='Booking…';
+  try{
+    const msg=await d.onConfirm(start.toISOString(), Number(d.hours)||1, !!d.bump);
+    dpState=null; closeSheet(); toast(msg||'Booked ✓',8000); loadRequests();
+  }catch(e){ toast(e.message,10000); dayPickRender(); dayPickLoad(); }
+}
+
+/* ---- ADD A JOB OR A PHONE CALL BY HAND --------------------------------------------------
+ * A JOB burns the next job number and fills the PO Log row, exactly as scheduling a website lead
+ * does. A CALL does not — nothing is sold yet, so it goes on the Estimate tab like any other
+ * quote call. Either can be saved with no time at all and picked up from the list later. ====*/
+let amState=null;
+/* v79 — "Schedule a job" opens with the jobs already in progress, because most of the time the
+ * work being booked is for somebody who is already on the books, and retyping their name, phone
+ * and address is both slower and how a second record of one customer gets made. Picking one
+ * KEEPS ITS JOB NUMBER: a PO number becomes the QuickBooks invoice number, so it is minted once
+ * and never re-minted (requestSchedule_ already re-dates the existing PO Log row instead of
+ * taking the next number). A customer who is genuinely new is the last option on the list.
+ * A phone CALL skips all of this — nothing is sold yet, so there is no job to attach it to. */
+function openAddManual(kind, fresh){
+  if (kind !== 'call' && !fresh) return openScheduleJobPick();
+  amState={ kind:kind==='call'?'call':'job', emergency:kind!=='call', po:'', customer:'', phone:'', email:'',
+            address:'', scope:'', company:'', hours:kind==='call'?0.5:2, notifyCustomer:true };
+  addManualRender();
+}
+let sjResults=[];
+function openScheduleJobPick(){
+  custHydrateSync_();                               // the saved list, before the first paint
+  sheet(`<h2>⚡ Schedule a job</h2>
+    <p class="small muted" style="margin-top:-4px">Jobs in progress — pick the one this work belongs to and it keeps its job number.</p>
+    <input id="sjSearch" placeholder="Search the jobs in progress…" autocomplete="off" oninput="sjFilter(this.value)">
+    <div id="sjList" style="max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:0 12px;margin-top:6px">${sjListHtml('')}</div>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="openAddManual('job',true)">➕ New customer — not on the list</button>
+    <button class="ghost" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
+  loadCustomers(true);                              // and refresh it behind the screen
+}
+function sjListHtml(q){
+  const list=openPOs(q);
+  sjResults=list;
+  if (!S.customers) return `<p class="small muted">${S.online?'Loading the jobs in progress…':'No job list saved on this phone yet.'}</p>`;
+  if (!list.length) return `<p class="small muted">${q?'No job in progress matches — add the customer below.':'No jobs are in progress. Add the customer below.'}</p>`;
+  return list.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="sjPick(${i})">${poRowHtml(c)}</div>`).join('');
+}
+function sjFilter(q){ const el=document.getElementById('sjList'); if(el) el.innerHTML=sjListHtml(q||''); }
+/* The job's own contact details come off its PO Log row, so nothing is retyped and nothing
+   disagrees with what is already filed. The form opens straight away and fills in behind. */
+async function sjPick(i){
+  const c=sjResults[i]; if(!c) return;
+  amState={ kind:'job', emergency:false, po:c.po, customer:c.name, project:c.project||'',
+            phone:'', email:'', address:'', scope:'', company:'', hours:2, notifyCustomer:true };
+  addManualRender();
+  if (!S.online) return;
+  try{
+    const r=await api('poLogFind',{po:c.po},{bg:true});
+    const d=(r&&r.data)||{};
+    const get=(...names)=>{ for(const n of names){ for(const k of Object.keys(d)){ if(k.toLowerCase()===n) return String(d[k]||'').trim(); } } return ''; };
+    if (!amState || amState.po!==c.po) return;      // they moved on while this was in flight
+    amState.phone   = amState.phone   || get('phone number','phone');
+    amState.email   = amState.email   || get('email address','email');
+    amState.address = amState.address || get('job address','address');
+    amState.company = amState.company || get('company name','company');
+    amState.scope   = amState.scope   || get('project name','description of work');
+    if (!amState.customer) amState.customer = get('contact person','company name');
+    addManualRender();
+  }catch(e){ /* the form still works, it just has less typed in for you */ }
+}
+function amSave(){
+  const a=amState; if(!a) return;   // a.po and a.project are not form fields: they stay as picked
+  a.customer=val('amCust').trim(); a.phone=val('amPhone').trim(); a.email=val('amEmail').trim();
+  a.address=val('amAddr').trim(); a.scope=val('amScope').trim(); a.company=val('amCo').trim();
+  a.hours=Math.max(0.25,Math.min(12,Number(val('amHours'))||a.hours));
+  const em=document.getElementById('amEmg'); if(em) a.emergency=em.checked;
+  const nc=document.getElementById('amNotify'); if(nc) a.notifyCustomer=nc.checked;
+}
+function addManualRender(){
+  const a=amState; if(!a) return;
+  const isCall=a.kind==='call';
+  sheet(`<h2>${isCall?'📞 Schedule a phone call':'⚡ Schedule a job'}</h2>
+    ${a.po?`<div class="banner sync">On <b>${esc(a.po)}</b>${a.project?' · '+esc(a.project):''} — it keeps this job number.</div>`:''}
+    <p class="small muted" style="margin-top:-4px">${isCall
+      ? 'Blocks the call on the calendar and files it on the Estimate tab. No job number is used — nothing is sold yet.'
+      : (a.po ? 'Books the time against the job that is already open. Its PO Log row is re-dated — no new number.'
+              : 'A new customer: this gets the next job number and a full PO Log row, the same as scheduling a website lead.')}</p>
+    <label>Customer / company <span class="muted">(needed)</span></label>
+    <input id="amCust" value="${esc(a.customer)}" placeholder="Who is it for?">
+    <div class="row">
+      <div class="grow"><label>Phone</label><input id="amPhone" type="tel" value="${esc(a.phone)}"></div>
+      <div class="grow"><label>Email</label><input id="amEmail" type="email" value="${esc(a.email)}"></div>
+    </div>
+    <label>Address</label><input id="amAddr" value="${esc(a.address)}">
+    <label>What is the ${isCall?'call about':'job'}?</label>
+    <textarea id="amScope" rows="3" placeholder="${isCall?'What do they want quoted?':'What needs doing?'}">${esc(a.scope)}</textarea>
+    <div class="row">
+      <div class="grow"><label>Billed to (company)</label><input id="amCo" value="${esc(a.company)}"></div>
+      <div class="grow"><label>How long? (hours)</label><input id="amHours" type="number" step="0.25" min="0.25" value="${a.hours}"></div>
+    </div>
+    ${isCall?'':`<label class="row" style="gap:10px;align-items:center;margin-top:10px;cursor:pointer">
+      <input type="checkbox" id="amEmg" ${a.emergency?'checked':''} style="width:20px;height:20px;flex:none;margin:0">
+      <span class="small"><b>Emergency</b> — may go after hours, today, or on top of a job already there</span></label>
+    <label class="row" style="gap:10px;align-items:center;margin-top:6px;cursor:pointer">
+      <input type="checkbox" id="amNotify" ${a.notifyCustomer!==false?'checked':''} style="width:18px;height:18px;flex:none;margin:0">
+      <span class="small">Email the customer to confirm the time</span></label>`}
+    <div class="row" style="margin-top:12px">
+      <button class="ghost grow" onclick="closeSheet()">Cancel</button>
+      <button class="secondary grow" onclick="amLater(this)">Save — no time yet</button>
+    </div>
+    <button class="grow" style="width:100%;margin-top:8px" onclick="amPickTime()">📅 Pick a time ›</button>`);
+}
+function amPickTime(){
+  amSave(); const a=amState; if(!a) return;
+  if(!a.customer) return toast('Who is it for? Give at least a name.');
+  dayPickOpen({
+    title:(a.kind==='call'?'When is the call? — ':'When is the job? — ')+a.customer,
+    sub:[a.scope,a.address].filter(Boolean).join(' · '),
+    hours:a.hours, date:todayStr(), back:'addManualRender()',
+    onConfirm:async(start,hours,bump)=>{
+      const r=await api('requestAddManual',{ kind:a.kind, po:a.po||'', customer:a.customer, phone:a.phone,
+        email:a.email, address:a.address, scope:a.scope, company:a.company, hours:hours,
+        start:start, bump:!!bump, emergency:!!a.emergency,
+        notifyCustomer:a.notifyCustomer!==false },{timeout:120000});
+      amState=null;
+      const back=(r&&r.bumped&&r.bumped.length)||0;
+      return (a.kind==='call'?'Call booked — ':'Job booked — ')+fmtDay(start)+' '+fmtTime(start)
+        +((r&&r.po)?' · '+r.po:'')
+        +(back?' · '+back+' job(s) now need a new time':'');
+    }
+  });
+}
+async function amLater(btn){
+  amSave(); const a=amState; if(!a) return;
+  if(!a.customer) return toast('Who is it for? Give at least a name.');
+  if(!S.online) return toast('You need signal.');
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    await api('requestAddManual',{ kind:a.kind, po:a.po||'', customer:a.customer, phone:a.phone, email:a.email,
+      address:a.address, scope:a.scope, company:a.company, hours:a.hours, emergency:!!a.emergency });
+    amState=null; closeSheet();
+    toast((a.kind==='call'?'Call':'Job')+' saved — it is waiting at the top of Requests.',7000);
+    loadRequests();
+  }catch(e){ toast(e.message,9000); btn.disabled=false; btn.textContent='Save — no time yet'; }
+}
+
+function openReqSchedule(i){
+  const q=(S.requests||[])[i]; if(!q) return;
+  const sug=q.suggested&&!isNaN(new Date(q.suggested))?new Date(q.suggested):new Date(Date.now()+86400000);
+  const pad=n=>String(n).padStart(2,'0');
+  const d=`${sug.getFullYear()}-${pad(sug.getMonth()+1)}-${pad(sug.getDate())}`;
+  const t=`${pad(sug.getHours()||9)}:${pad(sug.getMinutes())}`;
+  const crew=(S.employees||[]).filter(e=>e.active);
+  const isAppt=String(q.type||'').toUpperCase()==='APPOINTMENT';
+  sheet(`<h2>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'Schedule')}</h2>
+    <p class="small muted" style="margin-top:-4px">${q.address?esc(q.address):''}</p>
+    ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
+    ${q.materials?`<div class="small muted">Materials: ${esc(q.materials)}</div>`:''}
+    <label>What is this? <span class="muted">(the form said ${esc(q.type)})</span></label>
+    <div class="seg" id="rqTypeSeg" style="margin-bottom:10px">
+      <button type="button" data-t="ESTIMATE" class="${isAppt?'':'on'}" onclick="reqSetType('ESTIMATE')">Estimate call</button>
+      <button type="button" data-t="APPOINTMENT" class="${isAppt?'on':''}" onclick="reqSetType('APPOINTMENT')">Appointment — book the job</button>
+    </div>
+    <input type="hidden" id="rqType" value="${isAppt?'APPOINTMENT':'ESTIMATE'}">
+    <p class="small muted" id="rqTypeNote" style="margin-top:-4px">${isAppt?'Books the full job. Gets the next PO number and a PO Log row (In progress).':'Blocks the call on the calendar. Goes on the Estimate tab — no PO number yet.'}</p>
+    <div id="rqCallRow" style="${isAppt?'display:none':''}">
+      <label>How long is the call?</label>
+      <div class="seg" id="rqCallSeg" style="margin-bottom:6px">
+        ${[[15,'15 min'],[30,'30 min'],[60,'1 h'],[120,'2 h']].map(([m,t])=>`<button type="button" data-m="${m}" class="${m===30?'on':''}" onclick="reqSetCall(${m})">${t}</button>`).join('')}
+      </div>
+      <input type="hidden" id="rqCallMin" value="30">
+    </div>
+    <label>How long is the job? (hours — the AI guessed ${q.hours} with ${(q.crew||1)>1?((q.crew||1)+' people'):'you on your own'})</label>
+    <input id="rqHours" type="number" step="0.25" min="0.25" value="${q.hours||1}" oninput="reqSlotsSoon()">
+    <label>Open times <span class="muted">(tap one — or set your own below)</span></label>
+    <div id="rqOpen" class="row" style="flex-wrap:wrap;gap:6px"><span class="small muted">Reading the calendar…</span></div>
+    <p class="small" id="rqSlotNote" style="margin:6px 0 0"></p>
+    <div class="row"><div class="grow"><label>Date</label><input id="rqDate" type="date" value="${d}" onchange="reqSlotsLoad(true)"></div>
+      <div class="grow"><label>Start</label><input id="rqTime" type="time" value="${t}" onchange="reqSlotsLoad(true)"></div></div>
+    <label>Who's going?</label>
+    <div>${crew.map(e=>`<div class="perm"><input type="checkbox" id="rq_${esc(e.email)}"><label for="rq_${esc(e.email)}" style="margin:0">${esc(e.name||e.email)}</label></div>`).join('')||'<p class="small muted">No active crew.</p>'}</div>
+    <div class="perm"><input type="checkbox" id="rqNotify" checked><label for="rqNotify" style="margin:0">Email the crew their assignment</label></div>
+    <div class="perm" id="rqCustRow" style="${isAppt?'':'display:none'}"><input type="checkbox" id="rqNotifyCust" checked><label for="rqNotifyCust" style="margin:0">Email the customer to confirm the time${q.email?'':' (no email on file)'}</label></div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheetDom();render()">Back</button>
+      <button class="grow" id="rqGo" onclick="reqSchedule(${i},this)">📅 Put it on the calendar</button>
+    </div>`);
+  reqSlotsLoad(true);
+}
+/* v52 — OPEN TIMES. Reads Paul's calendar for real gaps that fit what is being booked: an
+   estimate call of the chosen length (15 min – 2 h, no travel padding, never split by lunch) or
+   the whole job (30 min travel either side). If the time in the boxes does not fit — the call got
+   longer, or the suggested slot is taken — it moves to the next open time and says so, before
+   anything is sent. The server checks again when you book. */
+let rqSlotsTimer=null, rqSlotsSeq=0;
+function reqSetCall(m){
+  const seg=document.getElementById('rqCallSeg'); if(seg) seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',Number(b.dataset.m)===m));
+  const h=document.getElementById('rqCallMin'); if(h) h.value=m;
+  reqSlotsLoad(true);
+}
+function reqSlotsSoon(){ clearTimeout(rqSlotsTimer); rqSlotsTimer=setTimeout(()=>reqSlotsLoad(true), 700); }
+function reqSlotMinutes(){
+  const appt=(val('rqType')||'ESTIMATE')==='APPOINTMENT';
+  return appt ? Math.round((Number(val('rqHours'))||1)*60) : (Number(val('rqCallMin'))||30);
+}
+async function reqSlotsLoad(autoMove){
+  const box=document.getElementById('rqOpen'), note=document.getElementById('rqSlotNote'); if(!box) return;
+  const appt=(val('rqType')||'ESTIMATE')==='APPOINTMENT', mins=reqSlotMinutes();
+  if(appt && mins>540){ box.innerHTML='<span class="small muted">Longer than one working day — pick the first day by hand.</span>'; if(note) note.textContent=''; return; }
+  const date=val('rqDate'), time=val('rqTime'); const at=(date&&time)?new Date(date+'T'+time):null;
+  const seq=++rqSlotsSeq;
+  box.innerHTML='<span class="small muted">Reading the calendar…</span>';
+  try{
+    const r=await api('openSlots',{minutes:mins, kind:appt?'job':'call', count:6, at:at&&!isNaN(at)?at.toISOString():''});
+    if(seq!==rqSlotsSeq || !document.getElementById('rqOpen')) return;       // a newer request won
+    S._rqSlots=r.slots||[];
+    box.innerHTML = S._rqSlots.length ? S._rqSlots.map((x,k)=>`<span class="chip" data-k="${k}" onclick="reqPickSlot(${k})">${esc(fmtDay(x.start))} ${esc(fmtTime(x.start))}</span>`).join('')
+      : '<span class="small muted">Nothing open that long in the next 30 days.</span>';
+    const len = appt ? (mins/60)+' h job' : (mins<60?mins+' min':(mins/60)+' h')+' call';
+    if(r.atFits===true){ if(note){ note.style.color='var(--good)'; note.textContent='✓ '+fmtDay(at)+' '+fmtTime(at)+' is free for the '+len+'.'; } reqMarkSlot(at); }
+    else if(r.atFits===false){
+      if(autoMove!==false && S._rqSlots.length){
+        const first=S._rqSlots[0];
+        reqPickSlot(0, true);
+        if(note){ note.style.color='var(--pending)'; note.textContent='⚠️ '+fmtDay(at)+' '+fmtTime(at)+' does not work ('+r.atWhy+') — moved to '+fmtDay(first.start)+' '+fmtTime(first.start)+'. Check it before booking.'; }
+      } else if(note){ note.style.color='var(--bad)'; note.textContent='✗ '+fmtDay(at)+' '+fmtTime(at)+' does not work: '+r.atWhy+'.'; }
+    }
+  }catch(e){ if(seq===rqSlotsSeq) box.innerHTML='<span class="small" style="color:var(--bad)">Could not read the calendar — '+esc(e.message)+'</span>'; }
+}
+function reqPickSlot(k, quiet){
+  const x=(S._rqSlots||[])[k]; if(!x) return;
+  const d=new Date(x.start), pad=n=>String(n).padStart(2,'0');
+  const di=document.getElementById('rqDate'), ti=document.getElementById('rqTime');
+  if(di) di.value=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  if(ti) ti.value=`${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  reqMarkSlot(d);
+  if(!quiet){ const note=document.getElementById('rqSlotNote'); if(note){ note.style.color='var(--good)'; note.textContent='✓ '+fmtDay(x.start)+' '+fmtTime(x.start)+'–'+fmtTime(x.end)+' is open.'; } }
+}
+function reqMarkSlot(d){
+  document.querySelectorAll('#rqOpen .chip').forEach(el=>{ const x=(S._rqSlots||[])[Number(el.dataset.k)];
+    el.classList.toggle('sel', !!x && d && new Date(x.start).getTime()===new Date(d).getTime()); });
+}
+/* v46: Paul can flip a lead between Estimate call and Appointment before scheduling it — the
+   form's answer is often not what the customer meant. The choice is sent with requestSchedule
+   and decides the calendar block (30-min call vs full job) and the PO Log vs Estimate tab. */
+/* v46 — the ball-park estimate, rendered to be READ on a phone.
+   It used to sit in a <pre>, which is why it looked like code and why one long photo URL
+   forced the whole page to scroll sideways. Now: wrapped prose, section headings picked out,
+   and the photo links turned into actual thumbnails you can tap. */
+function reqDetailHtml(detail){
+  const raw = String(detail||'');
+  if(!raw.trim()) return '';
+  const photos = [];
+  raw.replace(/https:\/\/proes\.ca\/wp-content\/uploads\/forminator\/[^\s"'<>]+/g, u => { if(!photos.includes(u)) photos.push(u); return u; });
+  const gmail = (raw.match(/https:\/\/mail\.google\.com\/[^\s"'<>]+/)||[])[0] || '';
+  // drop the link dump from the body — the links become buttons below
+  const body = raw
+    .replace(/https:\/\/proes\.ca\/wp-content\/uploads\/forminator\/[^\s"'<>]+/g,'')
+    .replace(/https:\/\/mail\.google\.com\/[^\s"'<>]+/g,'')
+    .replace(/^[ \t]*\/\/[ \t]*PHOTOS[^\n]*\n?/gim,'')
+    .replace(/^[ \t]*(Photo \d+|Gmail)\s*:?\s*$/gim,'');
+  const lines = body.split('\n');
+  let html = '', inList = false;
+  const closeList = () => { if(inList){ html += '</ul>'; inList = false; } };
+  for (let ln of lines){
+    const t = ln.replace(/^\s*\/\/\s*/,'').trim();          // strip the "// " section markers
+    if(!t){ closeList(); continue; }
+    // a heading: ALL-CAPS-ish, or the == BANNER == form, or "LABEL:" on its own
+    if(/^={2,}.*={2,}$/.test(t) || /^[A-Z][A-Z0-9 \/\-]{3,}$/.test(t) || /^(SCENARIO [AB]|FLAG|RFI-\d+|TRAVEL|SOURCE|CUSTOMER|SCOPE|MATERIALS?)\b/i.test(t) && t.length < 90){
+      closeList();
+      html += `<div class="small" style="font-weight:700;margin:10px 0 2px;color:var(--accent2)">${esc(t.replace(/^=+\s*|\s*=+$/g,''))}</div>`;
       continue;
     }
-    const msg = String((json && json.error) || '');
-    if (/Session expired/i.test(msg)) { stopped = 'auth'; break; }   // only the app can sign in again
-    if (TRANSIENT.test(msg)) { stopped = 'transient'; break; }
-    if (DUPLICATE.test(msg)) { await queueDel_(db, it.qid); sent++; continue; }
-    // A real "no" (or "already have an open entry", which needs the app's judgement): leave it,
-    // with the reason, for the app to show. Carry on with the next one.
-    const cur = await queueGet_(db, it.qid);
-    if (cur) await queuePut_(db, Object.assign({}, cur, { lastError: msg, lastTry: Date.now(), tries: (cur.tries || 0) + 1 }));
-    left++;
-    /* v75 - a punch that CLOSES a shift and was not accepted blocks everything behind it: the
-     * clock-in that follows can only be refused ("you already have an open entry"), and that
-     * refusal would be recorded against the clock-in, which is not where the fault is. Stop
-     * here and leave the rest for the app, which can explain the chain to the person. */
-    if (/^(clockOut|fixForgotClockout)$/.test(it.action)) {
-      left += items.length - (items.indexOf(it) + 1);
-      stopped = 'blocked'; break;
+    if(/^[-•*]\s+/.test(t) || /^\d+[.)]\s+/.test(t)){
+      if(!inList){ html += '<ul style="margin:2px 0 2px 18px;padding:0">'; inList = true; }
+      html += `<li class="small" style="margin:1px 0">${esc(t.replace(/^[-•*]\s+|^\d+[.)]\s+/,''))}</li>`;
+      continue;
     }
+    closeList();
+    html += `<p class="small" style="margin:3px 0">${esc(t)}</p>`;
   }
-  if (sent) {
-    try { await cachePut_(db, 'tempIdMap', idMap); } catch (e) {}
-    wins.forEach((c) => c.postMessage({ type: 'punchesSent', n: sent }));
-  }
-  if (stopped === 'network' || stopped === 'transient') throw new Error('sync: ' + stopped); // → browser retries with backoff
-  return { sent, left, stopped };
+  closeList();
+  const shots = photos.length
+    ? `<div style="margin-top:8px"><div class="small muted" style="margin-bottom:4px">Photos from the customer (tap to open)</div>
+       <div style="display:flex;gap:8px;flex-wrap:wrap">${photos.map(u=>
+         `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Job photo" loading="lazy"
+            style="width:104px;height:104px;object-fit:cover;border-radius:10px;border:1px solid var(--line)"></a>`).join('')}</div></div>`
+    : '<p class="small muted" style="margin-top:8px">No photos attached.</p>';
+  const mail = gmail ? `<a class="small" href="${esc(gmail)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:8px">Open the original email</a>` : '';
+  return `<div style="margin-top:6px;overflow-wrap:anywhere;word-break:break-word">${html}${shots}${mail}</div>`;
 }
-/* Keep the app's cached snapshot ('bootstrap') in step with what was just sent, so the next
- * open paints the truth at once instead of a running clock for the 4-6 s the re-read takes. */
-async function patchBoot_(db, action, p, data) {
-  const boot = await cacheGet_(db, 'bootstrap');
-  if (!boot) return;
-  const open = boot.openEntry;
-  if (action === 'clockOut' && open && (open.EntryID === p.entryId)) {
-    const closed = Object.assign({}, open, { ClockOut: p.at || new Date().toISOString(), Source: p.paused ? 'paused' : 'live' });
-    if (data.hours != null) { closed.Hours = data.hours; closed['Gross Hours'] = data.gross; closed['Break Hrs'] = data.breakHrs; }
-    boot.entries = (boot.entries || []).filter((e) => e && e.EntryID !== open.EntryID).concat([closed]);
-    boot.openEntry = null;
-  } else if (action === 'fixForgotClockout' && open && (open.EntryID === p.entryId)) {
-    // v75 - the forgotten clock-out, closed on the phone and delivered from here: the cached
-    // snapshot has to agree, or the next open paints a running clock that is already closed.
-    const closed = Object.assign({}, open, { ClockOut: p.outISO, Status: 'pending' });
-    if (data.hours != null) closed.Hours = data.hours;
-    boot.entries = (boot.entries || []).filter((e) => e && e.EntryID !== open.EntryID).concat([closed]);
-    boot.openEntry = null;
-  } else if ((action === 'clockIn' || action === 'switchJobSite') && data.entry) {
-    if (action === 'switchJobSite' && open && open.EntryID !== data.entry.EntryID) {
-      boot.entries = (boot.entries || []).filter((e) => e && e.EntryID !== open.EntryID)
-        .concat([Object.assign({}, open, { ClockOut: p.at || data.entry.ClockIn, Source: 'paused' })]);
+function reqSetType(t){
+  const seg=document.getElementById('rqTypeSeg'); if(!seg) return;
+  seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  const h=document.getElementById('rqType'); if(h) h.value=t;
+  const cr=document.getElementById('rqCustRow'); if(cr) cr.style.display = t==='APPOINTMENT' ? '' : 'none';
+  const cl=document.getElementById('rqCallRow'); if(cl) cl.style.display = t==='APPOINTMENT' ? 'none' : '';
+  const n=document.getElementById('rqTypeNote');
+  if(n) n.textContent = t==='APPOINTMENT'
+    ? 'Books the full job. Gets the next PO number and a PO Log row (In progress).'
+    : 'Blocks the call on the calendar. Goes on the Estimate tab — no PO number yet.';
+  if(document.getElementById('rqOpen')) reqSlotsLoad(true);
+}
+async function reqSchedule(i,btn){
+  const q=(S.requests||[])[i]; if(!q) return;
+  const date=val('rqDate'), time=val('rqTime'), hours=Number(val('rqHours'))||q.hours||1;
+  const type=(val('rqType')||q.type||'ESTIMATE').toUpperCase()==='APPOINTMENT'?'APPOINTMENT':'ESTIMATE';
+  if(!date||!time) return toast('Pick the date and time.');
+  const start=new Date(date+'T'+time);
+  if(isNaN(start)) return toast('That date/time did not read properly.');
+  const assign=(S.employees||[]).filter(e=>e.active&&(document.getElementById('rq_'+e.email)||{}).checked).map(e=>e.email);
+  const notify=(document.getElementById('rqNotify')||{}).checked!==false;
+  const notifyCustomer=(document.getElementById('rqNotifyCust')||{}).checked!==false;
+  btn.disabled=true; btn.textContent='Booking…';
+  try{
+    // Calendar event + crew email + PO workbook write + customer email in one call — well past
+    // the 30 s default, and an abort here looks like a failure on a booking that actually ran.
+    const callMinutes=Number(val('rqCallMin'))||30;
+    const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify, type, notifyCustomer, callMinutes, crew:assign.length||q.crew||1},{timeout:120000});
+    S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
+    // v23: approving also writes the PO Log workbook — an APPOINTMENT burns the next PO number,
+    // an ESTIMATE files a row on the Estimate tab. Say which, because the PO number is the one
+    // thing Paul needs to carry away from this screen, and a silent failure there is invisible.
+    let extra = assign.length ? ' — crew notified' : '';
+    if (r && r.po) extra = ' — ' + r.po + (assign.length ? ', crew notified' : '');
+    else if (type==='ESTIMATE') { const cm=Number(val('rqCallMin'))||30; extra = ' — '+(cm<60?cm+'-min':(cm/60)+'-h')+' call' + (assign.length ? ', crew notified' : ''); }
+    toast('On the calendar ✓' + extra);
+    if (r && r.poNote && /FAILED|skipped/i.test(r.poNote)) setTimeout(()=>toast('PO Log not updated: '+r.poNote), 2600);
+    if (r && r.custNote && /NOT notified|unavailable/i.test(r.custNote)) setTimeout(()=>toast(r.custNote), 2600);
+    // v36 — an estimate call is allowed to sit over a running job, but say what it landed on.
+    if (r && r.slotNote) setTimeout(()=>toast(r.slotNote, 6000), 3400);
+    closeSheetDom(); render(); loadRequests();   // J) so the Booked list shows it straight away
+  }catch(e){
+    // The server may have finished after we stopped waiting. Say so rather than implying it failed.
+    if (/already on the calendar/i.test(e.message||'')) { toast('Already booked ✓'); closeSheetDom(); loadRequests(); render(); return; }
+    if (e && e.kind === 'network') toast('The booking is taking a while. Pull to refresh in a moment — it may well have gone through.');
+    else { toast(e.message, 7000); if(/taken/i.test(e.message||'')) reqSlotsLoad(true); }   // v52: offer the open times again
+    btn.disabled=false; btn.textContent='📅 Put it on the calendar';
+  }
+}
+/* v46 — book the job off the back of an estimate call. Same shape as the schedule sheet, minus
+   the type switch: choosing this IS choosing APPOINTMENT. */
+function openReqBook(i){
+  const q=(S.reqEstimates||[])[i]; if(!q) return;
+  const sug=new Date(Date.now()+86400000);
+  const pad=n=>String(n).padStart(2,'0');
+  const d=`${sug.getFullYear()}-${pad(sug.getMonth()+1)}-${pad(sug.getDate())}`;
+  const crew=(S.employees||[]).filter(e=>e.active);
+  const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
+  sheet(`<h2>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'Book the job')}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(q.address||'')}</p>
+    ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
+    ${price?`<div class="small muted">Quoted ${price}</div>`:''}
+    <label>How long is the job? (hours — quoted at ${q.bookedHours||q.hours})</label>
+    <input id="bkHours" type="number" step="0.25" min="0.25" value="${q.bookedHours||q.hours||1}">
+    <div class="row"><div class="grow"><label>Date</label><input id="bkDate" type="date" value="${d}"></div>
+      <div class="grow"><label>Start</label><input id="bkTime" type="time" value="08:30"></div></div>
+    <label>Who's going?</label>
+    <div>${crew.map(e=>`<div class="perm"><input type="checkbox" id="bk_${esc(e.email)}"><label for="bk_${esc(e.email)}" style="margin:0">${esc(e.name||e.email)}</label></div>`).join('')||'<p class="small muted">No active crew.</p>'}</div>
+    <div class="perm"><input type="checkbox" id="bkNotify" checked><label for="bkNotify" style="margin:0">Email the crew their assignment</label></div>
+    <div class="perm"><input type="checkbox" id="bkNotifyCust" checked><label for="bkNotifyCust" style="margin:0">Email the customer to confirm the time${q.email?'':' (no email on file)'}</label></div>
+    <p class="small muted">Gets the next PO number and a PO Log row (In progress). The estimate call stays on the calendar where it was.</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheetDom();render()">Back</button>
+      <button class="grow" id="bkGo" onclick="reqBook(${i},this)">🔧 Book it</button>
+    </div>`);
+}
+async function reqBook(i,btn){
+  const q=(S.reqEstimates||[])[i]; if(!q) return;
+  const date=val('bkDate'), time=val('bkTime'), hours=Number(val('bkHours'))||q.hours||1;
+  if(!date||!time) return toast('Pick the date and time.');
+  const start=new Date(date+'T'+time);
+  if(isNaN(start)) return toast('That date/time did not read properly.');
+  const assign=(S.employees||[]).filter(e=>e.active&&(document.getElementById('bk_'+e.email)||{}).checked).map(e=>e.email);
+  const notify=(document.getElementById('bkNotify')||{}).checked!==false;
+  const notifyCustomer=(document.getElementById('bkNotifyCust')||{}).checked!==false;
+  btn.disabled=true; btn.textContent='Booking…';
+  try{
+    const r=await api('requestBook',{id:q.id, start:start.toISOString(), hours, assign, notify, notifyCustomer, crew:assign.length||q.crew||1},{timeout:120000});
+    S.reqEstimates=(S.reqEstimates||[]).filter(x=>x.id!==q.id);
+    toast('Booked ✓' + (r&&r.po?(' — '+r.po):'') + (assign.length?', crew notified':''));
+    if (r && r.poNote && /FAILED/i.test(r.poNote)) setTimeout(()=>toast('PO Log not updated: '+r.poNote), 2600);
+    if (r && r.custNote && /NOT notified|unavailable/i.test(r.custNote)) setTimeout(()=>toast(r.custNote), 2600);
+    // v36 — an estimate call is allowed to sit over a running job, but say what it landed on.
+    if (r && r.slotNote) setTimeout(()=>toast(r.slotNote, 6000), 3400);
+    closeSheetDom(); render(); loadRequests();
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='🔧 Book it'; }
+}
+async function reqNotProceeding(i){
+  const q=(S.reqEstimates||[])[i]; if(!q) return;
+  if(!confirm('Close out '+(q.customer||'this estimate')+'? It stops showing here.')) return;
+  try{
+    await api('requestDismiss',{id:q.id, reason:'not proceeding'});
+    S.reqEstimates=(S.reqEstimates||[]).filter(x=>x.id!==q.id);
+    toast('Closed out'); render();
+  }catch(e){ toast(e.message); }
+}
+/* v46 — move a booked job. The customer is emailed the new time and asked again, so the
+   job goes back to amber until they answer: a time they haven't seen isn't confirmed. */
+/* v47 — JOB DETAILS. Tap any request, quoted estimate or booked job to see everything on it in
+   one place, act on it (schedule / book / move / email the customer / cancel), or correct it.
+   A correction is written to the Requests row and carried to the calendar and the PO Log. */
+// Tapping the card itself opens the details; its own buttons, links and the estimate expander
+// keep doing what they did, so the list stays as quick as before for the simple cases.
+function reqCardTap(ev,k,i){ if(ev.target.closest('button,a,summary,details,input,label')) return; openReqDetail(k,i); }
+function reqList(k){ return k==='req'?(S.requests||[]):k==='est'?(S.reqEstimates||[]):(S.reqBooked||[]); }
+function openReqDetail(k,i){
+  const q=reqList(k)[i]; if(!q) return;
+  const fmt=x=>{ const d=x?new Date(x):null; return d&&!isNaN(d)?d.toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):''; };
+  const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
+  const CONF={confirmed:'🟢 Confirmed',declined:'🔴 Wants a new time',cancelled:'⚫ Customer cancelled',
+              waiting:'🟠 Waiting on them','no email':'⚪ No email on file',none:'⚪ Not asked yet'};
+  const crewNames=(q.assigned||[]).map(e=>{ const m=(S.employees||[]).find(x=>x.email===e); return m&&m.name?m.name:e; });
+  const tel=String(q.phone||'').replace(/[^\d+]/g,'');
+  const row=(label,html)=>html?`<div class="row between" style="padding:6px 0;border-bottom:1px solid var(--line,rgba(0,0,0,.08));gap:12px"><span class="small muted" style="flex:0 0 auto">${label}</span><span style="text-align:right;overflow-wrap:anywhere">${html}</span></div>`:'';
+  const status= k==='req'?`New ${esc(q.type||'request')}` : k==='est'?'Quoted — waiting on the customer' : 'Booked';
+  let acts='';
+  if(k==='req') acts=`<button class="grow" onclick="openReqSchedule(${i})">📅 Schedule it</button>
+      <button class="ghost" onclick="reqDismiss(${i});closeSheetDom()">Dismiss</button>`;
+  if(k==='est') acts=`<button class="grow" onclick="openReqBook(${i})">🔧 They said yes — book the job</button>
+      <button class="ghost" onclick="reqNotProceeding(${i});closeSheetDom()">Didn't go ahead</button>`;
+  if(k==='bk') acts=`<button class="grow secondary" onclick="openReqMove(${i})">📅 Move it</button>
+      ${q.email?`<button class="ghost" onclick="reqRenotify(${i})">📧 ${q.confirm==='none'||q.confirm==='no email'?'Email customer':'Email again'}</button>`:''}
+      <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>`;
+  sheet(`<h2 style="margin-bottom:2px">${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</h2>
+    <p class="small muted" style="margin-top:0">${esc(status)}${q.po?' · '+esc(q.po):''}</p>
+    <div style="margin:8px 0 12px">
+      ${row(k==='est'?'Estimate call':'When', esc(fmt(q.start)||(q.suggested?('suggested '+fmt(q.suggested)):'')))}
+      ${k==='bk'?row('Customer answer', esc(CONF[q.confirm]||CONF.none)+(q.notifiedAt?`<br><span class="small muted">asked ${esc(fmt(q.notifiedAt))}</span>`:'')):''}
+      ${row('Phone', tel?`<a href="tel:${esc(tel)}">${esc(q.phone)}</a>`:'')}
+      ${row('Email', q.email?`<a href="mailto:${esc(q.email)}">${esc(q.email)}</a>`:'<span class="muted">none</span>')}
+      ${row('Address', q.address?`<a href="https://maps.google.com/?q=${encodeURIComponent(q.address)}" target="_blank" rel="noopener">${esc(q.address)}</a>`:'')}
+      ${row('Company', esc(q.company||''))}
+      ${row('Scope', esc(q.scope||''))}
+      ${row('Materials', esc(q.materials||''))}
+      ${row('Hours', (q.bookedHours||q.hours)?esc(String(q.bookedHours||q.hours))+' hr'+(q.crew>1?` · ${q.crew} people`:''):'')}
+      ${row('Price', esc(price))}
+      ${row('Crew', esc(crewNames.join(', ')))}
+    </div>
+    ${reqPhotoStrip(q)}
+    ${enquiryBtn(q,k,i)}
+    ${ballParkBtn(q,k,i)}
+    <div class="row" style="margin-top:14px;flex-wrap:wrap">${acts}</div>
+    <div class="row" style="margin-top:8px">
+      <button class="secondary grow" onclick="closeSheetDom();render()">Close</button>
+      <button class="secondary grow" onclick="openReqEdit('${k}',${i})">✏️ Correct details</button>
+    </div>`);
+}
+function openReqEdit(k,i){
+  const q=reqList(k)[i]; if(!q) return;
+  const f=(id,label,v,type)=>`<label>${label}</label><input id="${id}" type="${type||'text'}" value="${esc(v||'')}">`;
+  sheet(`<h2>Correct ${esc(q.customer||'this job')}</h2>
+    <p class="small muted" style="margin-top:-4px">Changes go to the request${k==='bk'?', the calendar event':''}${q.po?' and PO Log '+esc(q.po):(k==='est'?' and the Estimate tab':'')}. Use “Move it” to change the date or hours.</p>
+    ${f('edCustomer','Customer name',q.customer)}
+    ${f('edCompany','Company (blank for a homeowner)',q.company)}
+    ${f('edPhone','Phone',q.phone,'tel')}
+    ${f('edEmail','Email',q.email,'email')}
+    ${f('edAddress','Address',q.address)}
+    <label>Scope</label><textarea id="edScope" rows="3">${esc(q.scope||'')}</textarea>
+    <label>Materials</label><textarea id="edMaterials" rows="2">${esc(q.materials||'')}</textarea>
+    <div class="row">
+      <div class="grow"><label>Job length (hours)</label><input id="edHours" type="number" step="0.25" min="0" value="${q.bookedHours||q.hours||''}"></div>
+      <div class="grow"><label>Quoted from ($)</label><input id="edLow" type="number" step="1" min="0" value="${q.priceLow||''}"></div>
+      <div class="grow"><label>to ($)</label><input id="edHigh" type="number" step="1" min="0" value="${q.priceHigh||''}"></div>
+    </div>
+    <p class="small muted" style="margin-top:-2px">The hours and the quote are what you tell the customer. Changing them here does not move anything on the calendar — use “Move it” for that.</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="openReqDetail('${k}',${i})">Back</button>
+      <button class="grow" id="edGo" onclick="reqSaveEdit('${k}',${i},this)">💾 Save</button>
+    </div>`);
+}
+async function reqSaveEdit(k,i,btn){
+  const q=reqList(k)[i]; if(!q) return;
+  const p={id:q.id, customer:val('edCustomer'), company:val('edCompany'), phone:val('edPhone'),
+    email:val('edEmail'), address:val('edAddress'), scope:val('edScope'), materials:val('edMaterials'),
+    hours:val('edHours'), bookedHours:val('edHours'), priceLow:val('edLow'), priceHigh:val('edHigh')};
+  if(!String(p.customer).trim()) return toast('The customer needs a name.');
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const r=await api('requestUpdate',p,{timeout:120000});
+    ['customer','company','phone','address','scope','materials'].forEach(x=>q[x]=String(p[x]).trim());
+    q.email=String(p.email).trim().toLowerCase();
+    if(r){ ['hours','priceLow','priceHigh','bookedHours'].forEach(x=>{ if(r[x]!=null) q[x]=r[x]; }); }
+    toast(r&&r.changed&&r.changed.length?'Saved ✓':'Nothing changed');
+    if(r&&r.note&&/NOT |not found/.test(r.note)) setTimeout(()=>toast(r.note),2600);
+    openReqDetail(k,i); loadRequests();
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='💾 Save'; }
+}
+/* v60 — Move it now serves the quoted estimates as well as the booked jobs. For an ESTIMATE it
+   is the CALL that moves, so it asks for the call length (15/30/60/120) rather than the job's
+   hours; the server used to block out the whole estimated job length, which turned a 30-minute
+   call about a 6-hour job into a lost day. `k` is 'bk' for a booked job, 'est' for a quote. */
+function openReqMove(i,k){
+  k=k||'bk';
+  const q=reqList(k)[i]; if(!q) return;
+  const isEst=k==='est';
+  const cur=q.start&&!isNaN(new Date(q.start))?new Date(q.start):new Date(Date.now()+86400000);
+  const pad=n=>String(n).padStart(2,'0');
+  const d=`${cur.getFullYear()}-${pad(cur.getMonth()+1)}-${pad(cur.getDate())}`;
+  const t=`${pad(cur.getHours())}:${pad(cur.getMinutes())}`;
+  const mins=Math.max(15,Math.min(120,Math.round((new Date(q.end)-new Date(q.start))/60000)||30));
+  sheet(`<h2>Move ${esc(q.customer||(isEst?'this call':'this job'))}</h2>
+    <p class="small muted" style="margin-top:-4px">${q.po?esc(q.po)+' · ':''}${esc(q.scope||'')}</p>
+    ${isEst?`<label>How long is the call?</label>
+      <div class="seg" id="mvCallSeg" style="margin-bottom:8px">
+        ${[[15,'15 min'],[30,'30 min'],[60,'1 h'],[120,'2 h']].map(([m,lbl])=>`<button type="button" data-m="${m}" class="${m===mins?'on':''}" onclick="mvSetCall(${m})">${lbl}</button>`).join('')}
+      </div>
+      <input type="hidden" id="mvCallMin" value="${mins}">
+      <label>How long is the job itself? (hours — for the quote)</label>`
+     :`<label>How long is the job? (hours)</label>`}
+    <input id="mvHours" type="number" step="0.25" min="0.25" value="${q.bookedHours||q.hours||1}">
+    <div class="row"><div class="grow"><label>New date</label><input id="mvDate" type="date" value="${d}"></div>
+      <div class="grow"><label>New start</label><input id="mvTime" type="time" value="${t}"></div></div>
+    <div class="perm"><input type="checkbox" id="mvNotify" ${isEst?'':'checked'}><label for="mvNotify" style="margin:0">Email the customer the new time</label></div>
+    <div class="perm"><input type="checkbox" id="mvBump"><label for="mvBump" style="margin:0">Let it take a slot that already has a job in it</label></div>
+    <p class="small muted">${isEst
+      ? 'Moves the estimate call on the calendar. No PO number is involved — nothing is booked yet.'
+      : 'Moves the calendar event and the PO Log start date. Goes back to 🟠 until they answer.'}</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheetDom();render()">Back</button>
+      <button class="grow" id="mvGo" onclick="reqMove(${i},this,'${k}')">📅 Move it</button>
+    </div>`);
+}
+function mvSetCall(m){
+  const h=document.getElementById('mvCallMin'); if(h) h.value=m;
+  document.querySelectorAll('#mvCallSeg button').forEach(b=>b.classList.toggle('on',Number(b.dataset.m)===m));
+}
+async function reqMove(i,btn,k){
+  k=k||'bk';
+  const q=reqList(k)[i]; if(!q) return;
+  const date=val('mvDate'), time=val('mvTime'), hours=Number(val('mvHours'))||q.bookedHours||q.hours||1;
+  if(!date||!time) return toast('Pick the date and time.');
+  const start=new Date(date+'T'+time);
+  if(isNaN(start)) return toast('That date/time did not read properly.');
+  const notifyCustomer=(document.getElementById('mvNotify')||{}).checked!==false;
+  const callMinutes=Number(val('mvCallMin'))||0;
+  btn.disabled=true; btn.textContent='Moving…';
+  try{
+    const bump=(document.getElementById('mvBump')||{checked:false}).checked===true;
+    const r=await api('requestReschedule',{id:q.id, start:start.toISOString(), hours,
+      callMinutes:callMinutes||undefined, notify:notifyCustomer, bump},{timeout:120000});
+    const back=(r&&r.bumped&&r.bumped.length)||0;
+    toast('Moved ✓'+(notifyCustomer?' — customer emailed':'')
+      +(back?' · '+back+' job(s) now need a new time':''),back?7000:4000);
+    loadRequests(); if(S.sched) schedRefreshAll(); render();   // v57
+    afterChange({customer:q.customer, phone:q.phone, email:q.email, eventId:q.eventId},
+      'Moved to '+fmtDay(start.toISOString())+' '+fmtTime(start.toISOString()),
+      (notifyCustomer && r && r.note && !/NOT notified|unavailable|no customer email/i.test(r.note))
+        ? 'The customer has been emailed the new time, with Yes / No buttons to answer.' : '');
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='📅 Move it'; }
+}
+/* v46 — cancel a booked job. Frees the calendar slot and marks the PO Log row Cancelled.
+   The PO number is kept: it is an invoice number, and the sequence never reuses one. */
+function openReqCancel(i){
+  const q=(S.reqBooked||[])[i]; if(!q) return;
+  const when=q.start&&!isNaN(new Date(q.start))?new Date(q.start).toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
+  const crew=(q.assigned||[]).length;
+  sheet(`<h2>Cancel ${esc(q.customer||'this job')}?</h2>
+    <p class="small muted" style="margin-top:-4px">${q.po?esc(q.po)+' · ':''}${esc(when)}</p>
+    ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
+    <label>Note for the customer (optional — also goes to the crew and the log)</label>
+    <input id="cxReason" type="text" placeholder="e.g. Paul is sick today — we'll call you to rebook">
+    ${crew?`<div class="perm"><input type="checkbox" id="cxCrew" checked><label for="cxCrew" style="margin:0">Tell the ${crew} assigned so they don't drive out</label></div>`:''}
+    ${q.email?`<div class="perm"><input type="checkbox" id="cxCust" checked><label for="cxCust" style="margin:0">Email the customer that it's cancelled</label></div>`:'<p class="small muted">No email on file — the customer will not be told automatically.</p>'}
+    <p class="small muted">Takes it off the calendar and marks ${q.po?esc(q.po)+' Cancelled':'the job Cancelled'} on the PO Log. The PO number is kept, not reused.</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheetDom();render()">Keep it</button>
+      <button class="grow danger" id="cxGo" onclick="reqCancel(${i},this)">Cancel the job</button>
+    </div>`);
+}
+async function reqCancel(i,btn){
+  const q=(S.reqBooked||[])[i]; if(!q) return;
+  const reason=val('cxReason')||'';
+  const notifyCrew=(document.getElementById('cxCrew')||{checked:false}).checked===true;
+  const notifyCustomer=(document.getElementById('cxCust')||{checked:false}).checked===true;
+  btn.disabled=true; btn.textContent='Cancelling…';
+  try{
+    const r=await api('requestCancel',{id:q.id, reason, notifyCrew, notifyCustomer},{timeout:120000});
+    S.reqBooked=(S.reqBooked||[]).filter(x=>x.id!==q.id);
+    toast('Cancelled ✓'+(r&&r.po?(' — '+r.po+' marked Cancelled'):''));
+    if(r&&r.note&&/NOT /.test(r.note)) setTimeout(()=>toast(r.note),2600);
+    closeSheetDom(); loadRequests(); if(S.sched) schedRefreshAll(); render();   // v57
+  }catch(e){
+    /* v47 — the cancel often lands even when its answer never makes it back to the phone (weak
+       signal, a slow Google reply). Before leaving the person stuck on this screen, ask the
+       server whether the job is still booked; if it is gone, the cancel worked. */
+    if (!(e && e.kind === 'server')) {
+      btn.textContent='Checking…';
+      try{
+        const r=await apiBg('requestList',{});
+        S.requests=r.requests||[]; S.reqEstimates=r.estimates||[]; S.reqBooked=r.booked||[];
+        if(!(S.reqBooked||[]).some(x=>x.id===q.id)){
+          toast('Cancelled ✓'+(q.po?(' — '+q.po+' marked Cancelled'):''));
+          closeSheetDom(); render(); return;
+        }
+      }catch(e2){}
     }
-    boot.openEntry = data.entry;
-  } else return;
-  await cachePut_(db, 'bootstrap', boot);
+    if (e && e.kind === 'network') toast('No answer yet — close this and check the Booked list in a moment; it may have gone through.');
+    else toast(e.message);
+    btn.disabled=false; btn.textContent='Cancel the job';
+  }
 }
-self.flushPunches_ = flushPunches_; // reachable from tests
-self.syncCount_ = 0;                 // how many times the browser has fired the sync (tests)
+async function reqRenotify(i){
+  const q=(S.reqBooked||[])[i]; if(!q) return;
+  try{
+    const r=await api('requestRenotify',{id:q.id});
+    toast(r&&/emailed/i.test(r.note||'')?'Customer emailed ✓':(r&&r.note)||'Sent');
+    loadRequests();
+  }catch(e){ toast(e.message); }
+}
+async function reqDismiss(i){
+  const q=(S.requests||[])[i]; if(!q) return;
+  try{
+    await api('requestDismiss',{id:q.id});
+    S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
+    toast('Dismissed'); render();
+  }catch(e){ toast(e.message); }
+}
+/* Pop-up nudge on open when leads are waiting (Charles, item 1 of the request round). */
+function reqNudge(){
+  if(!canApprove() || !S.pendingRequests || S._reqNudged) return;
+  S._reqNudged=true;
+  const n=S.pendingRequests;
+  sheet(`<div class="center">
+      <div style="font-size:2.4rem">📨</div>
+      <h2>${n} new ${n===1?'request':'requests'} from the website</h2>
+      <p class="small muted">${n===1?'A customer has':'Customers have'} asked for an estimate or an appointment. Nothing is on the calendar yet.</p>
+      <button style="width:100%;margin-top:10px" onclick="closeSheetDom();go('requests')">Look at ${n===1?'it':'them'} now</button>
+      <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">Later</button>
+    </div>`);
+}
 
-self.addEventListener('sync', (e) => {
-  if (e.tag !== 'flush-punches') return;
-  self.syncCount_++;
-  e.waitUntil(flushPunches_());
+/* Read-only price list — admins and the bookkeeper (server enforces it too). */
+let plT=null;
+function openPriceList(){
+  sheet(`<h2>💲 Price list</h2>
+    <p class="small muted">Live supplier prices and what we have on hand. Updated by every scanned receipt or estimate and the daily email sweep — newest price wins, whether it came from an invoice or a quote.</p>
+    <input id="plQ" placeholder="Search: e.g. breaker 15a, NMD90, EMT 1/2" oninput="plSearch()">
+    <div id="plList" class="small muted" style="margin-top:8px"><span class="spin"></span></div>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  plSearch();
+}
+function plSearch(){
+  clearTimeout(plT);
+  plT=setTimeout(async ()=>{
+    const box=document.getElementById('plList'); if(!box) return;
+    box.innerHTML='<span class="spin"></span>';
+    try{
+      const r=await apiBg('priceList',{q:val('plQ'),limit:40});
+      const b2=document.getElementById('plList'); if(!b2) return;
+      b2.innerHTML=(r.items||[]).map(it=>`<div class="list-item row between">
+          <div class="grow"><b>${esc(it.desc)}</b><div class="small muted">${esc(it.sku)} · ${it.onHand} ${esc(it.unit)} on hand${it.supplier?' · '+(it.src?esc(it.src)+' — ':'last from ')+esc(it.supplier)+(it.date?' '+esc(it.date):''):''}${(it.lo&&it.loSup&&it.lo<it.price)?` · <span style="color:var(--good)">cheapest ${esc(it.loSup)} $${Number(it.lo).toFixed(2)}</span>`:''}</div></div>
+          <div style="font-weight:800;white-space:nowrap">$${Number(it.price).toFixed(2)}</div>
+        </div>`).join('') || '<p class="muted small">No match — try fewer words.</p>';
+      if((r.total||0)>40) b2.innerHTML+=`<p class="small muted">Showing 40 of ${r.total} — refine the search.</p>`;
+    }catch(e){ const b3=document.getElementById('plList'); if(b3) b3.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+  },350);
+}
+
+/* ---- Admin: materials review ---- */
+async function openMatReview(){
+  try{
+    const r=await api('pendingMaterials');
+    const rows=(r.pending||[]).map(m=>{ const k=reg(m); return `<div class="list-item">
+      <b>${esc(m.item)}</b>${m.qty?` · ${esc(m.qty)} ${esc(m.unit||'')}`:''}
+      <div class="small muted">${esc(m.employee)} · ${esc(m.jobSite||'')}${m.po?' · PO '+esc(m.po):''} · ${fmtDay(m.time)}</div>
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="resolveMat('${k}','addToList')">Add to materials list</button>
+        <button class="secondary grow" onclick="resolveMat('${k}','dismiss')">Dismiss</button>
+      </div></div>`; }).join('');
+    sheet(`<h2>Materials review</h2>
+      <p class="small muted">Free-typed items from the field — match them against supplier receipts/invoices.</p>
+      ${rows||'<p class="muted">Nothing flagged. 🎉</p>'}
+      <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  }catch(e){toast(e.message);}
+}
+async function resolveMat(k,action){
+  const m=dereg(k); if(!m) return;
+  try{ await api('resolveMaterial',{row:m.row, action}); toast(action==='addToList'?'Added to materials list':'Dismissed'); openMatReview(); }
+  catch(e){toast(e.message);}
+}
+
+/* ---- Encouragement on clock-out ---- */
+/* v42 — one card, four honest states. `state`: 'sending' (request in flight), 'done' (the
+   office has it), 'queued' (kept on the phone, will send when there is signal), 'failed' (the
+   server refused it — the person is still clocked in). Same sheet is re-rendered in place, so
+   the person watches ⏳ turn into ✅ (about 4-6 s) instead of being told ✅ up front. */
+function showEncouragement(hrs, ot, breakHrs, state, why){
+  const msg = ENCOURAGEMENTS[Math.floor(dayIndex()) % ENCOURAGEMENTS.length];
+  const st = state||'done';
+  const icon = { sending:'⏳', done:'✅', queued:'📶', failed:'❌' }[st];
+  const head = { sending:`Clocking out — ${hrs.toFixed(2)} hrs`, done:`Clocked out — ${hrs.toFixed(2)} hrs`,
+                 queued:`Clock-out saved on this phone — ${hrs.toFixed(2)} hrs`, failed:'Clock-out did NOT save' }[st];
+  const body = st==='sending' ? '<p class="muted" style="margin:14px 0">Sending to the office…</p>'
+    : st==='queued' ? '<p style="margin:14px 0">Could not reach the office just now. Your clock-out is kept on this phone and will send by itself as soon as it can — you can close the app.</p><p class="small muted">Until it is sent, the home screen shows it as waiting.</p>'
+    : st==='failed' ? `<p style="margin:14px 0"><b>You are still clocked in.</b> The office refused this clock-out:</p><p class="small" style="color:var(--bad)">${esc(why||'')}</p><p class="small muted">Check the times and try again.</p>`
+    : `<p style="font-size:1.1rem;margin:14px 0">${esc(msg)}</p>`;
+  sheet(`<div class="center">
+    <div style="font-size:2.6rem">${icon}</div>
+    <h2>${esc(head)}</h2>
+    ${breakHrs&&st!=='failed'?`<div class="small muted">(${(breakHrs*60).toFixed(0)} min of breaks deducted)</div>`:''}
+    ${body}
+    ${ot&&st==='done'?'<div class="banner ot">You\'re into overtime this week — nice hustle.</div>':''}
+    ${st==='sending'?'':`<button style="width:100%;margin-top:8px" onclick="closeSheet()">${st==='failed'?'OK':'Done'}</button>`}
+  </div>`);
+  keepSheet_(); // a stray tap must not dismiss the answer before it is read
+}
+function dayIndex(){ // deterministic day-of-year so the message rotates predictably across the year
+  const d=new Date(); const start=new Date(d.getFullYear(),0,0);
+  return Math.floor((d-start)/86400000);
+}
+
+/* ============================================================================
+ * WIRING / HELPERS
+ * ==========================================================================*/
+function val(id){ const e=document.getElementById(id); return e? e.value : ''; }
+function wire(){
+  if (S.openEntry && !timerInt){ timerInt=setInterval(tickTimer,1000); }
+  if (!S.openEntry && timerInt){ clearInterval(timerInt); timerInt=null; }
+  // Fill the freshly-rendered timer node NOW — every re-render used to show the "0:00:00"
+  // placeholder for up to a second until the next tick (visible flash of the big number).
+  if (S.openEntry) tickTimer();
+}
+let toastT=null;
+function toast(msg, ms){
+  const t=document.getElementById('toast');
+  t.innerHTML=`<div class="toast">${esc(msg)}</div>`;
+  clearTimeout(toastT); toastT=setTimeout(()=>t.innerHTML='', ms||3200);
+}
+
+/* ============================================================================
+ * ONLINE/OFFLINE + STARTUP
+ * ==========================================================================*/
+async function flushReceipts(){
+  if(!S.online||S._frBusy) return; S._frBusy=true;
+  try{
+    let q=(await DB.getCache('pendingReceipts'))||[];
+    while(q.length){
+      const it=q[0];
+      const r=await apiBg('fileReceipt', it);
+      if(!r||!r.receiptUrl) break;      // still failing — try again next time
+      q=q.slice(1); await DB.setCache('pendingReceipts', q);
+      toast('Receipt from earlier synced to Drive ✓');
+    }
+  }catch(e){ /* next reconnect retries */ }
+  S._frBusy=false;
+}
+/* A forgotten punch-out costs somebody a day's pay to unpick, so past 16 hours we say so out
+   loud instead of hoping the banner gets noticed. Dismissible — it returns on the next open. */
+function forgotNudge(){
+  if(!S.openEntry || S._forgotNudged) return;
+  const ageH=(Date.now()-new Date(S.openEntry.ClockIn))/3600000;
+  if(ageH < 16) return;
+  S._forgotNudged=true;
+  sheet(`<div class="center">
+      <div style="font-size:2.4rem">⏰</div>
+      <h2>Still clocked in after ${Math.floor(ageH)} hours</h2>
+      <p>You clocked in on <b>${esc(fmtDay(S.openEntry.ClockIn))} at ${esc(fmtTime(S.openEntry.ClockIn))}</b> and haven't clocked out.</p>
+      <p class="small muted">If you forgot, fix the time now and your hours stay right. If you really are still working, carry on.</p>
+      <button style="width:100%;margin-top:10px" onclick="closeSheetDom();openForgotFix()">Fix my clock-out time</button>
+      <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">I'm still working</button>
+    </div>`);
+}
+window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); flushReceipts(); flushScans(); if(!S.onboard) loadOnboarding(); });
+window.addEventListener('offline', ()=>{ S.online=false; render(); });
+/* v42 — a phone that was in a pocket does not fire 'online', and its 60-second timer was
+   frozen with the screen. The moment the app is back in front: send whatever is waiting and,
+   unless it was refreshed in the last minute, re-read the server so the screen is the truth. */
+document.addEventListener('visibilitychange', ()=>{
+  if (document.visibilityState!=='visible'){
+    // v43 — going to the background with punches waiting: the browser takes over the sending.
+    if (S.queued) registerSync_(true);
+    return;
+  }
+  if (!S.booted || !S.session) return;
+  S.online = navigator.onLine;
+  flushQueue().then(n=>{ if (!n && Date.now()-(S._lastRefresh||0) > 60000 && !S._sheet) refresh(true); });
 });
+/* v43 — the service worker talks back: 'punchesSent' after it delivered queued punches while
+   the app was closed or in the background — re-read the office so the screen is the truth. */
+if ('serviceWorker' in navigator){
+  navigator.serviceWorker.addEventListener('message', (ev)=>{
+    const m = ev.data || {};
+    if (m.type==='punchesSent'){ queueCount_(); if (S.booted && S.session){ toast((m.n||1)+' punch'+(m.n>1?'es':'')+' sent to the office in the background ✓', 5000); refresh(true); } }
+  });
+}
+
+async function start(){
+  // Restore the session so a returning user never sees the sign-in screen. 30 days on the server,
+  // renewed on use — the only thing that should ever send somebody back to Google is a phone that
+  // genuinely lost the token, and loadSession_ now checks both places it could be.
+  /* v73 — REGISTER THE SERVICE WORKER FIRST, AND DO NOT WAIT ON IT.
+     This line used to sit AFTER `await boot()`. boot() waits on a bootstrap call to Apps Script,
+     which takes 4-6 seconds warm and far longer cold, so the worker was only registered once the
+     office had answered. Anyone who opened the app, glanced at the clock and closed it inside that
+     window registered nothing — and on the open after a phone's storage had been cleared, that is
+     the difference between an app that opens in the truck and one that shows the browser's offline
+     page. No worker, no cached shell, nothing to open.
+     Registration needs no session and nothing from the server, so it goes first. It is not awaited
+     either: awaiting it would put the sw.js fetch in front of the first paint, and offline that
+     fetch fails, which is precisely the moment the screen has to come up regardless. */
+  if ('serviceWorker' in navigator){
+    try { navigator.serviceWorker.register('./sw.js').catch(()=>{}); } catch(e){}
+  }
+  // v43 — what the service worker needs to send punches on its own (it cannot see this script):
+  // the office's address; the session is already in the same cache ('session'). Written up here
+  // now, so it is in place before the first punch can possibly be taken.
+  DB.setCache('apiUrl', CONFIG.APPS_SCRIPT_URL).catch(()=>{});
+  custHydrateSync_();   // v75 - the job list is in memory before the first screen is drawn
+  keepStorage_();
+  const sess = await loadSession_();
+  if (sess){ S.session=sess; await boot(); }
+  initAuth();
+  if (S.queued) registerSync_();
+  // periodic background sync while app is open (flushQueue is a no-op when the queue is
+  // empty); a full data refresh only every 5 min — it costs a 4-6s server call.
+  setInterval(()=>{ if(S.online && S.booted){ flushQueue(); } }, 60000);
+  setInterval(()=>{ if(S.online && S.booted && !S._sheet){ refresh(true); } }, 300000);
+}
+window.onCredential=onCredential; // GIS callback
+window.addEventListener('DOMContentLoaded', start);
+</script>
+</body>
+</html>
