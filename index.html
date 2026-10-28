@@ -1103,7 +1103,7 @@ async function apiRaw_(action, payload, timeoutMs){
   } catch(e){
     // Nothing came back. Whatever the browser calls it, this is a transport failure, never a
     // rejection — the request may or may not have run, and the backend dedupes a replay.
-    if (e && e.name === 'AbortError') throw apiErr_('No answer from the office in 30 seconds. Usually it is the Google script being slow to wake up, not your signal — try once more.', 'network');
+    if (e && e.name === 'AbortError') throw apiErr_('No answer from the office in ' + Math.round((timeoutMs || API_TIMEOUT)/1000) + ' seconds. Usually it is the Google script being slow to wake up, not your signal — try once more.', 'network');
     throw apiErr_((e && e.message) ? 'Network error — ' + e.message : 'Network error', 'network');
   } finally { clearTimeout(killer); }
   let json;
@@ -5770,6 +5770,18 @@ async function camFromFile(input){
  * document disagrees with the button pressed, or the printed date cannot be trusted, nothing
  * is saved until the person confirms. Offline: the photo + answer wait on the phone and are
  * sent when there is signal; a queued scan that then needs a decision shows a banner. */
+/* v85 - IS IT WORTH SENDING AGAIN? Both scan paths used to ask this with their own regex over
+ * the error TEXT, and neither listed the one failure that actually happens: the hard timeout,
+ * whose message is "No answer from the office in N seconds". So the commonest transient fault of
+ * all - Apps Script taking its time to wake up - was read as a permanent refusal: the photo was
+ * either dropped on the floor or parked on the phone as "needs your OK" with the error pasted
+ * into it, where nothing ever retried it. Paul had one sitting there from 21 Oct. retryable_()
+ * already knows a transport failure by its kind rather than its wording, which is the robust
+ * test; the regex is only for the things the SERVER says when it is overloaded. */
+function scanRetry_(e){
+  return retryable_(e) ||
+    /busy right now|Failed to fetch|NetworkError|timed out|No answer from the (office|server)|No AI model answered|HTTP 4?5\d\d?|overload|UNAVAILABLE|RESOURCE_EXHAUSTED|rate.?limit|quota/i.test((e&&e.message)||'');
+}
 const SCAN_TIMEOUT = 75000;   // AI read 10–20 s + sheet/Drive writes; the general 30 s limit is too short for a long invoice
 function openDocScan(){
   const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
@@ -5829,7 +5841,7 @@ async function docScanCall(p, qid){
   }catch(e){
     // v44 - an overloaded or renamed AI model is TRANSIENT, not a bad photo. It used to print the
     // error and lose the picture; now it queues like a no-signal scan and retries on its own.
-    if(/busy right now|Failed to fetch|NetworkError|timed out|No answer from the server|No AI model answered|HTTP 4?5\d\d?|overload|UNAVAILABLE|RESOURCE_EXHAUSTED|rate.?limit|quota/i.test(e.message||'')){
+    if(scanRetry_(e)){
       if(qid) await docQueueUpdate(qid, {kind:p.kind, confirmed:!!p.confirmed, extract:p.extract||null, dateOverride:p.dateOverride||'', needsConfirm:false, server:null}); // keep the answers with the photo
       else await docQueue(p);
       if(qid){ const st=docWaitOpen(seq)?document.getElementById('dsStatus'):null;
@@ -5852,11 +5864,22 @@ async function docPark(p, r, qid){
  * would change, and let the person decide before anything is saved. */
 function docConfirm(p, r, qid){
   const typeW=(r.warnings||[]).find(w=>w.code==='type'), dateW=(r.warnings||[]).find(w=>w.code==='date');
+  // v85 — plus anything an OLDER build parked under the date warning with the error in its text,
+  // which is what is sitting on Paul's phone from 21 Oct. Same thing, so the same screen.
+  const sendW=(r.warnings||[]).find(w=>w.code==='send'||(w.code==='date'&&/could not be saved:/i.test(w.text||'')));
   const kind=r.kind||p.kind;
   const lines=(r.items||[]).map(it=>`<div class="list-item row between">
       <div class="grow">${esc(it.desc)}<div class="small muted">${esc(it.sku||'')}</div></div>
       <div class="small muted" style="white-space:nowrap;text-align:right">×${esc(it.qty)}${it.price!=null?'<br>'+priceDelta(it.oldPrice,it.price):''}</div>
     </div>`).join('');
+  if(sendW){
+    sheet(`<h2>📷 Not sent yet</h2>
+      <p class="small muted" style="margin-top:0">The photo is safe on this phone. It was never read, so nothing has been saved and nothing has been doubled.</p>
+      <div class="banner ot" style="text-align:left">${esc(sendW.text)}</div>
+      <button style="width:100%;margin-top:12px" onclick="docConfirmSend('${esc(kind)}')">Try sending it again</button>
+      <button class="secondary" style="width:100%;margin-top:8px" onclick="docConfirmCancel()">Discard the photo</button>`);
+    keepSheet_(); S._docPending={p, r, qid}; return;
+  }
   sheet(`<h2>⚠ Check before saving</h2>
     <p class="small"><b>${esc(r.supplier||'Supplier')} ${esc(r.invoiceNo||'')}</b>${r.date?' · '+esc(r.date):(r.datePrinted?' · date printed "'+esc(r.datePrinted)+'"':'')}</p>
     ${typeW?`<div class="banner ot" style="text-align:left">${esc(typeW.text)}</div>`:''}
@@ -6044,9 +6067,13 @@ async function flushScans(){
       }catch(e){
         const msg=e.message||'';
         if(/does not look like|Could not read|clearer photo|could not be read/i.test(msg)){ await docQueueDel(it.qid); toast('⚠ A queued photo was unreadable — scan it again'); }
-        else if(/busy right now|Failed to fetch|NetworkError|timed out|No answer from the server|rate-limited|Session expired|Please sign in|No AI model answered|HTTP 4?5\d\d?|overload|UNAVAILABLE|RESOURCE_EXHAUSTED|quota/i.test(msg)) break;   // transient (incl. an AI model that is down or renamed) — retry on the next reconnect
+        else if(scanRetry_(e)) break;   // transient (incl. an AI model that is down or renamed) — retry on the next reconnect
+        // v85 - code 'send', not 'date'. Parking a FAILED SEND under the date warning put a date
+        // box on the screen pre-filled with the day it failed, over a button reading "Save with
+        // this date" - and the script stamps dateOverride straight onto the document, so one tap
+        // would have filed the invoice under the wrong date. There is no date question here.
         else { await docQueueUpdate(it.qid, {needsConfirm:true, server:{needsConfirm:true, kind:it.kind, supplier:'', invoiceNo:'', date:'', items:[], extract:it.extract||{},
-                 warnings:[{code:'date', text:'This scan could not be saved: '+msg, suggested:new Date().toISOString().slice(0,10)}]}}); }   // park it with the reason instead of jamming the queue
+                 warnings:[{code:'send', text:msg}]}}); }   // park it with the reason instead of jamming the queue
       }
     }
     docQueueCount(await docQueueAll());
