@@ -87,6 +87,22 @@
   .chip{display:inline-block; background:var(--panel2); border:1px solid var(--line); border-radius:999px;
     padding:8px 14px; margin:4px 4px 0 0; font-size:.9rem}
   .chip.sel{background:var(--accent); border-color:var(--accent); color:#fff}
+  /* ---- v86: ONE materials row, everywhere material goes onto a job. Paul's sketch of
+   *      29 Oct: the name, the quantity in a box, a single blue unit toggle, a bin. What was
+   *      bought, what is logged, what is left and which supplier it came from are gone - the
+   *      crew are filling in what they used, not auditing the purchase. ---- */
+  .mrow{display:flex; gap:10px; align-items:flex-start; padding:12px 0; border-bottom:1px solid var(--line)}
+  .mrow:last-child{border-bottom:none}
+  .mrow .nm{flex:1; min-width:0}
+  .mrow .nm b{display:block; font-size:.97rem; line-height:1.25}
+  .mrow .nm .d{font-size:.72rem; color:var(--muted); margin-top:2px; line-height:1.25;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+  .mrow input.q{width:68px; flex:none; text-align:center; font-weight:700; margin:0; padding:9px 4px; border-radius:10px}
+  .mrow .u{flex:none; width:56px; text-align:center; padding:9px 0; font-size:.82rem; font-weight:700;
+    border:none; border-radius:999px; background:var(--accent); color:#fff}
+  .mrow .ea{flex:none; width:56px; text-align:center; font-size:.8rem; color:var(--muted); padding:9px 0}
+  .mrow .x{flex:none; background:transparent; color:var(--bad); font-size:1.1rem; padding:8px 0 8px 4px; width:30px}
+  .mbox{border:1px solid var(--line); border-radius:12px; padding:0 12px; margin:6px 0; background:var(--panel)}
   .suggest{background:var(--panel2); border:1px solid var(--line); border-radius:12px; margin-top:-2px; overflow:hidden}
   .suggest div{padding:12px 14px; border-bottom:1px solid var(--line)}
   .suggest div:last-child{border-bottom:none}
@@ -4266,7 +4282,7 @@ async function submitPicker(){
    running (coTick_). A time typed into the Clock out box wins; and if the review sat open for
    more than LONG_REVIEW_MIN minutes (phone put down mid-form), Submit asks which time is right
    instead of silently padding the day. */
-let coState=null, coSubmittedId=null, coJobResults=[], coMatResults=[], coTickT=null;
+let coState=null, coSubmittedId=null, coJobResults=[], coTickT=null;
 const LONG_REVIEW_MIN = 15;
 /* v75 - how far ahead of the phone's own clock a TYPED clock-out time may be. Paul asked to be
    able to round the finish up (type 5:30 at 5:20); the app used to refuse anything more than
@@ -4304,7 +4320,8 @@ function startClockOutReview(){
     poNumber: S.openEntry['PO#']||'',
     company: S.openEntry.Company||'',
     breakMin: brkMin, autoBreakMin: brkMin,
-    notes: '', items: [], media: [], gps: null,
+    notes: '', items: mdDraftLoad_(S.openEntry['PO#']||'', S.openEntry['Customer/Job Site']||S.openEntry.Company||''),
+    media: [], gps: null,
     rv: { on:false, hours:0, res:null, picked:null, notify:false },  // v34 return visit
   };
   // GPS resolves while they review; if they submit first, it patches in afterwards.
@@ -4377,12 +4394,8 @@ function renderClockOutReview(){
       <button class="secondary" id="coMicBtn" style="padding:6px 12px" onclick="dictate('coMicBtn','coNotes')">🎤 Talk</button></div>
     <textarea id="coNotes" rows="2" placeholder="e.g. changed light fixtures, wired panel — talk or type" oninput="coState&&(coState.notes=this.value)">${esc(c.notes)}</textarea>
     ${coRvCard(c)}
-    <label>Bought for this job</label>
-    <div id="jp_co">${jpBlockHtml('co')}</div>
-    <label style="margin-top:14px">Anything else you used — search the inventory</label>
-    <input id="coMatSearch" placeholder="Search… e.g. half inch EMT, wago" autocomplete="off" oninput="coMatSuggest(this.value)">
-    <div id="coMatSug"></div>
-    <div id="coMatList"></div>
+    <label>Materials used on this job</label>
+    <div id="md_co">${mdListHtml('co')}</div>
     <label>Receipts from today</label>
     <button class="secondary" style="width:100%;padding:11px 8px" onclick="coScanReceipt()">📷 Scan receipt / estimate</button>
     ${c.scanned?`<div class="small muted" style="margin-top:4px">🧾 ${c.scanned} filed against ${esc(c.jobSite||c.company||'this job')}</div>`:''}
@@ -4634,32 +4647,8 @@ function coJobHeader(){ const c=coState; if(!c) return;
   if(n) n.textContent=c.jobSite||c.company||'—';
   if(p) p.textContent=c.poNumber?('PO '+c.poNumber):''; }
 
-/* materials (running, editable list — same search as before, now inline) */
-function coMatSuggest(q){
-  const box=document.getElementById('coMatSug'); if(!box) return;
-  if(!q.trim()){ box.innerHTML=''; return; }
-  coMatResults=localMatSearch(q); let h='';
-  coMatResults.forEach((m,i)=>{ h+=`<div onclick="coMatPick(${i})">${esc(m.name)}${m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}</div>`; });
-  h+=`<div onclick="coMatTyped()">➕ Add “${esc(q)}” as typed <span class="small muted">(admin will review)</span></div>`;
-  box.innerHTML=`<div class="suggest">${h}</div>`;
-}
-function coMatPick(i){ const m=coMatResults[i]; if(!m||!coState) return;
-  coState.items.push({name:m.name, sku:m.sku||'', unit:m.unit||'', qty:1, matched:true}); coMatClear(); coUpdateMats(); }
-function coMatTyped(){ const q=val('coMatSearch').trim(); if(!q||!coState) return;
-  coState.items.push({name:q, unit:'', qty:1, matched:false}); coMatClear(); coUpdateMats(); }
-function coMatClear(){ const i=document.getElementById('coMatSearch'); if(i){ i.value=''; i.focus(); }
-  const b=document.getElementById('coMatSug'); if(b) b.innerHTML=''; }
-function coMatQty(i,v){ if(coState&&coState.items[i]) coState.items[i].qty=v; }
-function coMatRemove(i){ if(!coState) return; coState.items.splice(i,1); coUpdateMats(); jpPaint_(); }
-function coUpdateMats(){
-  const box=document.getElementById('coMatList'); const c=coState; if(!box||!c) return;
-  box.innerHTML = c.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
-    c.items.map((it,i)=>`<div class="list-item row">
-      <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}${it.fromDoc?`<div class="small muted">&#129534; ${esc(it.fromDoc)} &middot; bought ${esc(it.bought)}</div>`:''}</div>
-      <input type="number" step="any" min="0" value="${esc(it.qty)}" style="width:84px;margin:0;text-align:center" onchange="coMatQty(${i},this.value)">
-      <button class="ghost" onclick="coMatRemove(${i})" aria-label="Remove">✕</button>
-    </div>`).join('')+`</div>` : '';
-}
+function coUpdateMats(){ mdPaint_(); }
+
 
 /* photos / videos — attach to the entry right away (it already exists), local thumbnails */
 /* v44 — SCAN A RECEIPT FROM THE REVIEW SCREEN. The review sheet is replaced by the camera; the
@@ -4817,8 +4806,11 @@ async function coCommit_(){
   if (c.items.length){
     apiMutate('logMaterials',{ entryId:c.entryId, jobSite:c.jobSite||c.company||'', poNumber:c.poNumber||'', items:c.items });
     const pend=c.items.filter(i=>!i.matched).length;
-    if (pend) toast(pend+' material item(s) flagged for admin review');
+    if (pend) toast(pend+' new part'+(pend>1?'s':'')+' sent to the office to be named');
   }
+  // v86 - the day's list has left the phone; the next day on this job starts from its POs again.
+  mdDraftClear_(c.poNumber||'', c.jobSite||c.company||'');
+  S._muDraft = null;
   saveBootCache();
   // v34 — the return visit, only now that the office has the clock-out (the server will not
   // book a return visit for a job you have no entry on) and only if a slot was actually picked.
@@ -4856,7 +4848,7 @@ async function coCommit_(){
      is an admin), so Paul no longer approves his own time in the Admin tab. Crew entries
      still go to 'pending' exactly as before.
    Reachable from the Clock screen ("Add time manually") and the Entries tab ("+ Manual"). */
-let mnState=null, mnJobResults=[], mnMatResults=[];
+let mnState=null, mnJobResults=[];
 function openManual(){
   const today=todayStr(); // LOCAL date — toISOString() is UTC and prefills tomorrow every evening
   mnState={ jobSite:'', poNumber:'', company:'', items:[] };
@@ -4894,11 +4886,8 @@ function openManual(){
     <input id="mOut" type="time" oninput="mnCalc('out')">
     <p class="small muted" id="mnSummary" style="margin:2px 0 0"></p>
     <label>Notes</label><textarea id="mNotes" rows="2"></textarea>
-    <label>Bought for this job <span class="muted">(logged on the first day when several days are entered)</span></label>
-    <div id="jp_mn">${jpBlockHtml('mn')}</div>
-    <label style="margin-top:14px">Anything else you used — search the inventory</label>
-    <input id="mnMatSearch" placeholder="Search materials…" autocomplete="off" oninput="mnMatSuggest(this.value)">
-    <div id="mnMatSug"></div><div id="mnMatList"></div>
+    <label>Materials used on this job <span class="muted">(logged on the first day when several days are entered)</span></label>
+    <div id="md_mn">${mdListHtml('mn')}</div>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="mnState=null;closeSheet()">Cancel</button>
       <button class="grow" onclick="submitManual()">Save</button>
@@ -4966,31 +4955,8 @@ function mnCalc(src){
   s.textContent=t;
 }
 /* Materials — mirrors the Edit sheet's helpers. */
-function mnMatSuggest(q){
-  const box=document.getElementById('mnMatSug'); if(!box) return;
-  if(!q.trim()){ box.innerHTML=''; return; }
-  mnMatResults=localMatSearch(q); let h='';
-  mnMatResults.forEach((m,i)=>{ h+=`<div onclick="mnMatPick(${i})">${esc(m.name)}${m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}</div>`; });
-  h+=`<div onclick="mnMatTyped()">➕ Add “${esc(q)}” as typed <span class="small muted">(admin will review)</span></div>`;
-  box.innerHTML=`<div class="suggest">${h}</div>`;
-}
-function mnMatPick(i){ const m=mnMatResults[i]; if(!m||!mnState) return;
-  mnState.items.push({name:m.name, sku:m.sku||'', unit:m.unit||'', qty:1, matched:true}); mnMatClear(); mnUpdateMats(); }
-function mnMatTyped(){ const q=val('mnMatSearch').trim(); if(!q||!mnState) return;
-  mnState.items.push({name:q, unit:'', qty:1, matched:false}); mnMatClear(); mnUpdateMats(); }
-function mnMatClear(){ const i=document.getElementById('mnMatSearch'); if(i){ i.value=''; i.focus(); }
-  const b=document.getElementById('mnMatSug'); if(b) b.innerHTML=''; }
-function mnMatQty(i,v){ if(mnState&&mnState.items[i]) mnState.items[i].qty=v; }
-function mnMatRemove(i){ if(!mnState) return; mnState.items.splice(i,1); mnUpdateMats(); jpPaint_(); }
-function mnUpdateMats(){
-  const box=document.getElementById('mnMatList'); const s=mnState; if(!box||!s) return;
-  box.innerHTML = s.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
-    s.items.map((it,i)=>`<div class="list-item row">
-      <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}</div>
-      <input type="number" step="any" min="0" value="${esc(it.qty)}" style="width:84px;margin:0;text-align:center" onchange="mnMatQty(${i},this.value)">
-      <button class="ghost" onclick="mnMatRemove(${i})" aria-label="Remove">✕</button>
-    </div>`).join('')+`</div>` : '';
-}
+function mnUpdateMats(){ mdPaint_(); }
+
 async function submitManual(){
   const st=mnState; if(!st) return;
   const days=mnDays_(), inV=val('mIn'), outV=val('mOut'), hrs=Number(val('mHrs'));
@@ -5024,7 +4990,7 @@ async function submitManual(){
 /* ---- Edit entry (after submission too — mistakes caught later) ----
    Same fields as the clock-out review. An employee's edit to an already-approved entry
    sends it back to 'pending' for admin re-approval; every save stamps Last Edited By/At. */
-let edState=null, edJobResults=[], edMatResults=[];
+let edState=null, edJobResults=[];
 function openEditEntry(k){
   const ref=dereg(k); if(!ref) return; const e=ref.e;
   edState={ e, employeeEmail:ref.employeeEmail,
@@ -5068,11 +5034,8 @@ function openEditEntry(k){
     <label>Notes</label><textarea id="eNotes" rows="2">${esc(e.Notes||'')}</textarea>
     <label>Why the change? <span class="muted">(whoever approves it sees this)</span></label>
     <input id="eReason" placeholder="e.g. forgot to clock out, finished at 5:30" autocomplete="off">
-    <label>Bought for this job</label>
-    <div id="jp_ed">${jpBlockHtml('ed')}</div>
-    <label style="margin-top:14px">Anything else — search the inventory</label>
-    <input id="edMatSearch" placeholder="Search materials…" autocomplete="off" oninput="edMatSuggest(this.value)">
-    <div id="edMatSug"></div><div id="edMatList"></div>
+    <label>Materials used on this job</label>
+    <div id="md_ed">${mdListHtml('ed')}</div>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="edState=null;closeSheet()">Cancel</button>
       <button class="grow" onclick="submitEdit()">Save</button>
@@ -5123,31 +5086,8 @@ function edJobHeader(){ const s=edState; if(!s) return;
   const n=document.getElementById('edJobName'), p=document.getElementById('edJobPo');
   if(n) n.textContent=s.jobSite||s.company||'—';
   if(p) p.textContent=s.poNumber?('PO '+s.poNumber):''; }
-function edMatSuggest(q){
-  const box=document.getElementById('edMatSug'); if(!box) return;
-  if(!q.trim()){ box.innerHTML=''; return; }
-  edMatResults=localMatSearch(q); let h='';
-  edMatResults.forEach((m,i)=>{ h+=`<div onclick="edMatPick(${i})">${esc(m.name)}${m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}</div>`; });
-  h+=`<div onclick="edMatTyped()">➕ Add “${esc(q)}” as typed <span class="small muted">(admin will review)</span></div>`;
-  box.innerHTML=`<div class="suggest">${h}</div>`;
-}
-function edMatPick(i){ const m=edMatResults[i]; if(!m||!edState) return;
-  edState.items.push({name:m.name, sku:m.sku||'', unit:m.unit||'', qty:1, matched:true}); edMatClear(); edUpdateMats(); }
-function edMatTyped(){ const q=val('edMatSearch').trim(); if(!q||!edState) return;
-  edState.items.push({name:q, unit:'', qty:1, matched:false}); edMatClear(); edUpdateMats(); }
-function edMatClear(){ const i=document.getElementById('edMatSearch'); if(i){ i.value=''; i.focus(); }
-  const b=document.getElementById('edMatSug'); if(b) b.innerHTML=''; }
-function edMatQty(i,v){ if(edState&&edState.items[i]) edState.items[i].qty=v; }
-function edMatRemove(i){ if(!edState) return; edState.items.splice(i,1); edUpdateMats(); jpPaint_(); }
-function edUpdateMats(){
-  const box=document.getElementById('edMatList'); const s=edState; if(!box||!s) return;
-  box.innerHTML = s.items.length ? `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px;margin:6px 0">`+
-    s.items.map((it,i)=>`<div class="list-item row">
-      <div class="grow"><b>${esc(it.name)}</b>${it.matched?'':' <span class="pill pending">review</span>'}${it.unit?` <span class="small muted">${esc(it.unit)}</span>`:''}</div>
-      <input type="number" step="any" min="0" value="${esc(it.qty)}" style="width:84px;margin:0;text-align:center" onchange="edMatQty(${i},this.value)">
-      <button class="ghost" onclick="edMatRemove(${i})" aria-label="Remove">✕</button>
-    </div>`).join('')+`</div>` : '';
-}
+function edUpdateMats(){ mdPaint_(); }
+
 async function submitEdit(){
   const st=edState; if(!st) return;
   const e=st.e;
@@ -5805,12 +5745,33 @@ function docScanPayload(kind, shot){
   if(S.openEntry){ p.jobSite=S.openEntry['Customer/Job Site']||S.openEntry.Company||''; p.poNumber=S.openEntry['PO#']||''; }
   return p;
 }
+/* v86 - TAKE THE NEXT ONE. Paul photographs three or four supplier POs in a row at the counter
+ * and the app used to hold him on a spinner for the whole round trip of each - upload, AI read,
+ * Drive write, 15 to 25 seconds - before it would even show the camera again. Nothing about that
+ * wait was necessary: the photo is the only thing that cannot be recreated, and it is on the
+ * phone the instant it is taken.
+ *
+ * So the answer is not waited for at all. The photo is written to the queue, the screen comes
+ * straight back with "next one" under his thumb, and the reading happens behind whatever he does
+ * next. The queue has been doing this for offline scans since v44 and survives the app being
+ * shut; all that changes is that having signal no longer means standing still. He only hears
+ * about one again if it actually needs him - a date that could not be read, a receipt that looks
+ * like a quote - and that arrives as the banner on the home screen, where it already did. */
 async function docScanSend(kind){
   const shot=S._docShot; S._docShot=null; if(!shot) return closeSheet();
   const p=docScanPayload(kind, shot);
-  docScanWait(kind);
-  if(!S.online){ await docQueue(p); return; }
-  await docScanCall(p, null);
+  await docQueue(p);
+  docQueueCount(await docQueueAll());
+  flushScans();                       // deliberately NOT awaited
+  docScanNext(kind);
+}
+function docScanNext(kind){
+  sheet(`<h2>Saved &#10003;</h2>
+    <p class="small muted" style="margin-top:0">That ${kind==='quote'?'estimate':'receipt'} is on the phone and is being read in the background.
+      ${S.online?'':'It will be sent when you have signal. '}You do not have to wait for it.</p>
+    <button style="width:100%;padding:18px;font-size:1.05rem;margin-top:6px" onclick="openDocScan()">&#128247; Next one</button>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="docFinish()">Done</button>`);
+  keepSheet_();
 }
 let docWaitSeq=0;   // which "Reading…" sheet is current — a result for an older one must not paint over a newer sheet
 function docScanWait(kind){
@@ -6015,7 +5976,11 @@ async function docQueueUpdate(qid, patch){
 async function docQueueDel(qid){
   const q=(await docQueueAll()).filter(x=>x.qid!==qid); await DB.setCache('pendingScans', q); docQueueCount(q);
 }
-function docQueueCount(q){ const n=(q||[]).filter(x=>x.needsConfirm).length; if(n!==(S.scanWaiting||0)){ S.scanWaiting=n; render(); } }
+function docQueueCount(q){
+  const n=(q||[]).filter(x=>x.needsConfirm).length;
+  const b=(q||[]).filter(x=>!x.needsConfirm).length;        // v86 - photos still to be read
+  if(n!==(S.scanWaiting||0) || b!==(S.scanBusy||0)){ S.scanWaiting=n; S.scanBusy=b; render(); }
+}
 /* v42 — punches that have not reached the office yet, and punches the office refused, live on
    the home screen until they are sent or seen. A 3-second toast was how a lost clock-out went
    unnoticed for six days. */
@@ -6043,6 +6008,8 @@ async function openSyncStatus(){
     </div>`);
 }
 function scanBanner(){
+  if(!S.scanWaiting && S.scanBusy)
+    return `<div class="banner sync">&#128247; <b>${S.scanBusy} photo${S.scanBusy>1?'s':''} being read</b> — carry on, you will only hear about ${S.scanBusy>1?'them':'it'} if something needs you.</div>`;
   if(!S.scanWaiting) return '';
   return `<div class="banner ot" style="cursor:pointer" onclick="openQueuedScan()">📷 <b>${S.scanWaiting} scanned document${S.scanWaiting>1?'s need':' needs'} your OK</b> — tap to review before it is saved.</div>`;
 }
@@ -6052,6 +6019,7 @@ async function openQueuedScan(){
 }
 async function flushScans(){
   if(!S.online||S._fsBusy) return; S._fsBusy=true;
+  let did=0;
   try{
     const snapshot=await docQueueAll();
     for(const it of snapshot){
@@ -6062,8 +6030,9 @@ async function flushScans(){
         const r=await apiBg('scanSupplierDoc', p);
         // re-read: the person may have queued, answered or discarded scans while this one was being read
         if(!(await docQueueAll()).some(x=>x.qid===it.qid)) continue;
-        if(r&&r.needsConfirm){ await docQueueUpdate(it.qid, {needsConfirm:true, server:r}); toast('A scanned document from earlier needs your OK — see the home screen'); }
-        else { await docQueueDel(it.qid); toast((it.kind==='quote'?'Estimate':'Receipt')+' from earlier was read and filed ✓'+(r&&r.warn?' — '+r.warn:'')); }
+        did++;
+        if(r&&r.needsConfirm){ await docQueueUpdate(it.qid, {needsConfirm:true, server:r}); toast('A scanned document needs your OK — see the home screen'); }
+        else { await docQueueDel(it.qid); toast((it.kind==='quote'?'Estimate':'Receipt')+' read and filed ✓'+(r&&r.warn?' — '+r.warn:'')); }
       }catch(e){
         const msg=e.message||'';
         if(/does not look like|Could not read|clearer photo|could not be read/i.test(msg)){ await docQueueDel(it.qid); toast('⚠ A queued photo was unreadable — scan it again'); }
@@ -6079,6 +6048,11 @@ async function flushScans(){
     docQueueCount(await docQueueAll());
   }catch(e){}
   S._fsBusy=false;
+  // One pass works off the snapshot it started with, so photos taken WHILE it ran are not in it.
+  // Only go round again if this pass actually got somewhere, or a dead connection would spin.
+  if (did && S.online){
+    try{ if ((await docQueueAll()).some(x=>!x.needsConfirm)) setTimeout(flushScans, 150); }catch(e){}
+  }
 }
 
 
@@ -6099,7 +6073,6 @@ async function flushScans(){
  * ========================================================================================== */
 const JP_TTL = 10*60*1000;
 const JP_LS_KEY = 'pcwJobParts';
-let jpResults = {};                 // mode -> the list the rendered rows are indexed against
 function jpKey_(po, site){
   return String(po||'').trim().toUpperCase() || ('@' + String(site||'').trim().toLowerCase());
 }
@@ -6144,98 +6117,210 @@ function jpCtx_(mode){
   if (mode==='co') return coState ? { po:coState.poNumber, site:coState.jobSite||coState.company, items:coState.items } : null;
   if (mode==='mn') return mnState ? { po:mnState.poNumber, site:mnState.jobSite||mnState.company, items:mnState.items } : null;
   if (mode==='ed') return edState ? { po:edState.poNumber, site:edState.jobSite||edState.company, items:edState.items } : null;
-  if (mode==='mu') return { po:(S.openEntry&&S.openEntry['PO#'])||'',
-                            site:(S.openEntry&&(S.openEntry['Customer/Job Site']||S.openEntry.Company))||'', items:null };
+  if (mode==='mu'){
+    const po=(S.openEntry&&S.openEntry['PO#'])||'',
+          site=(S.openEntry&&(S.openEntry['Customer/Job Site']||S.openEntry.Company))||'';
+    if (!S._muDraft) S._muDraft = mdDraftLoad_(po, site);
+    return { po, site, items:S._muDraft };
+  }
   return null;
 }
 function jpPaint_(){
-  ['co','mn','ed','mu'].forEach(m=>{
-    const el = document.getElementById('jp_'+m);
-    if (el) el.innerHTML = jpBlockHtml(m);
-  });
+  ['co','mn','ed','mu'].forEach(m=>{ if (document.getElementById('md_'+m)) mdSeed_(m); });
+  mdPaint_();
 }
-function jpBlockHtml(mode){
-  const ctx = jpCtx_(mode); if (!ctx) return '';
-  if (!ctx.po && !ctx.site) return '<p class="small muted">Pick the job first — the parts bought for it show up here.</p>';
-  const c = jpCached_(ctx.po, ctx.site);
-  if (!c) return `<p class="small muted">${S.online?'Looking up what was bought for this job…':'No parts list saved on this phone for this job yet — it will be here once you have had signal on it.'}</p>`;
-  const list = c.list || [];
-  jpResults[mode] = list;
-  if (!list.length) return `<p class="small muted">Nothing has been bought against ${esc(ctx.po||ctx.site)} yet. Search the inventory below.</p>`;
-  const rows = list.map((x,i)=>({ left:Number(x.left)||0, html: jpRowHtml(mode, x, i) }));
-  const open = rows.filter(r=>r.left>0), done = rows.filter(r=>!(r.left>0));
-  return `<div style="border:1px solid var(--line);border-radius:12px;padding:0 12px">`
-    + (open.length ? open.map(r=>r.html).join('') : '<div class="list-item"><span class="small muted">Every part bought for this job is already logged.</span></div>')
-    + (done.length ? `<details><summary class="small muted" style="padding:8px 0;cursor:pointer">${done.length} already logged in full</summary>${done.map(r=>r.html).join('')}</details>` : '')
-    + `</div>`;
+/* ======================= ONE MATERIALS LIST, EVERYWHERE (v86) ===============================
+ * Paul's sketch, 29 Oct. The job's parts are not a catalogue to shop from - they are the lines
+ * of the invoice, already there, and all anybody does is correct the number or bin the row.
+ * So the old two-part screen (a PO list with an Add button per row, and a separate inventory
+ * search box sitting open underneath it) is one list: name, quantity, unit, bin. The search
+ * does not exist until "Add more" is tapped, and the inventory is never shown unasked.
+ *
+ * What came off the row: bought / logged / left, the count on the shelf, and the supplier.
+ * Charles: "just simple and less bloated". Nothing is lost - a part not logged never leaves
+ * the shelf, which is what makes the leftovers take care of themselves.
+ *
+ * NOTHING IS WRITTEN WHILE IT IS BEING TYPED. The list is saved when the day is clocked out,
+ * which is also when the invoice and the shelf move. Edit it at 9am, change it at 2pm, bin a
+ * row at 4pm: one answer leaves the phone, at the end.
+ * ======================================================================================== */
+const FT_PER_M = 3.28084;
+function mdR2(n){ return Math.round((Number(n)||0)*100)/100; }
+function mdLen_(u){ return /^(m|metre|meter|metres|meters|ft|feet|foot|')$/i.test(String(u||'').trim()); }
+/* Supplier descriptions arrive shouting - "LEVITON TAMPER RESISTANT DECORA DUPLEX RECEPTACLE
+   WHITE 15A" - which on a phone is four lines of capitals under every row. Anything that is a
+   word of letters only is put back into lower case; anything carrying a digit or a slash is a
+   part designation and is left exactly as it is (NMD90, 14/2, 15A, 1P, 120V, 2-1/2). */
+var MD_ACRONYMS_ = /^(AC|DC|LED|AFCI|GFCI|USB|EMT|RW|TR|UL|CSA|IP|SPD|RPM|CFM|AWG|NEMA|HID|PVC|ABS|MC|AL|CU|NM|UF|THHN|XHHW)$/;
+function mdNice_(t){
+  const s = String(t||'').trim();
+  if (!s || s !== s.toUpperCase()) return s;          // not shouting - leave it alone
+  const keep = w => /[0-9\/"']/.test(w)            // 14/2, 15A, 2-1/2, CHOM115
+    || !/[AEIOU]/.test(w)                          // PVC, NMD, XHHW - no vowels, not a word
+    || MD_ACRONYMS_.test(w);                       // the ones that are words and still shout
+  const out = s.split(' ').map(w => keep(w) ? w : w.charAt(0)+w.slice(1).toLowerCase()).join(' ');
+  return out.charAt(0).toUpperCase() + out.slice(1);
 }
-/* How much of this part is already sitting in this sheet's own list (so Add updates instead of
-   putting the same part on twice). */
-function jpInItems_(mode, x){
-  const ctx=jpCtx_(mode); if(!ctx||!ctx.items) return 0;
-  const it=ctx.items.find(y=>jpSame_(y,x));
-  return it ? (Number(it.qty)||0) : 0;
+function mdUnitLabel_(u){ const t=String(u||'').trim(); return (!t||/^ea$/i.test(t)) ? 'each' : t; }
+function mdIsM_(u){ return /^m(etre|eter)?s?$/i.test(String(u||'').trim()); }
+/* The quantity is kept in the unit the SHELF uses, always. `show` is only how it is typed and
+   read, so toggling ft/m can never change what the inventory is told. */
+function mdShowQty_(it){
+  if (!it.show) return mdR2(it.qty);
+  const inM = mdIsM_(it.unit) ? (Number(it.qty)||0) : (Number(it.qty)||0)/FT_PER_M;
+  // Whole feet, metres to one place. 75 m is "246 ft", not "246.06 ft" - nobody pulls wire to
+  // a hundredth of a foot, and the box is a thumb wide. Only the DISPLAY rounds: the quantity
+  // itself is untouched unless somebody types over it, so flipping the unit cannot shave it.
+  return it.show==='m' ? Math.round(inM*10)/10 : Math.round(inM*FT_PER_M);
 }
+function mdSetQty_(it, typed){
+  const v = Number(typed);
+  if (!(v>=0)) return;
+  if (!it.show){ it.qty = mdR2(v); return; }
+  const inM = it.show==='m' ? v : v/FT_PER_M;
+  it.qty = mdR2(mdIsM_(it.unit) ? inM : inM*FT_PER_M);
+}
+/* The job's own PO parts, folded into the list the first time they arrive. Only what is still
+   outstanding: a part already logged in full on an earlier day is not offered again, or a job
+   spanning three days would bill the same wire three times. */
+/* The same part, however it was spelt: the stock number when both have one, the name otherwise.
+   Without this a part added by hand and the same part off the PO sit on the invoice twice. */
 function jpSame_(it, x){
-  if (x.sku && it.sku) return String(it.sku)===String(x.sku);
-  return String(it.name||'').toLowerCase() === String(x.desc||'').toLowerCase();
+  if (x.sku && it.sku) return String(it.sku).toUpperCase() === String(x.sku).toUpperCase();
+  const a = String(it.name||'').trim().toLowerCase();
+  return a === String(x.desc||'').trim().toLowerCase() || a === String(x.name||'').trim().toLowerCase();
 }
-function jpRowHtml(mode, x, i){
-  const u = x.unit ? (' '+esc(x.unit)) : '';
-  const already = jpInItems_(mode, x);
-  const bits = [`bought ${x.bought}${u}`];
-  if (x.used) bits.push(`${x.used} logged`);
-  bits.push(`<b>${x.left}${u} left</b>`);
-  const shelf = (x.onHand!=null) ? ` · ${x.onHand}${u} on the shelf` : '';
-  const btn = (mode==='mu')
-    ? `<button class="grow" onclick="jpUse('${mode}',${i})">Used</button>`
-    : `<button class="grow" onclick="jpAdd('${mode}',${i})">${already?'Update':'Add'}</button>`;
-  return `<div class="list-item">
-      <b>${esc(x.desc)}</b>${already?` <span class="pill approved">on the list: ${already}</span>`:''}
-      <div class="small muted">${bits.join(' · ')}${shelf}${x.supplier?' · '+esc(x.supplier):''}</div>
-      <div class="row" style="margin-top:6px">
-        <input id="jpq_${mode}_${i}" type="number" step="any" min="0" value="${esc(x.left)}" style="width:104px;margin:0;text-align:center">
-        ${btn}
-      </div>
+function mdSeed_(mode){
+  const ctx = jpCtx_(mode); if (!ctx || !ctx.items) return;
+  const c = jpCached_(ctx.po, ctx.site); if (!c) return;
+  (c.list||[]).forEach(x=>{
+    if (!(Number(x.left) > 0)) return;
+    if (ctx.items.some(y=>jpSame_(y,x))) return;
+    ctx.items.push({ name:(x.name||x.desc||''), desc:((x.name && x.name!==x.desc) ? x.desc : ''),
+      sku:x.sku||'', unit:x.unit||'', qty:Number(x.left)||0,
+      show: mdLen_(x.unit) ? 'ft' : '', matched:true, fromPo:true,
+      fromDoc:'PO '+(ctx.po||ctx.site), bought:x.bought });
+  });
+  mdKeep_(mode);
+}
+function mdRowHtml(mode, it, i){
+  const unit = it.show
+    ? `<button class="u" onclick="mdUnit('${mode}',${i})" title="Tap for ${it.show==='ft'?'metres':'feet'}">${esc(it.show)}</button>`
+    : `<div class="ea">${esc(mdUnitLabel_(it.unit))}</div>`;
+  return `<div class="mrow">
+      <div class="nm"><b>${esc(mdNice_(it.name)||'(no name)')}</b>${it.matched?'':' <span class="pill pending">new</span>'}
+        ${it.desc?`<div class="d">${esc(mdNice_(it.desc))}</div>`:''}</div>
+      <input class="q" id="mdq_${mode}_${i}" type="number" step="any" min="0" inputmode="decimal"
+             value="${esc(mdShowQty_(it))}" onchange="mdQty('${mode}',${i},this.value)">
+      ${unit}
+      <button class="x" onclick="mdDel('${mode}',${i})" aria-label="Remove this part">&#128465;</button>
     </div>`;
 }
-/* Clock-out review / Add time / Edit entry: the part goes on that sheet's list and is written
-   when the sheet is submitted, so it queues offline like everything else on those screens. */
-function jpAdd(mode, i){
-  const ctx=jpCtx_(mode), x=(jpResults[mode]||[])[i];
-  if(!ctx||!x||!ctx.items) return;
-  const q=Number(val('jpq_'+mode+'_'+i));
-  if(!(q>0)) return toast('Type how many of it you used first.');
-  const same=ctx.items.find(y=>jpSame_(y,x));
-  if (same){ same.qty=q; }
-  else ctx.items.push({ name:x.desc, sku:x.sku||'', unit:x.unit||'', qty:q, matched:true,
-                        fromDoc:'PO '+(ctx.po||ctx.site), bought:x.bought });
-  if (mode==='co') coUpdateMats(); else if (mode==='mn') mnUpdateMats(); else edUpdateMats();
-  jpPaint_();
-  toast(same ? 'Updated to '+q : q+(x.unit?' '+x.unit:'')+' on the list');
+function mdListHtml(mode){
+  const ctx = jpCtx_(mode);
+  if (!ctx) return '';
+  if (!ctx.po && !ctx.site) return '<p class="small muted">Pick the job first — the parts bought for it show up here.</p>';
+  const items = ctx.items || [];
+  const rows = items.map((it,i)=>mdRowHtml(mode,it,i)).join('');
+  let body;
+  if (rows) body = `<div class="mbox">${rows}</div>`;
+  else if (!jpCached_(ctx.po, ctx.site))
+    body = `<p class="small muted">${S.online?'Looking up what was bought for this job…':'No parts list saved on this phone for this job yet — it will be here once you have had signal on it.'}</p>`;
+  else body = `<p class="small muted">Nothing was bought on this job's POs. Add what you used below.</p>`;
+  return body + mdAddHtml(mode);
 }
-/* The Materials used screen takes it off the shelf there and then, like its search box does. */
-async function jpUse(mode, i){
-  const ctx=jpCtx_(mode), list=jpResults[mode]||[], x=list[i];
-  if(!ctx||!x) return;
-  const q=Number(val('jpq_'+mode+'_'+i));
-  if(!(q>0)) return toast('Type how many of it you used first.');
-  if(!x.sku) return toast('That part has no stock number yet — search for it in the inventory below.');
-  const was={ used:x.used, left:x.left, onHand:x.onHand };
-  const r2=n=>Math.round((Number(n)||0)*100)/100;
-  x.used=r2(x.used+q); x.left=Math.max(0, r2(was.left-q));
-  if (x.onHand!=null) x.onHand=r2(x.onHand-q);
-  jpPut_(ctx.po, ctx.site, list); jpPaint_();
-  try{
-    const r=await apiMutate('takeMaterial',{ sku:x.sku, qty:q, jobSite:ctx.site,
-      poNumber:ctx.po||'', at:new Date().toISOString() });
-    toast((r&&r.queued) ? q+(x.unit?' '+x.unit:'')+' logged — will sync when you have signal'
-                        : q+(x.unit?' '+x.unit:'')+' used ✓');
-  }catch(e){
-    x.used=was.used; x.left=was.left; x.onHand=was.onHand;
-    jpPut_(ctx.po, ctx.site, list); jpPaint_();
-    toast('Not logged: '+e.message, 7000);
-  }
+function mdAddHtml(mode){
+  if (S.mdOpen !== mode)
+    return `<button class="secondary" style="width:100%;margin-top:10px" onclick="mdAddOpen('${mode}')">+&nbsp; Add more</button>`;
+  return `<div style="margin-top:10px">
+      <input id="mds_${mode}" placeholder="Search the inventory — e.g. 2104 box" autocomplete="off"
+             oninput="mdSearch('${mode}')" style="margin-top:0">
+      <div id="mdr_${mode}">${mdHitsHtml(mode)}</div>
+      <button class="ghost" style="width:100%" onclick="mdAddClose()">Done adding</button>
+    </div>`;
+}
+function mdHitsHtml(mode){
+  const q = (S.mdQ||'').trim(), hits = S.mdHits||[];
+  if (!q) return '<p class="small muted" style="margin:6px 0">Type what you are looking for.</p>';
+  const rows = hits.map((m,i)=>`<div onclick="mdPick('${mode}',${i})"><b>${esc(m.name)}</b>${
+      m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}${
+      m.onHand!=null?`<div class="small muted">${esc(m.onHand)} on the shelf</div>`:''}</div>`).join('');
+  // Always last, always offered: the inventory has never heard of half of what is on a van.
+  return `<div class="suggest">${rows}<div onclick="mdNewPart('${mode}')" style="background:var(--panel)">
+      <b style="color:var(--accent2)">+ Add “${esc(q)}” as a new part</b>
+      <div class="small muted">Goes on the job now · the office names it on the Requests tab</div>
+    </div></div>`;
+}
+let mdT=null;
+function mdAddOpen(mode){ S.mdOpen=mode; S.mdQ=''; S.mdHits=[]; mdPaint_();
+  setTimeout(()=>{ const el=document.getElementById('mds_'+mode); if(el) el.focus(); }, 40); }
+function mdAddClose(){ S.mdOpen=''; S.mdQ=''; S.mdHits=[]; mdPaint_(); }
+function mdSearch(mode){
+  S.mdQ = val('mds_'+mode);
+  S.mdHits = (S.mdQ.trim() ? localMatSearch(S.mdQ) : []).map(m=>({name:m.name, sku:m.sku||'', unit:m.unit||'', onHand:null}));
+  mdHitsPaint_(mode);                       // the phone's own copy, instantly
+  clearTimeout(mdT);
+  if (!S.online) return;
+  mdT = setTimeout(async ()=>{
+    const q = S.mdQ;
+    try{
+      const r = await apiBg('inventoryList',{ q:q, inStock:false, limit:12 });
+      if (q !== S.mdQ) return;                                  // they typed on; this answer is stale
+      S.mdHits = (r.items||[]).map(it=>({name:it.desc, sku:it.sku||'', unit:it.unit||'', onHand:it.onHand}));
+      mdHitsPaint_(mode);
+    }catch(e){}
+  }, 300);
+}
+function mdHitsPaint_(mode){ const el=document.getElementById('mdr_'+mode); if(el) el.innerHTML=mdHitsHtml(mode); }
+function mdPick(mode, i){
+  const ctx=jpCtx_(mode), m=(S.mdHits||[])[i]; if(!ctx||!ctx.items||!m) return;
+  const same = ctx.items.find(y=>jpSame_(y,{sku:m.sku, desc:m.name}));
+  if (same) { toast('Already on the list.'); }
+  else ctx.items.push({ name:m.name, desc:'', sku:m.sku||'', unit:m.unit||'', qty:1,
+                        show: mdLen_(m.unit)?'ft':'', matched:true, fromPo:false });
+  mdKeep_(mode); mdAddClose();
+}
+/* Charles, 29 Oct: a part the inventory has never heard of goes on the job ANYWAY. It is on the
+   invoice from this moment; what waits is its name, which the office gives it on the Requests
+   tab. Nothing is added to the catalogue or taken off a shelf until somebody says so. */
+function mdNewPart(mode){
+  const ctx=jpCtx_(mode), q=(S.mdQ||'').trim(); if(!ctx||!ctx.items||!q) return;
+  ctx.items.push({ name:q, desc:'', sku:'', unit:'', qty:1, show:'', matched:false, fromPo:false });
+  mdKeep_(mode); mdAddClose();
+  toast('On the job. The office will give it a proper name.', 5000);
+}
+function mdQty(mode, i, v){
+  const ctx=jpCtx_(mode), it=ctx&&ctx.items&&ctx.items[i]; if(!it) return;
+  mdSetQty_(it, v); mdKeep_(mode);
+}
+function mdUnit(mode, i){
+  const ctx=jpCtx_(mode), it=ctx&&ctx.items&&ctx.items[i]; if(!it||!it.show) return;
+  it.show = it.show==='ft' ? 'm' : 'ft';
+  mdKeep_(mode); mdPaint_();
+}
+function mdDel(mode, i){
+  const ctx=jpCtx_(mode); if(!ctx||!ctx.items) return;
+  ctx.items.splice(i,1); mdKeep_(mode); mdPaint_();
+}
+/* The Materials-used screen has no sheet to submit, so its list lives on the phone until the
+   day is clocked out - which is where the clock-out review picks it up. */
+function mdDraftKey_(po, site){ return 'pcwMatDraft:' + jpKey_(po, site); }
+function mdDraftLoad_(po, site){
+  try{ const v=JSON.parse(localStorage.getItem(mdDraftKey_(po,site))||'[]'); return Array.isArray(v)?v:[]; }
+  catch(e){ return []; }
+}
+function mdDraftSave_(po, site, items){
+  try{ localStorage.setItem(mdDraftKey_(po,site), JSON.stringify(items||[])); }catch(e){}
+}
+function mdDraftClear_(po, site){ try{ localStorage.removeItem(mdDraftKey_(po,site)); }catch(e){} }
+function mdKeep_(mode){
+  if (mode==='mu'){ const c=jpCtx_('mu'); if(c) mdDraftSave_(c.po, c.site, c.items); }
+}
+function mdPaint_(){
+  ['co','mn','ed','mu'].forEach(m=>{
+    const el = document.getElementById('md_'+m);
+    if (el) el.innerHTML = mdListHtml(m);
+  });
 }
 
 /* Materials used: the job's own PO parts first (v76), then the whole company inventory - Paul
@@ -6244,72 +6329,14 @@ let muT=null;
 function openMatUse(){
   const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
   const po=S.openEntry?(S.openEntry['PO#']||''):'';
+  S._muDraft = mdDraftLoad_(po, site);
   sheet(`<h2>🔩 Materials used</h2>
-    <p class="small muted">${site?`Going onto <b>${esc(site)}</b>${po?` · PO ${esc(po)}`:''}. `:'Not clocked in — this will be recorded against Stock. '}Type how many and tap Used. Anything you don't log stays in inventory.</p>
-    ${(po||site)?`<label style="margin-top:0">Bought for this job</label>
-    <div id="jp_mu">${jpBlockHtml('mu')}</div>`:''}
-    <label style="margin-top:14px">Anything else — search the whole inventory</label>
-    <input id="muQ" placeholder="Search: breaker 15a, NMD90 14/2, EMT 1/2" oninput="muSearch()">
-    <div class="perm" style="margin-top:4px"><input type="checkbox" id="muStock" checked onchange="muSearch()">
-      <label for="muStock" style="margin:0" class="small">Only show what we have on hand</label></div>
-    <div id="muList" style="margin-top:6px"><span class="spin"></span></div>
-    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+    <p class="small muted">${site?`Going onto <b>${esc(site)}</b>${po?` · PO ${esc(po)}`:''}.`:'Not clocked in — this will be recorded against Stock.'}
+      Change what you used, bin what you didn't. Anything left stays in inventory.</p>
+    <div id="md_mu">${mdListHtml('mu')}</div>
+    <p class="small muted center" style="margin-top:10px">Saved when you clock out.</p>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
   jpLoad(po, site, true);
-  muSearch();
-}
-function muSearch(){
-  clearTimeout(muT);
-  muT=setTimeout(async ()=>{
-    const box=document.getElementById('muList'); if(!box) return;
-    // v76 - with no signal, search the catalogue the phone already has instead of showing an
-    // error. The shelf count is not in that copy, so the row says so rather than inventing one.
-    if (!S.online){
-      const q=val('muQ');
-      S.muItems=(q.trim()?localMatSearch(q):[]).map(m=>({ sku:m.sku||'', desc:m.name, unit:m.unit||'', onHand:null, price:null }));
-      muRender(S.muItems.length, true); return;
-    }
-    box.innerHTML='<span class="spin"></span>';
-    try{
-      const el=document.getElementById('muStock');
-      const r=await apiBg('inventoryList',{q:val('muQ'), inStock: el?el.checked:true, limit:40});
-      S.muItems=r.items||[]; muRender(r.total||0);
-    }catch(e){ const b=document.getElementById('muList'); if(b) b.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
-  },300);
-}
-function muRender(total, offline){
-  const box=document.getElementById('muList'); if(!box) return;
-  box.innerHTML=(S.muItems||[]).map((it,i)=>`<div class="list-item">
-      <b>${esc(it.desc)}</b>
-      <div class="small muted">${esc(it.sku)} · ${it.onHand==null?'<span class="muted">count not on this phone</span>':`<b style="color:${it.onHand>0?'var(--accent2)':'var(--warn)'}">${it.onHand} ${esc(it.unit)}</b> on hand`}${it.price!=null?' · $'+Number(it.price).toFixed(2)+' ea':''}</div>
-      <div class="row" style="margin-top:6px">
-        <input id="muq_${i}" type="number" step="any" min="0" placeholder="how many" style="width:104px;margin:0;text-align:center">
-        <button class="grow" onclick="muUse(${i},1)">Used</button>
-        <button class="ghost" onclick="muUse(${i},-1)" title="Put some back">Undo</button>
-        ${canPrice()?`<button class="ghost" onclick="muReturn(${i})" title="Going back to the supplier">Return</button>`:''}
-      </div>
-    </div>`).join('') || `<p class="muted small">${offline?'Type what you are looking for — searching the copy on this phone.':'Nothing matches. Untick “only what we have on hand” to search everything, or scan the supplier PO first.'}</p>`
-    + (total>40?`<p class="small muted">Showing 40 of ${total} — refine the search.</p>`:'');
-}
-async function muUse(i,sign){
-  const it=(S.muItems||[])[i]; if(!it) return;
-  const q=Number(val('muq_'+i)); if(!q||q<=0){ toast('Enter how many first'); return; }
-  it.onHand = it.onHand - sign*q;
-  muRender();
-  const site=S.openEntry?(S.openEntry['Customer/Job Site']||S.openEntry.Company||''):'';
-  try{
-    await apiMutate('takeMaterial',{sku:it.sku, qty:sign*q, jobSite:site,
-      poNumber:S.openEntry?(S.openEntry['PO#']||''):'', at:new Date().toISOString()});
-    toast(sign>0?`${q} ${it.unit} used ✓`:'Put back ✓');
-  }catch(e){ toast(e.message); }
-}
-async function muReturn(i){
-  const it=(S.muItems||[])[i]; if(!it) return;
-  const q=Number(val('muq_'+i)); if(!q||q<=0){ toast('Enter how many first'); return; }
-  try{
-    await api('returnToSupplier',{sku:it.sku, qty:q,
-      jobSite:S.openEntry?(S.openEntry['Customer/Job Site']||''):''});
-    toast('Noted — it leaves inventory when the credit note arrives');
-  }catch(e){ toast(e.message); }
 }
 
 /* ============================ ALLOWANCES ====================================================
@@ -6560,7 +6587,85 @@ function neoCardHtml(){
       ${items.length>4?`<li class="small muted">and ${items.length-4} more…</li>`:''}
     </ul>`:''}
     ${btn?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openNeoReport()">Open Neo's report</button>`:''}
+    ${pushRowHtml()}
   </div>`;
+}
+/* --------------------- turning the notification on, on this phone (v86) --------------------
+ * Charles, 29 Oct, choosing how Neo should reach Paul: "Push notification". Free, no carrier, no
+ * third party and no phone number written down anywhere - but it is the one option with a real
+ * condition attached, and the condition is invisible unless the app says it out loud: on an
+ * iPhone a web app can only be given permission once it has been ADDED TO THE HOME SCREEN. From
+ * Safari there is no API to ask with at all, so the honest thing is to say which step is missing
+ * rather than show a button that cannot work.
+ *
+ * The subscription is per browser, per phone. It is filed with the office so the sweep can send
+ * to it; it is NOT a secret of Paul's - it is a capability to make that phone buzz - which is why
+ * only an approver can file one and why the tab it lands on is protected like the rest. */
+const VAPID_PUBLIC = 'BPiOuuQMXRPHVdc7jdhXGQSgIiCpJWpfo6erumgVwYTp_HtKruKt54WeTvsdxleaN8s4DVqqDTG9P6eeia59i00';
+const PUSH_LS_KEY = 'pcwPushOn';
+function pushOnHere(){ try{ return localStorage.getItem(PUSH_LS_KEY)==='1'; }catch(e){ return false; } }
+function pushStandalone_(){
+  try{ return !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone===true; }
+  catch(e){ return false; }
+}
+function pushIos_(){ return /iPad|iPhone|iPod/.test(navigator.userAgent||''); }
+/* Why this phone cannot be told, in the words of the thing that has to change. '' = it can. */
+function pushBlocker(){
+  if(!('serviceWorker' in navigator)) return 'This browser cannot do notifications.';
+  if(!('PushManager' in window) || !('Notification' in window)){
+    return pushIos_() && !pushStandalone_()
+      ? 'Add the app to the Home Screen first (Share → Add to Home Screen), then open it from there and this will work.'
+      : 'This browser cannot do notifications.';
+  }
+  if(pushIos_() && !pushStandalone_())
+    return 'Open the app from the Home Screen icon — Safari itself cannot be given permission.';
+  if(Notification.permission==='denied')
+    return 'Notifications are blocked for this app in your phone settings — allow them there and come back.';
+  return '';
+}
+function urlB64ToU8_(b64){
+  const pad='='.repeat((4-b64.length%4)%4);
+  const raw=atob((b64+pad).replace(/-/g,'+').replace(/_/g,'/'));
+  const out=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++) out[i]=raw.charCodeAt(i);
+  return out;
+}
+function pushRowHtml(){
+  if(!canApprove()) return '';
+  if(pushOnHere()) return `<div class="small muted" style="margin-top:8px">🔔 This phone is told when Neo finds something · <a href="#" onclick="pushOff(this);return false" style="color:var(--accent2)">turn off</a></div>`;
+  const why=pushBlocker();
+  if(why) return `<div class="small muted" style="margin-top:8px">🔔 ${esc(why)}</div>`;
+  return `<button class="secondary" style="width:100%;margin-top:8px" onclick="pushOn(this)">🔔 Tell me when Neo finds something</button>`;
+}
+async function pushOn(btn){
+  const why=pushBlocker(); if(why) return toast(why, 6000);
+  if(btn){ btn.disabled=true; btn.textContent='Asking…'; }
+  try{
+    const perm=await Notification.requestPermission();
+    if(perm!=='granted') throw new Error('Notifications were not allowed. You can change that in your phone settings.');
+    const reg=await navigator.serviceWorker.ready;
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub) sub=await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:urlB64ToU8_(VAPID_PUBLIC)});
+    const j=sub.toJSON(), k=j.keys||{};
+    await api('pushSubscribe', {endpoint:j.endpoint, p256dh:k.p256dh, auth:k.auth,
+      label:(pushIos_()?'iPhone':'phone')+' · '+(S.me&&S.me.email||'')});
+    try{ localStorage.setItem(PUSH_LS_KEY,'1'); }catch(e){}
+    toast('Done — this phone will be told at the next sweep ✓', 5000);
+    render();
+  }catch(e){
+    if(btn){ btn.disabled=false; btn.textContent='🔔 Tell me when Neo finds something'; }
+    toast(e.message||'That did not work.', 6000);
+  }
+}
+async function pushOff(a){
+  try{
+    const reg=await navigator.serviceWorker.ready;
+    const sub=await reg.pushManager.getSubscription();
+    if(sub){ await api('pushUnsubscribe', {endpoint:sub.endpoint}); await sub.unsubscribe(); }
+  }catch(e){}
+  try{ localStorage.setItem(PUSH_LS_KEY,'0'); }catch(e){}
+  toast('This phone will not be told any more.');
+  render();
 }
 function openNeoReport(){
   const n=S.neo, items=(n&&n.items)||[], swept=n&&(n.lastSweep||n.sweepAt);
@@ -6808,8 +6913,8 @@ function openApvDetail(k){
 function approvalsHtml(){
   if(!canApprove()) return '';
   const a=S.approvals||{}, isAdmin=S.me&&S.me.role==='admin';
-  const ents=a.entries||[], tos=a.timeOff||[], als=a.allowances||[];
-  const n=ents.length+tos.length+als.length;
+  const ents=a.entries||[], tos=a.timeOff||[], als=a.allowances||[], nps=a.newParts||[];
+  const n=ents.length+tos.length+als.length+nps.length;
   const hrs=ents.map(e=>{ const k=reg({e, employeeEmail:e._employee});
     // v80 - a recorded diff IS the evidence it was changed; the timestamp test below is only
     // the fallback for entries edited before the Edit Log existed.
@@ -6841,12 +6946,24 @@ function approvalsHtml(){
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="apvAllow('${k}',true,this)">Approve</button>
         <button class="secondary grow" onclick="apvAllow('${k}',false,this)">Deny</button></div></div>`; }).join('');
+  /* v86 - a part somebody typed on a job because the inventory had never heard of it. It is
+     already on the job and on the invoice; what is waiting is its NAME, so the office can match
+     it to a supplier line later instead of finding "2104 box" on a sheet in six months. */
+  const prt=nps.map(m=>{ const k=reg(m); return `<div class="list-item">
+      <div class="row between"><div><b>${esc(m.item)}</b> <span class="pill pending">New part</span></div>
+        <span class="small muted">${esc(m.qty)}${m.unit?' '+esc(m.unit):''}</span></div>
+      <div class="small muted">${esc(empName(m.employee))} · ${esc(m.jobSite||'')}${m.po?' · PO '+esc(m.po):''} · ${fmtDay(m.time)}</div>
+      <div class="row" style="margin-top:6px">
+        <button class="grow" onclick="openNewPart('${k}')">Name it</button>
+        <button class="secondary" onclick="apvPart('${k}','dismiss',null,this)">Not a part</button>
+      </div></div>`; }).join('');
   return `<h2>✅ Needs your OK${n?` <span class="pill pending">${n}</span>`:''}</h2>
-    <p class="small muted" style="margin-top:-4px">Hours, time off and allowances waiting for an admin.</p>
+    <p class="small muted" style="margin-top:-4px">Hours, time off, allowances and new parts waiting for an admin.</p>
     <div class="card">
       ${hrs?`<h3 style="margin-top:0">Hours</h3>${hrs}`:''}
       ${off?`<h3>Time off</h3>${off}`:''}
       ${alw?`<h3>Allowances</h3>${alw}`:''}
+      ${prt?`<h3>New parts</h3>${prt}`:''}
       ${n?'':(S.approvals?'<p class="muted small">Nothing waiting. 🎉</p>':'<p class="center"><span class="spin"></span></p>')}
       ${isAdmin?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openHoursFor()">✏️ Add or change someone's hours</button>`:''}
     </div>`;
@@ -6855,7 +6972,43 @@ function apvDrop(kind, id){ const a=S.approvals; if(!a) return;
   if(kind==='e') a.entries=(a.entries||[]).filter(x=>x.EntryID!==id);
   if(kind==='t') a.timeOff=(a.timeOff||[]).filter(x=>x.id!==id);
   if(kind==='a') a.allowances=(a.allowances||[]).filter(x=>x.id!==id);
+  if(kind==='p') a.newParts=(a.newParts||[]).filter(x=>x.row!==id);
   S.pending=a.entries||[]; render(); }
+/* Naming a part somebody typed on a job. The name given here is written BOTH to the catalogue
+   and back onto the usage row, so the invoice and the shelf say the same thing; what was
+   actually typed is kept beside it as an alias, which is how the next person who types "2104
+   box" lands on the right part instead of creating a second one. */
+function openNewPart(k){
+  const m=dereg(k); if(!m) return;
+  sheet(`<h2>Name this part</h2>
+    <p class="small muted" style="margin-top:0">${esc(empName(m.employee))} typed it on ${esc(m.jobSite||'a job')}${
+      m.po?' · PO '+esc(m.po):''} on ${esc(fmtDay(m.time))}. It is already on the job — this gives it its name.</p>
+    <div class="banner sync" style="text-align:left">Typed: <b>${esc(m.item)}</b> · ${esc(m.qty)}${m.unit?' '+esc(m.unit):''}</div>
+    <label>What it is called in the inventory</label>
+    <input id="npName" value="${esc(m.item)}" autocomplete="off">
+    <label>Unit</label>
+    <input id="npUnit" value="${esc(m.unit||'ea')}" placeholder="ea, m, box" autocomplete="off">
+    <label>Stock number <span class="muted">(optional — the supplier sweep fills it in later)</span></label>
+    <input id="npSku" placeholder="e.g. BOX-061" autocomplete="off">
+    <div class="row" style="margin-top:12px">
+      <button class="grow" onclick="apvPart('${k}','addToList',null,this)">Add to the inventory</button>
+      <button class="secondary" onclick="closeSheet()">Later</button>
+    </div>
+    <button class="ghost" style="width:100%;margin-top:6px" onclick="apvPart('${k}','dismiss',null,this)">Not a part — drop it</button>`);
+}
+async function apvPart(k, action, _unused, btn){
+  const m=dereg(k); if(!m) return;
+  if(!S.online) return toast('You need signal.');
+  if(btn) btn.disabled=true;
+  const name=val('npName').trim(), unit=val('npUnit').trim(), sku=val('npSku').trim();
+  if(action==='addToList' && !name){ if(btn) btn.disabled=false; return toast('Give it a name first.'); }
+  try{
+    await api('resolveMaterial',{ row:m.row, action, name:name||undefined, unit:unit||undefined, sku:sku||undefined });
+    closeSheetDom();
+    apvDrop('p', m.row);
+    toast(action==='addToList' ? ('“'+(name||m.item)+'” is in the inventory ✓') : 'Dropped — it stays on the job as typed');
+  }catch(e){ toast(e.message); if(btn) btn.disabled=false; }
+}
 async function apvEntry(k,ok,btn,fromSheet){
   const ref=dereg(k); if(!ref) return; const e=ref.e, email=ref.employeeEmail;
   if(!S.online) return toast('You need signal.');
@@ -8044,6 +8197,9 @@ if ('serviceWorker' in navigator){
   navigator.serviceWorker.addEventListener('message', (ev)=>{
     const m = ev.data || {};
     if (m.type==='punchesSent'){ queueCount_(); if (S.booted && S.session){ toast((m.n||1)+' punch'+(m.n>1?'es':'')+' sent to the office in the background ✓', 5000); refresh(true); } }
+    // v86 — a tapped notification. The app was already open, so the worker focused it and asked
+    // for the tab rather than opening a second copy of the app in a second window.
+    if (m.type==='open-tab' && m.tab && S.booted && S.session){ go(m.tab); loadRequests(); }
   });
 }
 
