@@ -6837,15 +6837,26 @@ function lc(x){ return String(x||'').trim().toLowerCase(); }
  * meant taking it on trust. The script now records every changed field when the edit is saved
  * (the Edit Log tab), and this puts the old value beside the new one, with the reason the person
  * gave. Charles, 26 Oct: "we would also like to see what is the change that is asked for". */
+/* v89 - Charles, 2 Nov: "the simplest is the best: date time, cross what is no longer good and
+   show what is desired." That is what this does, minus two things that were getting in the way.
+   The Date row is dropped whenever a clock time changed as well, because each end of the shift
+   already carries its own day and the row above was saying it a second time. And the new value
+   is kept on one line, so "7:30 AM" stops wrapping its AM onto the next. */
+function editChanges_(d){
+  const all = (d && d.changes) || [];
+  const hasClock = all.some(c=>/^Clock /.test(c.field));
+  return hasClock ? all.filter(c=>c.field!=='Date') : all;
+}
 function editDiffHtml(e){
   const d = e && e._edit;
-  if (!d || !d.changes || !d.changes.length) return '';
+  const changes = editChanges_(d);
+  if (!changes.length) return '';
   const who = String(d.by||'').split('@')[0];
   return `<div style="margin:6px 0 0;padding:7px 9px;background:var(--panel2);border-radius:8px;border-left:3px solid var(--accent2)">
     <div class="small" style="font-weight:700;color:var(--navy)">✎ What changed</div>
-    ${d.changes.map(c=>`<div class="row between small" style="gap:10px;padding:1px 0;align-items:baseline">
+    ${changes.map(c=>`<div class="row between small" style="gap:10px;padding:1px 0;align-items:baseline">
         <span class="muted" style="flex:0 0 auto">${esc(c.field)}</span>
-        <span style="text-align:right;overflow-wrap:anywhere"><span class="muted" style="text-decoration:line-through">${esc(c.was)}</span> → <b>${esc(c.now)}</b></span>
+        <span style="text-align:right"><span class="muted" style="text-decoration:line-through;white-space:nowrap">${esc(c.was)}</span> → <b style="white-space:nowrap">${esc(c.now)}</b></span>
       </div>`).join('')}
     <div class="small muted" style="margin-top:4px">${d.reason?`“${esc(d.reason)}”`:'No reason given.'}${who?` — ${esc(who)}`:''}${d.at?`, ${esc(fmtDay(d.at))} ${esc(fmtTime(d.at))}`:''}</div>
   </div>`;
@@ -6869,8 +6880,8 @@ function editNoDiffHtml(e){
 /* v82 — on the CARD, one line: which fields moved. The before-and-after belongs behind View,
    so a screen with five approvals on it stays a list you can read. */
 function editChangedLine(e){
-  const d=e&&e._edit; if(!d||!d.changes||!d.changes.length) return '';
-  const names=d.changes.map(c=>c.field);
+  const d=e&&e._edit; const changes=editChanges_(d); if(!changes.length) return '';
+  const names=changes.map(c=>c.field);
   const list=names.length>1 ? names.slice(0,-1).join(', ')+' and '+names[names.length-1] : names[0];
   return `<div class="small" style="color:var(--accent2);margin-top:2px">✎ ${esc(list)} changed${d.reason?` — “${esc(d.reason)}”`:''}</div>`;
 }
