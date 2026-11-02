@@ -6949,13 +6949,20 @@ function approvalsHtml(){
   /* v86 - a part somebody typed on a job because the inventory had never heard of it. It is
      already on the job and on the invoice; what is waiting is its NAME, so the office can match
      it to a supplier line later instead of finding "2104 box" on a sheet in six months. */
-  const prt=nps.map(m=>{ const k=reg(m); return `<div class="list-item">
-      <div class="row between"><div><b>${esc(m.item)}</b> <span class="pill pending">New part</span></div>
+  /* v88 - the card ASKS A QUESTION instead of setting homework. Everything that lands here now
+     resembles something we already have (anything that resembles nothing is simply learned, and
+     anything that matches outright is just used), so the useful thing to show is the candidates.
+     One tap says "yes, that one" and the job line is renamed to match. */
+  const prt=nps.map(m=>{ const k=reg(m), sug=m.suggest||[]; return `<div class="list-item">
+      <div class="row between"><div><b>${esc(m.item)}</b> <span class="pill pending">${sug.length?'Same as?':'New part'}</span></div>
         <span class="small muted">${esc(m.qty)}${m.unit?' '+esc(m.unit):''}</span></div>
       <div class="small muted">${esc(empName(m.employee))} · ${esc(m.jobSite||'')}${m.po?' · PO '+esc(m.po):''} · ${fmtDay(m.time)}</div>
+      ${sug.length?`<div class="small muted" style="margin-top:6px">We already have:</div>
+        ${sug.map((x,j)=>`<button class="secondary" style="width:100%;margin-top:4px;text-align:left;font-size:.92rem;padding:9px 11px"
+            onclick="apvSame('${k}',${j},this)">${esc(x.name)}<div class="small muted" style="font-weight:400">${esc(x.where)}</div></button>`).join('')}`:''}
       <div class="row" style="margin-top:6px">
-        <button class="grow" onclick="openNewPart('${k}')">Name it</button>
-        <button class="secondary" onclick="apvPart('${k}','dismiss',null,this)">Not a part</button>
+        <button class="${sug.length?'secondary ':''}grow" onclick="openNewPart('${k}')">${sug.length?'No — it is different':'Name it'}</button>
+        <button class="ghost" onclick="apvPart('${k}','dismiss',null,this)">Not a part</button>
       </div></div>`; }).join('');
   return `<h2>✅ Needs your OK${n?` <span class="pill pending">${n}</span>`:''}</h2>
     <p class="small muted" style="margin-top:-4px">Hours, time off, allowances and new parts waiting for an admin.</p>
@@ -6984,6 +6991,8 @@ function openNewPart(k){
     <p class="small muted" style="margin-top:0">${esc(empName(m.employee))} typed it on ${esc(m.jobSite||'a job')}${
       m.po?' · PO '+esc(m.po):''} on ${esc(fmtDay(m.time))}. It is already on the job — this gives it its name.</p>
     <div class="banner sync" style="text-align:left">Typed: <b>${esc(m.item)}</b> · ${esc(m.qty)}${m.unit?' '+esc(m.unit):''}</div>
+    ${(m.suggest||[]).length?`<p class="small muted" style="margin-bottom:0">Close to what we already have: ${
+      (m.suggest||[]).map(x=>esc(x.name)).join(' · ')}</p>`:''}
     <label>What it is called in the inventory</label>
     <input id="npName" value="${esc(m.item)}" autocomplete="off">
     <label>Unit</label>
@@ -6995,6 +7004,19 @@ function openNewPart(k){
       <button class="secondary" onclick="closeSheet()">Later</button>
     </div>
     <button class="ghost" style="width:100%;margin-top:6px" onclick="apvPart('${k}','dismiss',null,this)">Not a part — drop it</button>`);
+}
+/* "Yes, that is the one we already have." The job line takes the catalogue's name, what was
+   typed is kept as an alias, and nothing new is created. */
+async function apvSame(k, j, btn){
+  const m=dereg(k); if(!m) return;
+  const pick=(m.suggest||[])[j]; if(!pick) return;
+  if(!S.online) return toast('You need signal.');
+  if(btn) btn.disabled=true;
+  try{
+    await api('resolveMaterial',{ row:m.row, action:'addToList', name:pick.name, unit:m.unit||undefined });
+    apvDrop('p', m.row);
+    toast('Filed as “'+pick.name+'” ✓');
+  }catch(e){ toast(e.message); if(btn) btn.disabled=false; }
 }
 async function apvPart(k, action, _unused, btn){
   const m=dereg(k); if(!m) return;
