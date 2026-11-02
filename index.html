@@ -5007,6 +5007,8 @@ function openEditEntry(k){
   const date= e.ClockIn? localDateStr(new Date(e.ClockIn)) : String(e.Date||'').slice(0,10);
   const inDT = e.ClockIn ? dtLocal(e.ClockIn) : (date ? date+'T08:00' : '');
   const outDT= e.ClockOut? dtLocal(e.ClockOut): '';
+  const inD=inDT.slice(0,10), inT=inDT.slice(11,16);
+  const outD=outDT.slice(0,10), outT=outDT.slice(11,16);
   const brkMin=Math.round((Number(e['Break Hrs'])||0)*60);
   const reflagNote = e.Status==='approved' && S.me.role!=='admin';
   sheet(`<h2>Edit entry</h2>
@@ -5024,10 +5026,16 @@ function openEditEntry(k){
         <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="edPickCompany(companyOptions()[${i}].c)">${o.noPO?esc(o.label):coFace(o.c)}</span>`).join('')}</div>
       </div>
     </div>
-    <label>Clocked in — day and time</label>
-    <input id="eIn" type="datetime-local" value="${esc(inDT)}" onchange="edCalc()">
-    <label>Clocked out — day and time</label>
-    <input id="eOut" type="datetime-local" value="${esc(outDT)}" onchange="edCalc()">
+    <label>Clocked in</label>
+    <div class="row" style="gap:8px">
+      <input id="eInD" type="date" value="${esc(inD)}" onchange="edCalc()" style="flex:1.3;min-width:0">
+      <input id="eInT" type="time" value="${esc(inT)}" onchange="edCalc()" style="flex:1;min-width:0">
+    </div>
+    <label>Clocked out</label>
+    <div class="row" style="gap:8px">
+      <input id="eOutD" type="date" value="${esc(outD)}" onchange="edCalc()" style="flex:1.3;min-width:0">
+      <input id="eOutT" type="time" value="${esc(outT)}" onchange="edCalc()" style="flex:1;min-width:0">
+    </div>
     <div class="row"><div style="width:120px"><label>Break (min)</label>
       <input id="eBreak" type="number" min="0" step="5" value="${brkMin}" oninput="edCalc()"></div></div>
     <p class="small" id="edWorked" style="margin:4px 0 0"></p>
@@ -5042,6 +5050,16 @@ function openEditEntry(k){
     </div>`);
   edCalc();
 }
+/* v93 - Paul, 3 Nov: "we would like to have the date and time separate, so as to edit one
+   without editing the other by accident." One datetime-local control is a single picker on a
+   phone: opening it to nudge 17:24 to 17:30 puts the date under your thumb on the way. Two
+   boxes, one for each, and each end of the shift still carries its OWN day - which is what makes
+   a night shift sayable - so nothing about overnight work changes. */
+function edWhen(which){
+  const d=val('e'+which+'D'), t=val('e'+which+'T');
+  if(!d) return '';
+  return d+'T'+(t||'00:00');
+}
 /* datetime-local wants LOCAL "YYYY-MM-DDTHH:MM" — an ISO string in there is read as UTC and the
    box opens on the wrong hour. */
 function dtLocal(iso){
@@ -5054,7 +5072,7 @@ function dtLocal(iso){
    no longer has to guess, so it says plainly what it is about to save. */
 function edCalc(){
   const box=document.getElementById('edWorked'); if(!box) return;
-  const iv=val('eIn'), ov=val('eOut');
+  const iv=edWhen('In'), ov=edWhen('Out');
   const di=iv?new Date(iv):null, dout=ov?new Date(ov):null;
   const brk=Math.max(0,Number(val('eBreak'))||0);
   const bad=t=>`<span style="color:var(--bad)">${t}</span>`;
@@ -5095,9 +5113,9 @@ async function submitEdit(){
      10:30 pm on the 23rd to 3:45 am on the 24th is saved as exactly that. The old code took one
      date and two times and rolled the out time forward a day whenever it came out earlier than
      the in, which got the common case right and could not express anything else. */
-  const iv=val('eIn'), ov=val('eOut');
+  const iv=edWhen('In'), ov=edWhen('Out');
   const di=iv?new Date(iv):null, dout=ov?new Date(ov):null;
-  if(!di||isNaN(di)){ toast('Pick the day and time they clocked in.'); return; }
+  if(!di||isNaN(di)){ toast('Pick the day and the time they clocked in.'); return; }
   if(ov&&(!dout||isNaN(dout))){ toast('Pick the day and time they clocked out.'); return; }
   if(dout&&!(dout>di)){ toast('The clock-out is before the clock-in — check the days.'); return; }
   if(dout&&(dout-di)>16*3600000&&!st.longOk){
@@ -6960,28 +6978,31 @@ function approvalsHtml(){
   /* v86 - a part somebody typed on a job because the inventory had never heard of it. It is
      already on the job and on the invoice; what is waiting is its NAME, so the office can match
      it to a supplier line later instead of finding "2104 box" on a sheet in six months. */
-  /* v88 - the card ASKS A QUESTION instead of setting homework. Everything that lands here now
-     resembles something we already have (anything that resembles nothing is simply learned, and
-     anything that matches outright is just used), so the useful thing to show is the candidates.
-     One tap says "yes, that one" and the job line is renamed to match. */
-  const prt=nps.map(m=>{ const k=reg(m), sug=m.suggest||[]; return `<div class="list-item">
-      <div class="row between"><div><b>${esc(m.item)}</b> <span class="pill pending">${sug.length?'Same as?':'New part'}</span></div>
+  /* v91 - Paul, 3 Nov: "there should just be a drop down menu showing what I think that part
+     matches with instead of 3 options... then a button to confirm if I found it in the dropdown
+     or a button add new if it really isn't there."
+     So: one picker, the likely matches at the top of it and the whole inventory underneath, so
+     there is always something to choose even when the scoring finds nothing. Confirm files the
+     job line under whatever is showing; Add new opens the naming sheet. */
+  const prt=nps.map(m=>{ const k=reg(m); return `<div class="list-item">
+      <div class="row between"><div><b>${esc(m.item)}</b> <span class="pill pending">Which part?</span></div>
         <span class="small muted">${esc(m.qty)}${m.unit?' '+esc(m.unit):''}</span></div>
       <div class="small muted">${esc(empName(m.employee))} · ${esc(m.jobSite||'')}${m.po?' · PO '+esc(m.po):''} · ${fmtDay(m.time)}</div>
-      ${sug.length?`<div class="small muted" style="margin-top:6px">We already have:</div>
-        ${sug.map((x,j)=>`<button class="secondary" style="width:100%;margin-top:4px;text-align:left;font-size:.92rem;padding:9px 11px"
-            onclick="apvSame('${k}',${j},this)">${esc(x.name)}<div class="small muted" style="font-weight:400">${esc(x.where)}</div></button>`).join('')}`:''}
+      <select id="np_${k}" style="margin:6px 0 0">${npOptions(m)}</select>
       <div class="row" style="margin-top:6px">
-        <button class="${sug.length?'secondary ':''}grow" onclick="openNewPart('${k}')">${sug.length?'No — it is different':'Name it'}</button>
-        <button class="ghost" onclick="apvPart('${k}','dismiss',null,this)">Not a part</button>
+        <button class="grow" onclick="apvSame('${k}',this)">Confirm</button>
+        <button class="secondary" onclick="openNewPart('${k}')">Add new</button>
+        <button class="ghost" onclick="apvPart('${k}','dismiss',null,this)" title="Not a part at all">✕</button>
       </div></div>`; }).join('');
   return `<h2>✅ Needs your OK${n?` <span class="pill pending">${n}</span>`:''}</h2>
     <p class="small muted" style="margin-top:-4px">Hours, time off, allowances and new parts waiting for an admin.</p>
     <div class="card">
       ${hrs?`<h3 style="margin-top:0">Hours</h3>${hrs}`:''}
+      ${canApprove()?`<button class="ghost" style="width:100%;margin-top:2px;font-size:.88rem" onclick="openApvLog()">↩︎ What we have decided lately</button>`:''}
       ${off?`<h3>Time off</h3>${off}`:''}
       ${alw?`<h3>Allowances</h3>${alw}`:''}
       ${prt?`<h3>New parts</h3>${prt}`:''}
+      ${prt?`<button class="ghost" style="width:100%;margin-top:4px;font-size:.88rem" onclick="openPartsLog()">↩︎ Edit log</button>`:''}
       ${n?'':(S.approvals?'<p class="muted small">Nothing waiting. 🎉</p>':'<p class="center"><span class="spin"></span></p>')}
       ${isAdmin?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openHoursFor()">✏️ Add or change someone's hours</button>`:''}
     </div>`;
@@ -7016,18 +7037,124 @@ function openNewPart(k){
     </div>
     <button class="ghost" style="width:100%;margin-top:6px" onclick="apvPart('${k}','dismiss',null,this)">Not a part — drop it</button>`);
 }
-/* "Yes, that is the one we already have." The job line takes the catalogue's name, what was
-   typed is kept as an alias, and nothing new is created. */
-async function apvSame(k, j, btn){
+/* ------------------- WHAT WE HAVE DECIDED LATELY, AND A WAY BACK (v92) ---------------------
+ * Paul, 3 Nov: "a log for all the changes we've made, to be able to undo or edit them if we
+ * click confirm by accident." Approve and Reject are two buttons a thumb apart, deciding
+ * somebody else's pay, and once tapped the request simply vanished off the tab with no way to
+ * look at it again. Every decision is now listed, newest first, with one way back: undo puts the
+ * entry to exactly what it was before - almost always pending - so it returns to the Requests
+ * tab where it can be read, edited and decided properly. No hours are touched either way. */
+async function openApvLog(){
+  sheet(`<h2>↩︎ What we have decided lately</h2>
+    <p class="small muted" style="margin-top:0">Every approve and reject on an employee's hours. Undo puts the request back the way it was.</p>
+    <div id="alBody"><p class="center"><span class="spin"></span></p></div>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  try{
+    const r=await api('approvalsLog',{});
+    S.apvLog=r.decisions||[];
+    const b=document.getElementById('alBody'); if(b) b.innerHTML=apvLogHtml();
+  }catch(e){ const b=document.getElementById('alBody'); if(b) b.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+}
+function apvLogHtml(){
+  const d=S.apvLog||[];
+  if(!d.length) return '<p class="muted small">Nothing decided yet.</p>';
+  return d.map((x,i)=>`<div class="list-item">
+      <div class="row between"><div><b>${esc(x.name||x.employee)}</b>
+        <span class="pill ${x.action==='approved'?'approved':'rejected'}">${esc(x.action)}</span></div>
+        <span class="small muted">${esc(fmtDay(x.at))} ${esc(fmtTime(x.at))}</span></div>
+      <div class="small muted">by ${esc(String(x.who||'').split('@')[0])}${
+        x.wasStatus&&x.wasStatus!=='pending'?` · was “${esc(x.wasStatus)}”`:''}</div>
+      ${x.note?`<div class="small">“${esc(x.note)}”</div>`:''}
+      ${x.undoneAt
+        ? `<div class="small" style="color:var(--warn)">Undone ${esc(fmtDay(x.undoneAt))} by ${esc(String(x.undoneBy||'').split('@')[0])}</div>`
+        : `<button class="secondary" style="width:100%;margin-top:6px" onclick="apvUndo(${i},this)">↩︎ Undo — put it back for a decision</button>`}
+    </div>`).join('');
+}
+async function apvUndo(i, btn){
+  const x=(S.apvLog||[])[i]; if(!x) return;
+  if(!S.online) return toast('You need signal.');
+  if(btn){ btn.disabled=true; btn.textContent='Putting it back…'; }
+  try{
+    const r=await api('approvalUndo',{ id:x.id });
+    x.undoneAt=new Date().toISOString(); x.undoneBy=(S.me&&S.me.email)||'';
+    const b=document.getElementById('alBody'); if(b) b.innerHTML=apvLogHtml();
+    toast('Back to “'+(r.status||'pending')+'” — '+(x.name||x.employee)+' is on the Requests tab again', 6000);
+    loadApprovals();
+  }catch(e){ toast(e.message, 7000); if(btn){ btn.disabled=false; btn.textContent='↩︎ Undo — put it back for a decision'; } }
+}
+/* The picker: what the script thinks it matches, then everything else we stock. The inventory
+   is always there - Paul, 3 Nov: "I'm quite surprised that it doesn't show any matching part for
+   like the SQD breaker" - so the list is never empty, whatever the scoring made of the words. */
+function npOptions(m){
+  const sug=(m.suggest||[]), seen={};
+  let h='';
+  if(sug.length){
+    h+='<optgroup label="Looks like">'+sug.map((x,i)=>{
+      seen[x.name.toLowerCase()]=1;
+      return `<option value="${esc(x.name)}"${i===0?' selected':''}>${esc(x.name)}${x.where?' — '+esc(x.where):''}</option>`;
+    }).join('')+'</optgroup>';
+  }
+  const all=(S.materials||[]).map(x=>x.name).filter(n=>n&&!seen[n.toLowerCase()])
+    .sort((a,b)=>a.localeCompare(b));
+  if(all.length) h+='<optgroup label="Everything we stock">'+all.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')+'</optgroup>';
+  if(!h) h=`<option value="">Nothing in the inventory yet — use Add new</option>`;
+  return h;
+}
+/* Confirm: the job line takes the name showing in the picker. Nothing new is created unless that
+   name is genuinely not in the catalogue yet. */
+async function apvSame(k, btn){
   const m=dereg(k); if(!m) return;
-  const pick=(m.suggest||[])[j]; if(!pick) return;
+  const sel=document.getElementById('np_'+k);
+  const name=sel?String(sel.value||'').trim():'';
+  if(!name) return toast('Pick one from the list, or tap Add new.');
   if(!S.online) return toast('You need signal.');
   if(btn) btn.disabled=true;
   try{
-    await api('resolveMaterial',{ row:m.row, action:'addToList', name:pick.name, unit:m.unit||undefined });
+    await api('resolveMaterial',{ row:m.row, action:'addToList', name:name, unit:m.unit||undefined });
     apvDrop('p', m.row);
-    toast('Filed as “'+pick.name+'” ✓');
+    toast('Filed as “'+name+'” ✓ — undo under the Edit log', 6000);
   }catch(e){ toast(e.message); if(btn) btn.disabled=false; }
+}
+/* Paul, 3 Nov: "a log for all the changes we've made to be able to undo or edit them if we click
+   confirm by accident." Each decision, newest first, with one way back. Undoing puts the job line
+   back on the Requests tab under the words that were actually typed, and takes the catalogue row
+   out again - unless another job has used it since, in which case it stays and the screen says so. */
+async function openPartsLog(){
+  sheet(`<h2>↩︎ Edit log</h2>
+    <p class="small muted" style="margin-top:0">Every part named or dropped from this tab. Undo puts it back as a question.</p>
+    <div id="plBody"><p class="center"><span class="spin"></span></p></div>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  try{
+    const r=await api('partsLog',{});
+    S.partsLog=r.decisions||[];
+    const b=document.getElementById('plBody'); if(b) b.innerHTML=partsLogHtml();
+  }catch(e){ const b=document.getElementById('plBody'); if(b) b.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+}
+function partsLogHtml(){
+  const d=S.partsLog||[];
+  if(!d.length) return '<p class="muted small">Nothing named yet.</p>';
+  return d.map((x,i)=>`<div class="list-item">
+      <div class="row between"><div>${x.action==='named'
+          ? `<b>${esc(x.named)}</b>${x.typed&&x.typed!==x.named?` <span class="small muted">was “${esc(x.typed)}”</span>`:''}`
+          : `<b>${esc(x.typed)}</b> <span class="small muted">dropped — not a part</span>`}</div>
+        <span class="small muted">${esc(fmtDay(x.at))}</span></div>
+      <div class="small muted">${esc(String(x.who||'').split('@')[0])}${x.created?' · added to the inventory':''}</div>
+      ${x.undoneAt
+        ? `<div class="small" style="color:var(--warn)">Undone ${esc(fmtDay(x.undoneAt))} by ${esc(String(x.undoneBy||'').split('@')[0])}</div>`
+        : `<button class="secondary" style="width:100%;margin-top:6px" onclick="partsUndo(${i},this)">↩︎ Undo this</button>`}
+    </div>`).join('');
+}
+async function partsUndo(i, btn){
+  const x=(S.partsLog||[])[i]; if(!x) return;
+  if(!S.online) return toast('You need signal.');
+  if(btn){ btn.disabled=true; btn.textContent='Undoing…'; }
+  try{
+    const r=await api('partsUndo',{ id:x.id });
+    x.undoneAt=new Date().toISOString(); x.undoneBy=(S.me&&S.me.email)||'';
+    const b=document.getElementById('plBody'); if(b) b.innerHTML=partsLogHtml();
+    toast(r.note||'Put back ✓', 6000);
+    loadApprovals();
+  }catch(e){ toast(e.message); if(btn){ btn.disabled=false; btn.textContent='↩︎ Undo this'; } }
 }
 async function apvPart(k, action, _unused, btn){
   const m=dereg(k); if(!m) return;
