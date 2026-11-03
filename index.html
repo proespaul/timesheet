@@ -134,9 +134,30 @@
   /* ---- Month calendar (Schedule tab) ---- */
   .cal{display:grid; grid-template-columns:repeat(7,1fr); gap:4px}
   .cal .dow{text-align:center; font-size:.68rem; color:var(--muted); font-weight:700; padding:2px 0}
-  .cal .day{aspect-ratio:1; border-radius:10px; background:var(--panel); border:1px solid var(--line);
-    display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:.85rem;
-    cursor:pointer; position:relative; -webkit-user-select:none; user-select:none}
+  /* v95 - the month shows the JOBS, not a row of dots: each day lists what is on it, earliest
+   * first, and a job can be dragged onto another day. The cells grew to fit two lines of that;
+   * a square cell on a phone is 50px and could not hold a name. */
+  .cal .day{min-height:92px; border-radius:10px; background:var(--panel); border:1px solid var(--line);
+    display:flex; flex-direction:column; align-items:stretch; font-size:.85rem; padding:2px 2px 3px;
+    cursor:pointer; position:relative; -webkit-user-select:none; user-select:none; overflow:hidden}
+  .cal .day .dn{font-size:.72rem; font-weight:700; color:var(--muted); text-align:center; line-height:1.1}
+  .cal .day.today .dn{color:var(--accent2)}
+  .cal .evs{flex:1; display:flex; flex-direction:column; gap:2px; margin-top:2px; overflow:hidden}
+  /* Two lines: the time, then who it is for. A cell is 50px wide on a phone, so one line could
+   * only ever show "7a P…" - which is a dot with extra steps. */
+  .cal .ev{padding:2px 3px; border-radius:4px; background:var(--accent); color:#fff;
+    touch-action:none; overflow:hidden}
+  .cal .ev .t{display:block; font-size:.5rem; line-height:1.1; opacity:.85; font-weight:700}
+  .cal .ev .n{display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+    font-size:.54rem; line-height:1.15; font-weight:600; overflow-wrap:anywhere}
+  .cal .ev.un{background:var(--warn)}
+  .cal .ev.ghosted{opacity:.35}
+  .cal .more{font-size:.52rem; color:var(--muted); text-align:center; line-height:1.2}
+  .cal .day.drop{border:2px solid var(--accent2); background:#e4efff}
+  .evdrag{position:fixed; z-index:70; pointer-events:none; font-size:.62rem; font-weight:700;
+    padding:4px 8px; border-radius:6px; background:var(--accent2); color:#fff;
+    box-shadow:0 6px 18px rgba(31,56,100,.35); transform:translate(-50%,-140%); max-width:60vw;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .cal .day.blank{background:transparent; border:none; cursor:default}
   .cal .day.today{border:2px solid var(--accent2); font-weight:800}
   .cal .day.hol{background:#fef9c3; border-color:#fde68a}
@@ -2630,6 +2651,117 @@ async function loadSchedMonth(){
   }catch(e){ if(!S.schedMonths[month]) toast(e.message); }
   S._smLoading=null; if(S.tab==='sched') render();
 }
+/* A chip: the time on its own line, the customer under it over two lines at most. The scope
+   after the dash is dropped - it is the part that never fits and the part a tap shows anyway. */
+function schedName(ev){ return String(ev.title||'').split(/\s+[—–-]\s+/)[0].trim() || 'Job'; }
+function schedClock(ev){
+  if(ev.allDay) return 'All day';
+  const d=new Date(ev.start);
+  if(isNaN(d)) return '';
+  const h=d.getHours(), mm=d.getMinutes();
+  return (h%12||12)+(mm?':'+String(mm).padStart(2,'0'):'')+(h<12?'a':'p');
+}
+function schedMini(ev){ const t=schedClock(ev); return ev.allDay?schedName(ev):(t?t+' ':'')+schedName(ev); }
+function schedChip(ev){
+  const t=schedClock(ev);
+  return `${t&&!ev.allDay?`<span class="t">${esc(t)}</span>`:''}<span class="n">${esc(schedName(ev))}</span>`;
+}
+/* ---- DRAGGING A JOB ONTO ANOTHER DAY (v95) ------------------------------------------------
+ * Paul, 3 Nov: "I would like to be able to click on it and drag it to another date to make it
+ * really easy to move around when I have to reschedule."
+ *
+ * Press and hold, then drag. The hold is what separates a drag from a scroll and from a tap:
+ * move more than a few pixels before it fires and it is a scroll, let go before it fires and it
+ * is a tap that opens the job. Pointer events rather than HTML5 drag-and-drop, which does not
+ * exist on a phone. Dropping does not move anything by itself - it opens the same Move sheet
+ * that scheduling uses, with the new day already filled in, because the time still has to be
+ * agreed and the customer still has to be told. */
+var SD_ = null;      // the drag in progress
+function schedGrab(e, key, day){
+  if(e.button && e.button!==0) return;
+  const el=e.currentTarget;
+  SD_={ key, day, el, x0:e.clientX, y0:e.clientY, id:e.pointerId, on:false, over:'',
+        timer:setTimeout(()=>schedLift(), 320) };
+  try{ el.setPointerCapture(e.pointerId); }catch(err){}
+  el.onpointermove=schedMoveP; el.onpointerup=schedDrop; el.onpointercancel=schedAbort;
+}
+function schedLift(){
+  if(!SD_) return;
+  SD_.on=true;
+  SD_.el.classList.add('ghosted');
+  const g=document.createElement('div');
+  g.className='evdrag'; g.textContent=SD_.el.textContent;
+  g.style.left=SD_.x0+'px'; g.style.top=SD_.y0+'px';
+  document.body.appendChild(g); SD_.ghost=g;
+  try{ if(navigator.vibrate) navigator.vibrate(12); }catch(e){}
+}
+function schedMoveP(e){
+  if(!SD_) return;
+  if(!SD_.on){
+    if(Math.abs(e.clientX-SD_.x0)>8 || Math.abs(e.clientY-SD_.y0)>8) schedAbort();   // a scroll
+    return;
+  }
+  e.preventDefault();
+  SD_.ghost.style.left=e.clientX+'px'; SD_.ghost.style.top=e.clientY+'px';
+  const el=document.elementFromPoint(e.clientX, e.clientY);
+  const cell=el&&el.closest?el.closest('.day[data-day]'):null;
+  const day=cell?cell.getAttribute('data-day'):'';
+  if(day!==SD_.over){
+    document.querySelectorAll('.cal .day.drop').forEach(d=>d.classList.remove('drop'));
+    if(day && day!==SD_.day && cell) cell.classList.add('drop');
+    SD_.over=day;
+  }
+}
+function schedDrop(e){
+  if(!SD_) return;
+  const was=SD_, dropped=was.on?was.over:'';
+  schedClear();
+  if(!was.on){ const ev=dereg(was.key); if(ev) openSchedDetail(was.key); return; }   // a tap
+  if(!dropped || dropped===was.day) return;                                          // put back
+  schedDropMove(was.key, dropped);
+}
+function schedAbort(){ schedClear(); }
+function schedClear(){
+  if(!SD_) return;
+  clearTimeout(SD_.timer);
+  try{ SD_.el.releasePointerCapture(SD_.id); }catch(e){}
+  SD_.el.onpointermove=null; SD_.el.onpointerup=null; SD_.el.onpointercancel=null;
+  SD_.el.classList.remove('ghosted');
+  // Take the ghost off the screen whatever happens: a floating label left behind after a drag
+  // sits over everything and nothing else would ever remove it.
+  if(SD_.ghost){ try{ SD_.ghost.remove(); }catch(e){ try{ document.body.removeChild(SD_.ghost); }catch(e2){} } }
+  document.querySelectorAll('.cal .day.drop').forEach(d=>d.classList.remove('drop'));
+  SD_=null;
+}
+/* Dropped on a day: the same Move sheet as everywhere else, opened on that day. The booking's
+   own kind decides which one - a booked job re-dates the PO Log and re-asks the customer, a
+   return visit moves only itself - so nothing about moving changes except where it starts. */
+async function schedDropMove(key, day){
+  const ev=dereg(key); if(!ev) return;
+  if(!S.online) return toast('You need signal to move a booking.');
+  S._moveTo=day;
+  sheet(`<h2>Move ${esc(String(ev.title||'this job').split(/\s+[—–-]\s+/)[0])}</h2>
+    <p class="small muted" style="margin-top:-4px">to ${esc(schedDayLabel(day))}</p>
+    <p class="center" style="margin:20px 0"><span class="spin"></span></p>
+    <p class="small muted center">Looking up the job…</p>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="S._moveTo='';closeSheet()">Cancel</button>`);
+  const mine=S._sheet;
+  let info=null;
+  try{ info=await api('eventInfo',{eventId:ev.id},{bg:true, timeout:75000}); }
+  catch(e){ if(S._sheet===mine){ S._moveTo=''; closeSheet(); toast(e.message,8000); } return; }
+  if(S._sheet!==mine) return;                       // they moved on while it loaded
+  if(!info || !info.isJob){ S._moveTo=''; closeSheet(); toast('That booking is not a job — open it to change it.',6000); return; }
+  const k2=reg(info);
+  let bi = info.kind==='request' ? schedBookedIndex(info.requestId) : -1;
+  if(info.kind==='request' && bi<0){ try{ await loadRequests(); if(S._sheet!==mine) return; bi=schedBookedIndex(info.requestId); }catch(e){} }
+  if(info.kind==='request' && bi>=0){ closeSheetDom(); openReqMove(bi); }
+  else openVisitMove(k2);
+}
+/* The day a drop asked for, used once by whichever Move sheet opens next. */
+function moveToDate(fallback){
+  const d=S._moveTo; S._moveTo='';
+  return d || fallback;
+}
 function schedShiftMonth(dir){
   const p=curSchedMonth().split('-');
   const dt=new Date(Number(p[0]), Number(p[1])-1+dir, 1);
@@ -2657,10 +2789,16 @@ function schedMonthHtml(){
   for(let i=0;i<first.getDay();i++) cells+='<div class="day blank"></div>';
   for(let dn=1;dn<=dim;dn++){
     const k=`${y}-${String(m).padStart(2,'0')}-${String(dn).padStart(2,'0')}`;
-    const evs=evByDay[k]||[];
-    const dots=evs.slice(0,3).map(()=>`<span class="dot${unByDay[k]?' warn':''}"></span>`).join('');
-    cells+=`<div class="day${k===tstr?' today':''}${holByDay[k]?' hol':''}" onclick="openSchedDay('${k}')">
-      ${offByDay[k]?'<span class="off">🏖</span>':''}${dn}<span class="dots">${dots}</span></div>`;
+    const evs=(evByDay[k]||[]).slice().sort((a,b)=>new Date(a.start)-new Date(b.start));
+    const show=evs.slice(0,2).map(ev=>{
+      const rk=reg(ev), un=data&&data.canAssign&&!ev.assigned.length;
+      return `<div class="ev${un?' un':''}" data-ek="${rk}" data-day="${k}"
+        onpointerdown="schedGrab(event,'${rk}','${k}')" onclick="event.stopPropagation()"
+        >${schedChip(ev)}</div>`;
+    }).join('');
+    cells+=`<div class="day${k===tstr?' today':''}${holByDay[k]?' hol':''}" data-day="${k}" onclick="openSchedDay('${k}')">
+      <span class="dn">${offByDay[k]?'🏖 ':''}${dn}</span>
+      <div class="evs">${show}${evs.length>2?`<div class="more">+${evs.length-2}</div>`:''}</div></div>`;
   }
   const label=new Date(y,m-1,1).toLocaleDateString([],{month:'long',year:'numeric'});
   return `<div class="card">
@@ -2671,8 +2809,8 @@ function schedMonthHtml(){
     </div>
     <div class="cal">${cells}</div>
     <p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
-      ? '• dot = jobs that day (orange = nobody assigned yet) · 🏖 = someone off · yellow = stat holiday · tap a day'
-      : '• dot = you\'re scheduled that day · 🏖 = your time off · yellow = stat holiday · tap a day to see where you\'re heading'}</p>
+      ? 'Tap a job to open it, or <b>press and hold to drag it onto another day</b> · orange = nobody assigned · 🏖 = someone off · yellow = stat holiday'
+      : 'Your jobs this month · 🏖 = your time off · yellow = stat holiday · tap a day to see where you\'re heading'}</p>
   </div>`;
 }
 function openSchedDay(day){
@@ -3287,7 +3425,7 @@ function openVisitMove(key){
     <p class="small muted" style="margin-top:-4px">${esc([info.po,info.scope].filter(Boolean).join(' · '))}</p>
     <label>How long? (hours)</label>
     <input id="vmHours" type="number" step="0.25" min="0.25" value="${info.hours||2}">
-    <div class="row"><div class="grow"><label>New date</label><input id="vmDate" type="date" value="${cur.getFullYear()}-${pad(cur.getMonth()+1)}-${pad(cur.getDate())}"></div>
+    <div class="row"><div class="grow"><label>New date</label><input id="vmDate" type="date" value="${esc(moveToDate(`${cur.getFullYear()}-${pad(cur.getMonth()+1)}-${pad(cur.getDate())}`))}"></div>
       <div class="grow"><label>New start</label><input id="vmTime" type="time" value="${pad(cur.getHours())}:${pad(cur.getMinutes())}"></div></div>
     <div class="perm"><input type="checkbox" id="vmNotify" checked><label for="vmNotify" style="margin:0">Email the customer the new time</label></div>
     <div class="perm"><input type="checkbox" id="vmBump"><label for="vmBump" style="margin:0">Let it take a slot that already has a job in it</label></div>
@@ -6995,7 +7133,7 @@ function approvalsHtml(){
       <div class="row between"><div><b>${esc(m.item)}</b> <span class="pill pending">Which part?</span></div>
         <span class="small muted">${esc(m.qty)}${m.unit?' '+esc(m.unit):''}</span></div>
       <div class="small muted">${esc(empName(m.employee))} · ${esc(m.jobSite||'')}${m.po?' · PO '+esc(m.po):''} · ${fmtDay(m.time)}</div>
-      <select id="np_${k}" style="margin:6px 0 0">${npOptions(m)}</select>
+      ${npPickerHtml(m,k)}
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="apvSame('${k}',this)">Confirm</button>
         <button class="secondary" onclick="openNewPart('${k}')">Add new</button>
@@ -7089,35 +7227,107 @@ async function apvUndo(i, btn){
     loadApprovals();
   }catch(e){ toast(e.message, 7000); if(btn){ btn.disabled=false; btn.textContent='↩︎ Undo — put it back for a decision'; } }
 }
-/* The picker: what the script thinks it matches, then everything else we stock. The inventory
-   is always there - Paul, 3 Nov: "I'm quite surprised that it doesn't show any matching part for
-   like the SQD breaker" - so the list is never empty, whatever the scoring made of the words. */
-function npOptions(m){
-  const sug=(m.suggest||[]), seen={};
-  let h='';
-  if(sug.length){
-    h+='<optgroup label="Looks like">'+sug.map((x,i)=>{
-      seen[x.name.toLowerCase()]=1;
-      return `<option value="${esc(x.name)}"${i===0?' selected':''}>${esc(x.name)}${x.where?' — '+esc(x.where):''}</option>`;
-    }).join('')+'</optgroup>';
+/* ------------------------- TYPE IT, LIKE A SEARCH BAR (v96) --------------------------------
+ * Paul, 3 Nov: "a person should be able to type in a name they think it could match and the
+ * dropdown will show the closest match to it, unless there's absolutely nothing. Similar to when
+ * you're searching through a Google bar."
+ *
+ * The long dropdown is gone. It opens on the script's best guess, already filled in, so Confirm
+ * is still one tap when the guess is right; type over it and the list under the box narrows to
+ * whatever is closest. Three passes, in order, so something sensible comes back for almost any
+ * spelling: the words you typed found in the name, then the name starting with what you typed,
+ * then a loose character match for a typo. Only when all three find nothing does it say so, and
+ * point at Add new. */
+function npTokens(q){ return String(q||'').toLowerCase().split(/[^a-z0-9\/#.-]+/).filter(w=>w.length>1); }
+function npScore(q, name){
+  const hay=String(name||'').toLowerCase(), ql=String(q||'').trim().toLowerCase();
+  if(!ql) return 0;
+  let sc=0;
+  if(hay===ql) return 100;
+  if(hay.startsWith(ql)) sc+=40;
+  else if(hay.includes(ql)) sc+=25;
+  const qt=npTokens(ql);
+  if(qt.length){
+    let hit=0;
+    qt.forEach(w=>{ if(hay.includes(w)) hit += /[0-9]/.test(w) ? 3 : 1; });   // 14/2 and 15A tell parts apart
+    const want=qt.reduce((n,w)=>n+(/[0-9]/.test(w)?3:1),0);
+    sc += 30*(hit/want);
+    if(hit===want) sc+=10;
   }
-  const all=(S.materials||[]).map(x=>x.name).filter(n=>n&&!seen[n.toLowerCase()])
-    .sort((a,b)=>a.localeCompare(b));
-  if(all.length) h+='<optgroup label="Everything we stock">'+all.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')+'</optgroup>';
-  if(!h) h=`<option value="">Nothing in the inventory yet — use Add new</option>`;
-  return h;
+  // A typo in a WORD is worth forgiving; a typo in a SIZE is not. "brakers" should still find
+  // the breakers, but 14/2 and 12/2 are one character apart and are different wire - letting the
+  // fuzzy pass near-miss digits put the wrong gauge at the top of the list.
+  if(!sc && !qt.some(w=>/[0-9]/.test(w)) && similarJs(hay, ql)) sc=4;
+  if(sc) sc -= Math.min(5, hay.length/40);        // all else equal, the shorter name wins
+  return sc;
+}
+function npFind(m, q){
+  const sug=(m.suggest||[]).map(x=>x.name);
+  if(!String(q||'').trim()){
+    // Nothing typed: what the script thinks, and nothing else. The whole inventory is what the
+    // typing is for - a thousand rows in a list is the thing Paul was scrolling past.
+    return (m.suggest||[]).map(x=>({name:x.name, where:x.where}));
+  }
+  const seen={}, out=[];
+  (S.materials||[]).forEach(x=>{
+    const sc=npScore(q, x.name);
+    if(sc>0 && !seen[x.name.toLowerCase()]){ seen[x.name.toLowerCase()]=1; out.push({name:x.name, sc, where:sug.indexOf(x.name)>=0?'looks like it':''}); }
+  });
+  (m.suggest||[]).forEach(x=>{                     // a suggestion off this job's PO is not in the catalogue
+    if(seen[x.name.toLowerCase()]) return;
+    const sc=npScore(q, x.name);
+    if(sc>0){ seen[x.name.toLowerCase()]=1; out.push({name:x.name, sc, where:x.where}); }
+  });
+  out.sort((a,b)=>b.sc-a.sc);
+  return out.slice(0,8);
+}
+function npPickerHtml(m, k){
+  const first=((m.suggest||[])[0]||{}).name||'';
+  if(S.npPick&&S.npPick[k]===undefined){ /* keep what they chose */ }
+  const val=(S.npPick&&S.npPick[k]!==undefined)?S.npPick[k]:first;
+  return `<input id="nps_${k}" placeholder="Type what it is — e.g. 15A breaker" autocomplete="off"
+      value="${esc(val)}" oninput="npSearch('${k}')" onfocus="npSearch('${k}')" style="margin:6px 0 0">
+    <div id="npr_${k}">${S.npOpen===k?npResultsHtml(m,k):''}</div>`;
+}
+function npResultsHtml(m, k){
+  const q=(S.npPick&&S.npPick[k])||'';
+  const hits=npFind(m, q);
+  if(!hits.length) return `<div class="suggest"><div class="small muted">Nothing in the inventory is close to “${esc(q)}” — tap <b>Add new</b> to put it in.</div></div>`;
+  return `<div class="suggest">${hits.map(x=>`<div onclick="npChoose('${k}','${esc(String(x.name).replace(/'/g,"\\'"))}')">
+      <b>${esc(x.name)}</b>${x.where?`<div class="small muted">${esc(x.where)}</div>`:''}</div>`).join('')}</div>`;
+}
+function npSearch(k){
+  const m=dereg(k); if(!m) return;
+  S.npPick=S.npPick||{};
+  S.npPick[k]=val('nps_'+k);
+  S.npOpen=k;
+  const box=document.getElementById('npr_'+k);
+  if(box) box.innerHTML=npResultsHtml(m,k);
+}
+function npChoose(k, name){
+  S.npPick=S.npPick||{}; S.npPick[k]=name;
+  const el=document.getElementById('nps_'+k); if(el) el.value=name;
+  S.npOpen='';
+  const box=document.getElementById('npr_'+k); if(box) box.innerHTML='';
 }
 /* Confirm: the job line takes the name showing in the picker. Nothing new is created unless that
    name is genuinely not in the catalogue yet. */
 async function apvSame(k, btn){
   const m=dereg(k); if(!m) return;
-  const sel=document.getElementById('np_'+k);
-  const name=sel?String(sel.value||'').trim():'';
-  if(!name) return toast('Pick one from the list, or tap Add new.');
+  const name=String(val('nps_'+k)||'').trim();
+  if(!name) return toast('Type what it is, or tap Add new.');
+  // Confirm files it under a name we ALREADY have. A name typed here that is in nothing would
+  // quietly create a second part, which is the very thing this screen exists to prevent - so it
+  // is sent to Add new, where naming something new is the deliberate act it should be.
+  const known=(S.materials||[]).some(x=>lc(x.name)===lc(name))
+           || (m.suggest||[]).some(x=>lc(x.name)===lc(name));
+  if(!known) return toast('“'+name+'” is not in the inventory — pick one from the list, or tap Add new.', 6000);
   if(!S.online) return toast('You need signal.');
   if(btn) btn.disabled=true;
   try{
     await api('resolveMaterial',{ row:m.row, action:'addToList', name:name, unit:m.unit||undefined });
+    if(S.npPick) delete S.npPick[k];
+    S.npOpen='';
     apvDrop('p', m.row);
     toast('Filed as “'+name+'” ✓ — undo under the Edit log', 6000);
   }catch(e){ toast(e.message); if(btn) btn.disabled=false; }
@@ -8091,7 +8301,7 @@ function openReqMove(i,k){
       <label>How long is the job itself? (hours — for the quote)</label>`
      :`<label>How long is the job? (hours)</label>`}
     <input id="mvHours" type="number" step="0.25" min="0.25" value="${q.bookedHours||q.hours||1}">
-    <div class="row"><div class="grow"><label>New date</label><input id="mvDate" type="date" value="${d}"></div>
+    <div class="row"><div class="grow"><label>New date</label><input id="mvDate" type="date" value="${esc(moveToDate(d))}"></div>
       <div class="grow"><label>New start</label><input id="mvTime" type="time" value="${t}"></div></div>
     <div class="perm"><input type="checkbox" id="mvNotify" ${isEst?'':'checked'}><label for="mvNotify" style="margin:0">Email the customer the new time</label></div>
     <div class="perm"><input type="checkbox" id="mvBump"><label for="mvBump" style="margin:0">Let it take a slot that already has a job in it</label></div>
