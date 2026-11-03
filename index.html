@@ -2168,6 +2168,13 @@ function openMore(){
 function go(tab, nav){
   if(nav==='replace'){ try{ history.replaceState({tab},''); }catch(e){} }             // from the More menu
   else if(tab!==S.tab){ try{ history.pushState({tab},''); }catch(e){} }              // Back walks tab history (2.6)
+  /* v94 - Charles, 3 Nov: "every time we want to schedule, it should be the monthly calendar
+     showing by default." Opening the tab opens the month, every time. Booking a job is a question
+     about a month - which Tuesday is free - and the next-two-weeks list can only answer it for
+     the fortnight already in front of you. The list is one tap away and the choice sticks while
+     you stay on the tab; it goes back to the month on the next visit. Set BEFORE the first paint,
+     or the tab would flash the list it was left on. */
+  if(tab==='sched' && S.tab!=='sched') S.schedView='month';
   S.tab=tab; render();
   if (tab==='admin' && S.online){ loadPending(); loadObStatus(); loadAllowAdmin(); } // fetched on demand, not at boot
   if (tab==='hours' && S.online){
@@ -2177,7 +2184,7 @@ function go(tab, nav){
   if (tab==='jobs' && S.online) loadJobs();              // refresh job costs on every open
   if (tab==='jha') { if(S.online) loadJha(); loadCustomers(); } // JHA needs the job picker warm too
   if (tab==='requests' && S.online) loadRequests();
-  if (tab==='sched' && S.online) loadSched();            // schedule reads the admin calendar live
+  if (tab==='sched'){ loadSchedMonth(); if(S.online) loadSched(); }   // the calendar, live
   if (tab==='clock' || tab==='entries') loadCustomers(); // keep autocomplete warm
 }
 
@@ -2573,11 +2580,11 @@ function schedView(){
   } else body = S.schedErr
     ? `<div class="banner ot" style="white-space:pre-wrap">⚠ ${esc(S.schedErr)}</div>`
     : (S.schedLoading?'':'<p class="muted small">Open this tab while online to load the schedule.</p>');
-  const mode=S.schedView||'list';
+  const mode=S.schedView||'month';
   const head=`<div class="row between"><h2>Schedule</h2>${(S.schedLoading||S._smLoading)?'<span class="spin"></span>':''}</div>
     <div class="seg" style="margin-bottom:10px">
-      <button class="${mode==='list'?'on':''}" onclick="schedToggle('list')">☰ Next 2 weeks</button>
       <button class="${mode==='month'?'on':''}" onclick="schedToggle('month')">📅 Month</button>
+      <button class="${mode==='list'?'on':''}" onclick="schedToggle('list')">☰ Next 2 weeks</button>
     </div>
     ${canApprove()?`<div class="row" style="margin-bottom:10px">
       <button class="secondary grow" onclick="openAddManual('job')">⚡ Schedule a job</button>
@@ -2595,7 +2602,7 @@ function schedView(){
 function schedRefreshAll(){ // any schedule mutation: refresh the list AND drop stale month grids
   S.schedMonths={};
   loadSched();
-  if((S.schedView||'list')==='month') loadSchedMonth();
+  if((S.schedView||'month')==='month') loadSchedMonth();
 }
 function schedToggle(m){
   S.schedView=m; render();
