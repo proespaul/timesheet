@@ -73,6 +73,8 @@
     box-shadow:inset 0 3px 0 var(--accent2)}
   .tabbar .ic .dot{position:absolute;margin:-14px 0 0 16px;width:9px;height:9px;border-radius:50%;background:var(--bad)}
   .tabbar .ic{display:flex; align-items:center; justify-content:center; height:27px; font-size:1.55rem; line-height:1}
+  .tabbar.seven button{font-size:.66rem; padding:12px 0 13px}   /* v99 - the office bar has Estimates too */
+  .tabbar.seven .ic{font-size:1.4rem}
   .banner{padding:10px 14px; border-radius:12px; margin:8px 0; font-size:.9rem}
   .banner.offline{background:#fef3c7; color:#92400e; border:1px solid #fcd34d}
   .banner.ot{background:#fee2e2; color:#b91c1c; border:1px solid #fca5a5}
@@ -269,6 +271,7 @@
   /* ---- Desktop layout (≥900px): wide and roomy for admin work; phones untouched. ---- */
   @media (min-width: 900px){
     .wrap{max-width:1080px}
+    .wrap.tab-est{max-width:820px}
     .wrap.tab-clock{max-width:640px}                    /* the running clock reads best compact + centered */
     .wrap.tab-entries, .wrap.tab-team, .wrap.tab-hours, .wrap.tab-jobs, .wrap.tab-jha, .wrap.tab-sched{max-width:820px}  /* comfortable reading width for lists */
     /* Admin tab: cards flow into two columns (approvals | employees, materials | payroll) */
@@ -1686,6 +1689,7 @@ function applyBootstrap(d){
   S.entries = d.entries||[]; S.openEntry = d.openEntry||null;
   S.employees = d.employees||[];
   if (d.pendingRequests !== undefined) S.pendingRequests = d.pendingRequests;
+  if (d.pendingEstimates !== undefined) S.pendingEstimates = d.pendingEstimates;   // v99
   // v97 - the home screen, decided once per open: the office lands on Today, unless they are on the
   // clock (then the Clock, which is what they came to tap). The crew always land on the Clock.
   if (!S._homeSet && S.me){
@@ -1876,6 +1880,7 @@ function render(loading){
   else if (S.tab==='jobs') body = jobsView();
   else if (S.tab==='jha') body = jhaView();
   else if (S.tab==='requests') body = requestsView();
+  else if (S.tab==='est') body = canApprove() ? estimatesView() : clockView();
   else if (S.tab==='sched') body = schedView();
   document.body.classList.toggle('office', isOffice());   // v98 - drives the desktop menu
   app.innerHTML = `${isOffice()?sideNav():''}<div class="wrap tab-${S.tab}">${topBar()}${offlineBanner()}${body}</div>${tabBar()}`; // tab-* class drives the desktop layout
@@ -2265,10 +2270,11 @@ function tabBar(){
   const moreTabs = canReq ? ['hours','team','admin','jha','entries'] : ['hours','jha'];
   const more=`<button class="${moreTabs.includes(S.tab)?'active':''}" onclick="openMore()"><span class="ic">☰</span>More</button>`;
   // v97 - the office opens on Today; it sits first on their bar. The crew's bar is unchanged.
-  return `<div class="tabbar">
+  return `<div class="tabbar${isOffice()&&canReq?' seven':''}">
     ${isOffice()?t('today',TD_ICON,'Today'):''}
     ${t('clock','⏱','Clock')}
     ${canReq?t('requests',`📨${pend?'<span class="dot"></span>':''}`,'Requests'):''}
+    ${canReq?t('est',`📝${S.pendingEstimates?'<span class="dot"></span>':''}`,'Estimates'):''}
     ${t('sched',cal,'Schedule')}
     ${canTeam?t('jobs','🏗️','Jobs'):''}
     ${canReq?'':t('entries','📋','Entries')}
@@ -2308,6 +2314,7 @@ function go(tab, nav){
   if (tab==='jobs' && S.online) loadJobs();              // refresh job costs on every open
   if (tab==='jha') { if(S.online) loadJha(); loadCustomers(); } // JHA needs the job picker warm too
   if (tab==='requests' && S.online) loadRequests();
+  if (tab==='est') loadEstimates();
   if (tab==='sched'){ loadSchedMonth(); if(S.online) loadSched(); }   // the calendar, live
   if (tab==='clock' || tab==='entries') loadCustomers(); // keep autocomplete warm
   if (tab==='today'){ loadToday(); loadCustomers(); }      // v97 - Clock in from Today needs the job list warm too
@@ -2411,9 +2418,10 @@ function todayRows(){
       s:'The check is off until it opens again — that is not zero hours', on:`openHoursCheck('${k}')`});
     else if(n) rows.push({c:'o', k:'Hours check · '+tdFirst(g.name), t:`${n} day${n===1?'':'s'} don't match the hour sheet`,
       s:`${g.days.slice(0,6).map(x=>tdShort(x.date)).join(', ')}${n>6?' +'+(n-6):''}${g.through?' · sheet filled to '+tdShort(g.through):''}`, on:`openHoursCheck('${k}')`}); });
-  const leads=S.pendingRequests||0, apv=apvCount();
-  if(leads||apv) rows.push({c:'b', k:'Requests', t:[leads?`${leads} website lead${leads===1?'':'s'} to book`:'', apv?`${apv} waiting for your OK`:''].filter(Boolean).join(' · '),
+  const leads=S.pendingRequests||0, apv=apvCount(), ests=S.pendingEstimates||0;
+  if(leads||apv) rows.push({c:'b', k:'Requests', t:[leads?`${leads} job${leads===1?'':'s'} to book`:'', apv?`${apv} waiting for your OK`:''].filter(Boolean).join(' · '),
     s:'On the Requests tab', on:`go('requests')`});
+  if(ests) rows.push({c:'b', k:'Estimates', t:`${ests} estimate request${ests===1?'':'s'} to answer`, s:'Send the price from the Estimates tab', on:`go('est')`});
   items.filter(i=>i.kind==='bill').forEach(i=>{ const k=reg(i);
     rows.push({c:'b', k:'Ready to bill?', t:`${i.po} ${i.name}`,
       s:`${(Number(i.hours)+Number(i.pending||0)).toFixed(1)} h · last on site ${tdShort(i.last)} · ${i.calOk?'nothing booked':'calendar not checked'}`, on:`openTodayBill('${k}')`}); });
@@ -2454,7 +2462,7 @@ function todayPipe(){
   const st=(cls,k,n,d,on)=>`<div class="st ${cls}" onclick="${on}"><div class="k">${k}</div><div class="n">${n}</div><div class="d">${d}</div></div>`;
   return `<div class="card dt-only"><div class="row between"><h3 style="margin:0">Where every job stands</h3><span class="small muted">From the PO Log</span></div>
     <div class="pipe">
-      ${st('', '1 · New leads', S.pendingRequests||0, 'Waiting to be booked', "go('requests')")}
+      ${st('', '1 · New leads', (S.pendingRequests||0)+(S.pendingEstimates||0), 'Jobs and estimates waiting', "go('requests')")}
       ${st('on', '2 · In progress', q(t.inProgress&&t.inProgress.n), 'On site or booked', "go('jobs')")}
       ${st('bill', '3 · Ready to bill?', items.filter(i=>i.kind==='bill'||i.kind==='draft').length, 'Hours, no invoice', "document.querySelector('.needs-list').scrollIntoView({behavior:'smooth'})")}
       ${st('', '4 · Invoiced', q(t.invoiced&&t.invoiced.n), 'Waiting on payment', "S.jobsShowArch=true;go('jobs')")}
@@ -2481,6 +2489,7 @@ function sideNav(){
     ${b('today',TD_ICON,'Today')}
     ${b('clock','⏱','Clock')}
     ${canApprove()?b('requests','📨','Requests',pend||'',!!pend):''}
+    ${canApprove()?b('est','📝','Estimates',S.pendingEstimates||'',!!S.pendingEstimates):''}
     ${b('sched',cal,'Schedule')}
     ${canTeam?b('jobs','🏗️','Jobs',ip||''):''}
     <div class="sgap"></div>
@@ -3404,12 +3413,6 @@ function openSchedModify(key,bi){
           +' Goes through to the PO Log.',
           `openSchedEditJob('${key}')`)
       : row('👤','Customer &amp; job details','No job record behind this booking — nothing to correct.','toast(\'This booking has no job record behind it.\')','ghost')}
-    ${info.jobRequestId && !isVisit
-      ? row('🔁','What it is — appointment or estimate',
-          info.po?('This already has job number '+esc(info.po)+', so it cannot go back to being an estimate. Tap to see why.')
-                 :'Switch between an estimate call and a booked job.',
-          `openSchedSetType('${key}')`)
-      : ''}
     ${row('📨','Original inquiry', info.detail?'What the customer wrote, with their photos.':'Nothing on file for this one.',
         info.detail?`openSchedEnquiry('${key}')`:`toast('No enquiry on file for this one.')`, info.detail?'secondary':'ghost')}
     ${isReq
@@ -7079,6 +7082,7 @@ async function loadRequests(){
     if(S.tab==='requests') render();
   }catch(e){ if(!S.requests) S.reqErr=e.message; if(S.tab==='requests') render(); }
   S._reqLoading=false;
+  if(S.tab==='est') loadEstimates();   // v99 - booking, moving or closing a visit from the Estimates tab
 }
 function openRequests(){ go('requests'); }   // from the pop-up and older call sites
 /* v34 — the customer's form photos, on the card itself.
@@ -7311,7 +7315,7 @@ function requestsView(){
     const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
     return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'req',${i})">
       <div class="row between">
-        <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> <span class="pill ${q.type==='APPOINTMENT'?'approved':'live'}">${esc(q.type||'')}</span></div>
+        <div><b>${esc(q.customer||'—')}</b>${q.po?` <span class="small muted">${esc(q.po)}</span>`:''}</div>
         <span class="small" style="color:var(--accent2)">Details ›</span>
       </div>
       ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
@@ -7376,19 +7380,137 @@ function requestsView(){
       </div>
     </div>`; }).join('');
   return `${approvalsHtml()}${neoCardHtml()}${collateralCardHtml()}${callsCardHtml()}<h2>📨 Requests</h2>
-    <p class="small muted" style="margin-top:-4px">Website leads waiting to go on the calendar. Nothing is booked until you say so.</p>
+    <p class="small muted" style="margin-top:-4px">Jobs waiting to go on the calendar. Nothing is booked until you say so. Requests for an estimate are on the Estimates tab.</p>
     ${canApprove()?`<div class="row" style="margin:8px 0 10px">
       <button class="secondary grow" onclick="openAddManual('job')">⚡ Schedule a job</button>
-      <button class="secondary grow" onclick="openAddManual('call')">📞 Schedule a call</button>
+      <button class="secondary grow" onclick="go('est')">📝 Estimates${S.pendingEstimates?' ('+S.pendingEstimates+')':''}</button>
     </div>`:''}
     ${S.reqErr?`<div class="banner ot">${esc(S.reqErr)}</div>`:''}
     <div class="card">${list||((S._reqLoading&&!S.requests)?'<p class="center"><span class="spin"></span></p>':'<p class="muted small">Nothing waiting. 🎉</p>')}</div>
-    ${ests?`<h3 style="margin-top:18px">Quoted — waiting on the customer</h3>
-      <p class="small muted" style="margin-top:-4px">Estimate calls you've held. Booking one here gets it a PO number and a PO Log row.</p>
-      <div class="card">${ests}</div>`:''}
     ${bk?`<h3 style="margin-top:18px">Booked jobs</h3>
       <p class="small muted" style="margin-top:-4px">🟠 waiting on the customer · 🟢 they confirmed · 🔴 they want it moved. The calendar event is the same colour.</p>
       <div class="card">${bk}</div>`:''}`;
+}
+/* ----- ESTIMATES TAB (v99) ------------------------------------------------------------------
+ * Paul, 7 Nov: "we should have an estimate tab for any requests for the estimates that comes
+ * through we can send it that way. even from the email." Every request for an estimate - off the
+ * website form, or picked out of the inbox by the sweep - waits here, not on Requests. Send the
+ * price from here: the customer gets it by email with Yes, book it / No thanks, and a yes moves it
+ * to Requests as a job to book (it gets its job number when it is booked). A visit to look first
+ * can be booked from here too; it goes on the calendar under their name with no job number. */
+function estMoney(a,b){ a=Math.round(Number(a)||0); b=Math.round(Number(b)||0);
+  if(a&&b&&a!==b) return `$${a.toLocaleString()}–$${b.toLocaleString()}`; const x=b||a; return x?`$${x.toLocaleString()}`:''; }
+function estCard(q,i,kind){
+  const k=reg(q), when=q.start?new Date(q.start):null;
+  const day=d=>d&&!isNaN(new Date(d))?new Date(d).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'}):'';
+  const qt=q.quote||{};
+  const head=`<div class="row between"><b>${esc(q.customer||'—')}</b>
+      <span class="small muted">${kind==='lead'?esc(day(q.received)):kind==='visit'?('visit '+esc(day(q.start))):kind==='sent'?('sent '+esc(day(qt.sentAt))):('said no '+esc(day(qt.answeredAt||qt.sentAt)))}</span></div>`;
+  const info=`${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
+      <div class="small muted" style="margin-top:2px">${[q.address,q.phone,q.email].filter(Boolean).map(esc).join(' · ')}</div>
+      <div class="small" style="margin-top:3px">${kind==='sent'||kind==='no'?`Sent <b>${esc(estMoney(qt.low,qt.high))}</b> to ${esc(qt.to||q.email||'')}`
+        :(q.priceHigh?`Ball park <b>${esc(estMoney(q.priceLow,q.priceHigh))}</b>`:'No ball park yet')+(q.hours?` · about ${q.hours} hr`:'')}</div>`;
+  let btns='';
+  if(kind==='lead') btns=`<button class="grow" onclick="openEstSend('lead',${i})">💲 Send the estimate</button>
+      <button class="secondary grow" onclick="openReqSchedule(${i},'estLead')">📅 Book a visit to look</button>
+      </div><div class="row" style="margin-top:6px"><button class="ghost" onclick="estDismiss('${k}',this)">Not going ahead</button>`;
+  else if(kind==='visit') btns=`<button class="grow" onclick="openEstSend('visit',${i})">💲 Send the estimate</button>
+      <button class="secondary grow" onclick="openReqBook(${i})">🔧 They said yes — book it</button>
+      </div><div class="row" style="margin-top:6px"><button class="secondary grow" onclick="openReqMove(${i},'est')">📅 Move the visit</button>
+      <button class="ghost" onclick="reqNotProceeding(${i})">Didn't go ahead</button>`;
+  else if(kind==='sent') btns=`<button class="grow" onclick="estMark('${k}','yes',this)">✅ They said yes</button>
+      <button class="secondary grow" onclick="openEstSend('sent',${i})">📧 Send again</button>
+      <button class="ghost" onclick="estMark('${k}','no',this)">They said no</button>`;
+  return `<div class="list-item">${head}${info}${kind==='lead'||kind==='visit'?reqPhotoStrip(q)+enquiryBtn(q)+ballParkBtn(q):''}
+    ${btns?`<div class="row" style="margin-top:6px;flex-wrap:wrap">${btns}</div>`:''}</div>`;
+}
+function estimatesView(){
+  const d=S.estData;
+  if(d) S.reqEstimates=d.visits||[];   // book / move / close-out read S.reqEstimates[i]: keep it the list on screen
+  const sec=(title,note,list,kind)=>list&&list.length?`<h3 style="margin-top:18px">${title}</h3>${note?`<p class="small muted" style="margin-top:-4px">${note}</p>`:''}
+    <div class="card">${list.map((q,i)=>estCard(q,i,kind)).join('')}</div>`:'';
+  const empty=d&&!(d.leads||[]).length&&!(d.visits||[]).length&&!(d.sent||[]).length;
+  return `<div class="row between"><h2>📝 Estimates</h2>${S._estLoading&&!d?'<span class="spin"></span>':''}</div>
+    <p class="small muted" style="margin-top:-4px">Everyone who asked for a price, from the website or by email. Send it from here; a yes moves it to Requests to book.</p>
+    <div class="row" style="margin:8px 0 4px"><button class="secondary grow" onclick="openAddManual('call')">➕ Add a request by hand</button></div>
+    ${S.estErr?`<div class="banner ot">${esc(S.estErr)}</div>`:''}
+    ${!d?`<div class="card"><p class="muted small" style="margin:0">${S.online?'<span class="spin"></span> Loading…':'Open this tab once with signal.'}</p></div>`:''}
+    ${empty?'<div class="card"><p class="muted small" style="margin:0">Nothing waiting. 🎉</p></div>':''}
+    ${d?sec('New — waiting for a price','',d.leads,'lead'):''}
+    ${d?sec('Visit booked','You are going to look first. Send the price after, or book the job if they said yes on the spot.',d.visits,'visit'):''}
+    ${d?sec('Sent — waiting on them','They can answer with the buttons in the email. Phoned instead? Mark it here.',d.sent,'sent'):''}
+    ${d?sec('Said no (last 30 days)','',d.declined,'no'):''}`;
+}
+async function loadEstimates(){
+  if(!canApprove()) return;
+  if(!S.estData){ try{ const c=await DB.getCache('estimates'); if(c&&!S.estData){ S.estData=c; S.reqEstimates=c.visits||[]; if(S.tab==='est') render(); } }catch(e){} }
+  if(S._estLoading||!S.online) return;
+  S._estLoading=true;
+  try{
+    const r=await apiBg('estimateList',{});
+    S.estData=r; S.reqEstimates=r.visits||[]; S.pendingEstimates=(r.leads||[]).length; S.estErr='';
+    DB.setCache('estimates', r);
+  }catch(e){ S.estErr=/Unknown action/i.test(e.message||'')?'This tab needs the newest office script.':e.message; }
+  S._estLoading=false;
+  if(S.tab==='est'||S.tab==='today') render();
+}
+function estPick(kind,i){ const d=S.estData||{}; return (kind==='lead'?d.leads:kind==='visit'?d.visits:d.sent||[])[i]; }
+function openEstSend(kind,i){
+  const q=estPick(kind,i); if(!q) return;
+  const qt=q.quote||{};
+  const low=qt.low||q.priceLow||'', high=qt.high||q.priceHigh||'';
+  S._esQ=q;
+  sheet(`<h2>Estimate for ${esc(q.customer||'')}</h2>
+    ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
+    <label style="margin-top:0">Send to</label><input id="esTo" type="email" value="${esc(q.email||'')}" placeholder="their email">
+    <div class="row"><div class="grow"><label>Price ($)</label><input id="esLow" type="number" min="0" step="10" inputmode="decimal" value="${low?Math.round(low):''}"></div>
+      <div class="grow"><label>Up to ($), if a range</label><input id="esHigh" type="number" min="0" step="10" inputmode="decimal" value="${high&&Math.round(high)!==Math.round(low)?Math.round(high):''}"></div></div>
+    ${q.priceHigh?`<p class="small muted" style="margin:2px 0 0">The ball park was ${esc(estMoney(q.priceLow,q.priceHigh))}.</p>`:''}
+    <label>Your note</label><textarea id="esMsg" rows="3">${esc(qt.message||'Thanks for asking us to look at this. Here is our estimate:')}</textarea>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="estPreview(this)">👁 See the email first</button>
+    <div id="esPrev"></div>
+    <button style="width:100%;margin-top:8px" onclick="estSend(this)">📧 Send the estimate</button>
+    <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Cancel</button>`);
+}
+function estPayload(){ const q=S._esQ; return { id:q.id, email:val('esTo').trim(), low:Number(val('esLow'))||0, high:Number(val('esHigh'))||0, message:val('esMsg') }; }
+async function estPreview(btn){
+  if(!S.online) return toast('You need signal.');
+  btn.disabled=true; btn.textContent='Making the preview…';
+  try{
+    const r=await api('estimateSend',{...estPayload(), preview:true},{bg:true, timeout:60000});
+    const box=document.getElementById('esPrev');
+    if(box){ box.innerHTML=`<p class="small muted" style="margin:8px 0 4px">To <b>${esc(r.to)}</b> · ${esc(r.subject)}</p><iframe sandbox style="width:100%;height:520px;border:1px solid var(--line);border-radius:12px;background:#fff"></iframe>`;
+      box.querySelector('iframe').srcdoc=r.html; }
+  }catch(e){ toast(e.message, 7000); }
+  btn.disabled=false; btn.textContent='👁 See the email first';
+}
+async function estSend(btn){
+  if(!S.online) return toast('You need signal to send it.');
+  const p=estPayload();
+  if(!p.low&&!p.high) return toast('Put in the price.');
+  btn.disabled=true; btn.textContent='Sending…';
+  try{
+    const r=await api('estimateSend',p,{timeout:90000});
+    toast(`Estimate ${r.price} sent to ${r.to} ✓`, 6000);
+    S._esQ=null; closeSheet(); loadEstimates();
+  }catch(e){ toast(e.message, 8000); btn.disabled=false; btn.textContent='📧 Send the estimate'; }
+}
+async function estMark(k,answer,btn){
+  const q=dereg(k); if(!q) return;
+  if(!S.online) return toast('You need signal.');
+  btn.disabled=true;
+  try{
+    await api('estimateMark',{id:q.id, answer},{timeout:60000});
+    toast(answer==='yes'?`${q.customer}: moved to Requests — book the job there ✓`:`${q.customer}: filed as said no`, 6000);
+    loadEstimates(); if(answer==='yes') loadRequests();
+  }catch(e){ toast(e.message, 7000); btn.disabled=false; }
+}
+async function estDismiss(k,btn){
+  const q=dereg(k); if(!q) return;
+  if(!S.online) return toast('You need signal.');
+  btn.disabled=true;
+  try{ await api('requestDismiss',{id:q.id}); toast('Taken off the list'); loadEstimates(); }
+  catch(e){ toast(e.message); btn.disabled=false; }
 }
 function reqRender(){ if(S.tab==='requests') render(); else go('requests'); }
 
@@ -8346,27 +8468,25 @@ async function amLater(btn){
   }catch(e){ toast(e.message,9000); btn.disabled=false; btn.textContent='Save — no time yet'; }
 }
 
-function openReqSchedule(i){
-  const q=(S.requests||[])[i]; if(!q) return;
+function openReqSchedule(i, src){
+  // v99 - opened from Requests it books the JOB; from the Estimates tab it books a visit to look
+  // first, which goes on the calendar under their name with no job number until they say yes.
+  const q = src==='estLead' ? ((S.estData&&S.estData.leads)||[])[i] : (S.requests||[])[i]; if(!q) return;
+  S._rqQ=q;
   const sug=q.suggested&&!isNaN(new Date(q.suggested))?new Date(q.suggested):new Date(Date.now()+86400000);
   const pad=n=>String(n).padStart(2,'0');
   const d=`${sug.getFullYear()}-${pad(sug.getMonth()+1)}-${pad(sug.getDate())}`;
   const t=`${pad(sug.getHours()||9)}:${pad(sug.getMinutes())}`;
   const crew=(S.employees||[]).filter(e=>e.active);
-  const isAppt=String(q.type||'').toUpperCase()==='APPOINTMENT';
-  sheet(`<h2>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'Schedule')}</h2>
+  const isAppt = src!=='estLead';
+  sheet(`<h2>${esc(q.customer||'Schedule')}</h2>
     <p class="small muted" style="margin-top:-4px">${q.address?esc(q.address):''}</p>
     ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
     ${q.materials?`<div class="small muted">Materials: ${esc(q.materials)}</div>`:''}
-    <label>What is this? <span class="muted">(the form said ${esc(q.type)})</span></label>
-    <div class="seg" id="rqTypeSeg" style="margin-bottom:10px">
-      <button type="button" data-t="ESTIMATE" class="${isAppt?'':'on'}" onclick="reqSetType('ESTIMATE')">Estimate call</button>
-      <button type="button" data-t="APPOINTMENT" class="${isAppt?'on':''}" onclick="reqSetType('APPOINTMENT')">Appointment — book the job</button>
-    </div>
     <input type="hidden" id="rqType" value="${isAppt?'APPOINTMENT':'ESTIMATE'}">
-    <p class="small muted" id="rqTypeNote" style="margin-top:-4px">${isAppt?'Books the full job. Gets the next PO number and a PO Log row (In progress).':'Blocks the call on the calendar. Goes on the Estimate tab — no PO number yet.'}</p>
+    <p class="small muted" id="rqTypeNote" style="margin-top:4px">${isAppt?'Books the job. It gets the next job number and a PO Log row.':'A visit to look at the job before you price it. It goes on the calendar under their name, with no job number until they say yes.'}</p>
     <div id="rqCallRow" style="${isAppt?'display:none':''}">
-      <label>How long is the call?</label>
+      <label>How long is the visit?</label>
       <div class="seg" id="rqCallSeg" style="margin-bottom:6px">
         ${[[15,'15 min'],[30,'30 min'],[60,'1 h'],[120,'2 h']].map(([m,t])=>`<button type="button" data-m="${m}" class="${m===30?'on':''}" onclick="reqSetCall(${m})">${t}</button>`).join('')}
       </div>
@@ -8504,7 +8624,7 @@ function reqSetType(t){
   if(document.getElementById('rqOpen')) reqSlotsLoad(true);
 }
 async function reqSchedule(i,btn){
-  const q=(S.requests||[])[i]; if(!q) return;
+  const q=S._rqQ||(S.requests||[])[i]; if(!q) return;
   const date=val('rqDate'), time=val('rqTime'), hours=Number(val('rqHours'))||q.hours||1;
   const type=(val('rqType')||q.type||'ESTIMATE').toUpperCase()==='APPOINTMENT'?'APPOINTMENT':'ESTIMATE';
   if(!date||!time) return toast('Pick the date and time.');
@@ -8525,13 +8645,13 @@ async function reqSchedule(i,btn){
     // thing Paul needs to carry away from this screen, and a silent failure there is invisible.
     let extra = assign.length ? ' — crew notified' : '';
     if (r && r.po) extra = ' — ' + r.po + (assign.length ? ', crew notified' : '');
-    else if (type==='ESTIMATE') { const cm=Number(val('rqCallMin'))||30; extra = ' — '+(cm<60?cm+'-min':(cm/60)+'-h')+' call' + (assign.length ? ', crew notified' : ''); }
+    else if (type==='ESTIMATE') { const cm=Number(val('rqCallMin'))||30; extra = ' — '+(cm<60?cm+'-min':(cm/60)+'-h')+' visit' + (assign.length ? ', crew notified' : ''); }
     toast('On the calendar ✓' + extra);
     if (r && r.poNote && /FAILED|skipped/i.test(r.poNote)) setTimeout(()=>toast('PO Log not updated: '+r.poNote), 2600);
     if (r && r.custNote && /NOT notified|unavailable/i.test(r.custNote)) setTimeout(()=>toast(r.custNote), 2600);
     // v36 — an estimate call is allowed to sit over a running job, but say what it landed on.
     if (r && r.slotNote) setTimeout(()=>toast(r.slotNote, 6000), 3400);
-    closeSheetDom(); render(); loadRequests();   // J) so the Booked list shows it straight away
+    S._rqQ=null; closeSheetDom(); render(); loadRequests(); if(type==='ESTIMATE') loadEstimates();   // J) so the Booked list shows it straight away
   }catch(e){
     // The server may have finished after we stopped waiting. Say so rather than implying it failed.
     if (/already on the calendar/i.test(e.message||'')) { toast('Already booked ✓'); closeSheetDom(); loadRequests(); render(); return; }
@@ -8594,7 +8714,8 @@ async function reqNotProceeding(i){
   try{
     await api('requestDismiss',{id:q.id, reason:'not proceeding'});
     S.reqEstimates=(S.reqEstimates||[]).filter(x=>x.id!==q.id);
-    toast('Closed out'); render();
+    if(S.estData) S.estData.visits=S.reqEstimates;
+    toast('Closed out'); render(); if(S.tab==='est') loadEstimates();
   }catch(e){ toast(e.message); }
 }
 /* v46 — move a booked job. The customer is emailed the new time and asked again, so the
