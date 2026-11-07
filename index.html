@@ -220,8 +220,49 @@
   .brand .bolt{display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:9px;
     background:var(--accent); box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}
   .brand .nm{font-weight:800; letter-spacing:.01em; white-space:nowrap}
+  /* v98 - DESKTOP for the office: the concept's placing, the app's own colours, fonts and icons.
+   * A menu down the left (it replaces the bottom bar), then on Today: the numbers across the top,
+   * where every job stands, and Needs you beside On the go. Phones never see any of this. */
+  .side{display:none}
+  .dt-only{display:none}
+  .pipe{display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; margin-top:8px}
+  .pipe .st{background:var(--panel2); border-radius:12px; padding:12px 14px; cursor:pointer; min-width:0}
+  .pipe .st .k{font-size:.7rem; font-weight:800; letter-spacing:.04em; text-transform:uppercase; color:var(--muted)}
+  .pipe .st .n{font-size:1.6rem; font-weight:800; color:var(--navy); line-height:1.15; margin:2px 0}
+  .pipe .st .d{font-size:.76rem; color:var(--muted)}
+  .pipe .st.on{background:rgba(46,117,182,.10); box-shadow:inset 0 -3px 0 var(--accent2)}
+  .pipe .st.on .k{color:var(--accent2)}
+  .pipe .st.bill{background:var(--needs-bg); box-shadow:inset 0 -3px 0 var(--needs)}
+  .pipe .st.bill .k, .pipe .st.bill .n{color:var(--needs-ink)}
+  .ongo .og{display:flex; align-items:center; gap:10px; padding:10px 0; border-top:1px solid var(--line); cursor:pointer}
+  .ongo .og .po{width:62px; flex:none; font-size:.8rem; font-weight:700; color:var(--muted)}
+  .ongo .og .nm{flex:1; min-width:0; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .ongo .og .h{flex:none; font-size:.88rem; color:var(--muted)}
   @media (min-width: 900px){
-    .wrap.tab-today{max-width:980px}
+    body.office{padding-left:240px; padding-bottom:24px}
+    body.office .tabbar{display:none}
+    body.office .side{display:flex; flex-direction:column; gap:4px; position:fixed; left:0; top:0; bottom:0; width:240px;
+      background:linear-gradient(180deg,#1F3864,#24477a); color:#fff; padding:20px 14px; z-index:25; overflow:auto}
+    .side .sbrand{display:flex; align-items:center; gap:10px; padding:4px 8px 18px}
+    .side .sbrand .bolt{display:inline-flex; align-items:center; justify-content:center; width:34px; height:34px; border-radius:9px; background:var(--accent)}
+    .side .sbrand b{font-size:1.05rem; letter-spacing:.01em}
+    .side .sbrand span.sub{display:block; font-size:.72rem; color:rgba(255,255,255,.65); font-weight:600}
+    .side button{display:flex; align-items:center; gap:12px; width:100%; background:transparent; color:#d6e2f3; text-align:left;
+      padding:10px 12px; border-radius:10px; font-weight:600; font-size:.95rem}
+    .side button:hover{background:rgba(255,255,255,.08)}
+    .side button.on{background:rgba(255,255,255,.14); color:#fff; box-shadow:inset 3px 0 0 var(--pulse)}
+    .side button .si{width:26px; display:inline-flex; justify-content:center; font-size:1.2rem}
+    .side button .cnt{margin-left:auto; font-size:.75rem; color:rgba(255,255,255,.7)}
+    .side button .cnt.hot{color:#fff; background:var(--bad); border-radius:999px; padding:1px 8px; font-weight:800}
+    .side .sgap{height:10px; border-top:1px solid rgba(255,255,255,.14); margin:8px 6px 4px}
+    body.office .apphead .brand{display:none}
+    body.office .wrap{max-width:1160px}
+    body.office .wrap.tab-clock{max-width:640px}
+    .dt-only{display:block}
+    .ph-only{display:none}
+    .tdgrid{display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr); gap:16px; align-items:start}
+    .tdgrid .card{margin-top:0}
+    .wrap.tab-today{max-width:1160px}
     .tiles{grid-template-columns:repeat(4,minmax(0,1fr))}
     .brand{display:flex}
   }
@@ -1836,7 +1877,8 @@ function render(loading){
   else if (S.tab==='jha') body = jhaView();
   else if (S.tab==='requests') body = requestsView();
   else if (S.tab==='sched') body = schedView();
-  app.innerHTML = `<div class="wrap tab-${S.tab}">${topBar()}${offlineBanner()}${body}</div>${tabBar()}`; // tab-* class drives the desktop layout
+  document.body.classList.toggle('office', isOffice());   // v98 - drives the desktop menu
+  app.innerHTML = `${isOffice()?sideNav():''}<div class="wrap tab-${S.tab}">${topBar()}${offlineBanner()}${body}</div>${tabBar()}`; // tab-* class drives the desktop layout
   wire();
 }
 
@@ -2395,13 +2437,60 @@ function todayView(){
   const hidden = hid.length ? `<div class="small muted" style="margin-top:10px">${hid.length} put aside · <a href="#" style="color:var(--accent2)" onclick="S.todayShowHidden=!S.todayShowHidden;render();return false">${S.todayShowHidden?'hide the list':'show them'}</a></div>
       ${S.todayShowHidden?hid.map(h=>`<div class="row between small" style="padding:6px 0;border-top:1px solid var(--line)"><span>${esc(h.label)}</span><a href="#" style="color:var(--accent2);white-space:nowrap" onclick="todayUnhide('${reg(h)}');return false">Put back</a></div>`).join(''):''}` : '';
   const errs=(d.errors||[]).length ? `<p class="small" style="color:var(--needs-ink);margin:4px 2px">Some of this could not be read just now: ${(d.errors||[]).map(esc).join('; ')}</p>` : '';
-  return `${head}${todayClockCard()}${todayTiles()}
+  return `${head}<div class="ph-only">${todayClockCard()}</div>${todayTiles()}${todayPipe()}
+    <div class="tdgrid"><div>
     <div class="card needs-list">
       <div class="row between"><h3 style="margin:0">Needs you</h3><span class="small muted">${rows.length?rows.length+(rows.length===1?' item':' items'):''}</span></div>
       ${rows.map(r=>`<div class="ni" onclick="${r.on}"><span class="ndot ${r.c}"></span><div class="tx"><div class="k ${r.c}">${esc(r.k)}</div><div class="t">${esc(r.t)}</div><div class="s">${esc(r.s)}</div></div><span class="go">›</span></div>`).join('')
         || '<p class="small muted" style="margin:10px 0 2px">Nothing needs you right now. ✓</p>'}
       ${hidden}
-    </div>${errs}`;
+    </div></div>
+    <div class="dt-only">${todayClockCard()}${todayOnGo()}</div></div>${errs}`;
+}
+/* v98 - desktop: where every job stands, left to right, and the jobs on the go with their hours. */
+function todayPipe(){
+  const t=(S.today&&S.today.tiles)||{}, items=(S.today&&S.today.items)||[];
+  const q=n=>n==null?'—':n;
+  const st=(cls,k,n,d,on)=>`<div class="st ${cls}" onclick="${on}"><div class="k">${k}</div><div class="n">${n}</div><div class="d">${d}</div></div>`;
+  return `<div class="card dt-only"><div class="row between"><h3 style="margin:0">Where every job stands</h3><span class="small muted">From the PO Log</span></div>
+    <div class="pipe">
+      ${st('', '1 · New leads', S.pendingRequests||0, 'Waiting to be booked', "go('requests')")}
+      ${st('on', '2 · In progress', q(t.inProgress&&t.inProgress.n), 'On site or booked', "go('jobs')")}
+      ${st('bill', '3 · Ready to bill?', items.filter(i=>i.kind==='bill'||i.kind==='draft').length, 'Hours, no invoice', "document.querySelector('.needs-list').scrollIntoView({behavior:'smooth'})")}
+      ${st('', '4 · Invoiced', q(t.invoiced&&t.invoiced.n), 'Waiting on payment', "S.jobsShowArch=true;go('jobs')")}
+      ${st('', '5 · Paid &amp; closed', q(t.closed), 'Done', "S.jobsShowArch=true;go('jobs')")}
+    </div></div>`;
+}
+function todayOnGo(){
+  const list=((S.today&&S.today.tiles)||{}).onGo;
+  if(!list) return '';
+  return `<div class="card ongo"><div class="row between" style="margin-bottom:4px"><h3 style="margin:0">On the go</h3><span class="small muted">Hours from the app</span></div>
+    ${list.map(j=>{ const k=reg({jobSite:j.name, po:j.po}); return `<div class="og" onclick="openJobAll('${k}')"><span class="po">${esc(j.po)}</span><span class="nm">${esc(j.name)}</span><span class="h">${j.hours?Number(j.hours).toFixed(1)+' h':'—'}</span></div>`; }).join('') || '<p class="small muted">Nothing in progress.</p>'}
+  </div>`;
+}
+/* v98 - the office's menu on a desktop screen: the same places, icons and order as the bottom bar,
+   plus what lives behind More. Hidden on a phone, where the bottom bar stays. */
+function sideNav(){
+  const canTeam = S.me && (S.me.role==='admin' || (S.me.permissions&&S.me.permissions.viewAllEmployees));
+  const pend=(S.pendingRequests||0)+apvCount();
+  const ip=S.today&&S.today.tiles&&S.today.tiles.inProgress&&S.today.tiles.inProgress.n;
+  const cal=`<span class="calic"><span class="calic-top"></span><span class="calic-num">${new Date().getDate()}</span></span>`;
+  const b=(id,ic,l,cnt,hot)=>`<button class="${S.tab===id?'on':''}" onclick="go('${id}')"><span class="si">${ic}</span>${l}${cnt?`<span class="cnt${hot?' hot':''}">${cnt}</span>`:''}</button>`;
+  return `<nav class="side" aria-label="Menu">
+    <div class="sbrand"><span class="bolt">${BOLT_SVG}</span><div><b>PRO Electrical</b><span class="sub">Operations</span></div></div>
+    ${b('today',TD_ICON,'Today')}
+    ${b('clock','⏱','Clock')}
+    ${canApprove()?b('requests','📨','Requests',pend||'',!!pend):''}
+    ${b('sched',cal,'Schedule')}
+    ${canTeam?b('jobs','🏗️','Jobs',ip||''):''}
+    <div class="sgap"></div>
+    ${b('hours','📊','Hours')}
+    ${canTeam?b('team','👥','Team'):''}
+    ${b('admin','⚙️','Admin')}
+    ${b('jha','🦺','JHA')}
+    ${b('entries','📋','Entries')}
+    ${canPrice()?`<button onclick="openPriceList()"><span class="si">💲</span>Price list</button>`:''}
+  </nav>`;
 }
 /* ---- the sheets behind each row ---- */
 function openHoursCheck(k){
