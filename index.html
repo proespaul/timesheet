@@ -178,6 +178,53 @@
     border-radius:5px; background:#fff; border:1px solid #c6cfdc; overflow:hidden}
   .calic-top{width:100%; height:5px; background:var(--bad); flex:none}
   .calic-num{font-size:.6rem; font-weight:800; color:var(--navy); line-height:15px}
+  /* ---- v97 TODAY (the office home screen). One colour means one thing, everywhere:
+   *      orange = needs you, blue = the next step, green = go. ---- */
+  :root{ --needs:#C2410C; --needs-ink:#9A3412; --needs-bg:#FFF7ED; --needs-line:#FDBA74; }
+  .tdhead{display:flex; justify-content:space-between; align-items:center; gap:10px; margin:2px 2px 10px}
+  .tdhead h2{margin:0}
+  .tdasof{font-size:.8rem; color:var(--muted)}
+  .tdasof.stale{color:var(--needs-ink); font-weight:700}
+  .tdrefresh{display:inline-flex; align-items:center; gap:6px; flex:none; background:var(--panel); color:var(--text);
+    border:1px solid var(--line); padding:10px 14px}
+  .card.tdclock{display:flex; align-items:center; gap:12px; padding:12px 14px; margin:0 0 8px}
+  .tdc-t{font-weight:800; font-size:1rem; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .tdc-in{flex:none; background:linear-gradient(135deg,#15803d,#22c55e); padding:13px 20px; font-size:1.02rem;
+    box-shadow:0 4px 12px rgba(21,128,61,.3)}
+  .tiles{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:0 0 12px}
+  .tile{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:12px 13px; min-width:0;
+    box-shadow:0 1px 3px rgba(31,56,100,.06)}
+  .tile .lbl{font-size:.74rem; font-weight:700; color:var(--muted); line-height:1.25}
+  .tile .num{font-size:1.85rem; font-weight:800; line-height:1.1; color:var(--navy); margin:4px 0 3px}
+  .tile .num small{font-size:.95rem; color:var(--muted); font-weight:700}
+  .tile .sub{font-size:.74rem; color:var(--muted); line-height:1.3; overflow:hidden; display:-webkit-box;
+    -webkit-line-clamp:2; -webkit-box-orient:vertical}
+  .tile.needs{background:var(--needs-bg); border-color:var(--needs-line)}
+  .tile.needs .lbl, .tile.needs .num, .tile.needs .sub{color:var(--needs-ink)}
+  .needs-list .ni{display:flex; align-items:center; gap:12px; padding:12px 0; border-top:1px solid var(--line); cursor:pointer}
+  .needs-list .row + .ni{border-top:none; margin-top:4px}
+  .ni .ndot{flex:none; width:10px; height:10px; border-radius:50%}
+  .ni .ndot.o{background:var(--needs)} .ni .ndot.b{background:var(--accent)} .ni .ndot.g{background:#94a3b8}
+  .ni .tx{flex:1; min-width:0}
+  .ni .k{font-size:.68rem; font-weight:800; letter-spacing:.04em; text-transform:uppercase; color:var(--muted)}
+  .ni .k.o{color:var(--needs-ink)} .ni .k.b{color:var(--accent2)}
+  .ni .t{font-weight:700; font-size:.95rem; line-height:1.3}
+  .ni .s{font-size:.8rem; color:var(--muted); line-height:1.3}
+  .ni .go{flex:none; color:var(--muted); font-size:1.3rem}
+  .hccols{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:6px}
+  .hcrow{font-size:.8rem; line-height:1.3; margin-top:5px}
+  .hcrow b{display:block; font-weight:700; color:var(--text)}
+  .hcrow span{display:block; color:var(--muted)}
+  /* The bolt mark: on a desktop screen only, top-left; on a phone it is the app icon and nothing else. */
+  .brand{display:none; align-items:center; gap:10px; padding-right:14px; margin-right:2px; border-right:1px solid rgba(255,255,255,.22)}
+  .brand .bolt{display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:9px;
+    background:var(--accent); box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}
+  .brand .nm{font-weight:800; letter-spacing:.01em; white-space:nowrap}
+  @media (min-width: 900px){
+    .wrap.tab-today{max-width:980px}
+    .tiles{grid-template-columns:repeat(4,minmax(0,1fr))}
+    .brand{display:flex}
+  }
   /* ---- Desktop layout (≥900px): wide and roomy for admin work; phones untouched. ---- */
   @media (min-width: 900px){
     .wrap{max-width:1080px}
@@ -1598,6 +1645,13 @@ function applyBootstrap(d){
   S.entries = d.entries||[]; S.openEntry = d.openEntry||null;
   S.employees = d.employees||[];
   if (d.pendingRequests !== undefined) S.pendingRequests = d.pendingRequests;
+  // v97 - the home screen, decided once per open: the office lands on Today, unless they are on the
+  // clock (then the Clock, which is what they came to tap). The crew always land on the Clock.
+  if (!S._homeSet && S.me){
+    S._homeSet = true;
+    if (isOffice() && S.tab==='clock' && !S.openEntry){ S.tab='today'; try{ history.replaceState({tab:'today'},''); }catch(e){} }
+    if (S.tab==='today') setTimeout(()=>loadToday(), 0);
+  }
   setTimeout(()=>{ forgotNudge(); reqNudge(); }, 900);   // after the first paint, one at a time
   setTimeout(()=>{ if(canApprove()) loadApprovals(); }, 1500);   // v56 — badge counts approvals too
   if (d.pending !== undefined) S.pending = d.pending; // pending now loads on demand (Admin tab)
@@ -1771,7 +1825,9 @@ function render(loading){
   if (loading){ app.innerHTML = '<div class="wrap center" style="margin-top:40vh"><span class="spin"></span><p class="muted">Loading…</p></div>'; return; }
   if (!S.session || !S.booted){ app.innerHTML = signInView(); return; }
   let body='';
-  if (S.tab==='clock') body = clockView();
+  if (S.tab==='today' && isOffice()) body = todayView();
+  else if (S.tab==='today') body = clockView();              // crew never land here; if they do, it is the clock
+  else if (S.tab==='clock') body = clockView();
   else if (S.tab==='entries') body = entriesView();
   else if (S.tab==='admin') body = adminView();
   else if (S.tab==='team') body = teamView();
@@ -1828,9 +1884,12 @@ function topBar(){
   const full=(m.name&&m.name.trim()) || (mine&&mine.name&&mine.name.trim()) || '';
   const first=(full || String(m.email||'').split('@')[0]).split(/\s+/)[0];
   return `<div class="apphead">
-    <div>
+    <div class="row" style="gap:12px;min-width:0">
+      ${isOffice()?`<div class="brand"><span class="bolt">${BOLT_SVG}</span><span class="nm">PRO Electrical</span></div>`:''}
+      <div>
       <div class="hello">Hello, ${esc(first)}! 👋</div>
       <div class="hello-sub">${(m.role==='admin'||m.role==='bookkeeper')?`<span class="cap">${esc(m.role)}</span> · `:''}${new Date().toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'})}</div>
+      </div>
     </div>
     <div class="row">
       <img class="avatar" src="${esc(m.picture||'')}" onerror="this.style.display='none'">
@@ -2163,7 +2222,9 @@ function tabBar(){
   // Crew get Entries in its place — they have no Requests or Jobs to look at.
   const moreTabs = canReq ? ['hours','team','admin','jha','entries'] : ['hours','jha'];
   const more=`<button class="${moreTabs.includes(S.tab)?'active':''}" onclick="openMore()"><span class="ic">☰</span>More</button>`;
+  // v97 - the office opens on Today; it sits first on their bar. The crew's bar is unchanged.
   return `<div class="tabbar">
+    ${isOffice()?t('today',TD_ICON,'Today'):''}
     ${t('clock','⏱','Clock')}
     ${canReq?t('requests',`📨${pend?'<span class="dot"></span>':''}`,'Requests'):''}
     ${t('sched',cal,'Schedule')}
@@ -2207,7 +2268,266 @@ function go(tab, nav){
   if (tab==='requests' && S.online) loadRequests();
   if (tab==='sched'){ loadSchedMonth(); if(S.online) loadSched(); }   // the calendar, live
   if (tab==='clock' || tab==='entries') loadCustomers(); // keep autocomplete warm
+  if (tab==='today'){ loadToday(); loadCustomers(); }      // v97 - Clock in from Today needs the job list warm too
 }
+
+/* ----- TODAY TAB (v97, office only) ------------------------------------------------------------
+ * Paul, 7 Nov - steps 2 and 3 of the dashboard build. The office (admins) opens on one question:
+ * WHAT NEEDS ME RIGHT NOW? The crew keep the Clock screen they know; an admin who is on the clock
+ * still opens on Clock, because that is what they came to tap.
+ * Orange = needs you, blue = the next step, grey = worth a look. Every number says how fresh it is.
+ * The screen paints at once from the copy kept on this phone, then asks the office (Code.gs v87,
+ * action 'today'), which answers from a snapshot it rebuilds every hour; Refresh rebuilds it now.
+ * Nothing here edits anything except "put aside" - the buttons open the screens that already do
+ * the work (Build initial draft, Add time, Requests). Charles's hour sheets are only ever read. */
+function isOffice(){ return !!(S.me && S.me.role==='admin'); }
+const TD_ICON = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>`;
+const BOLT_SVG = `<svg width="17" height="17" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>`;
+// A bare YYYY-MM-DD is read at NOON: new Date('2026-10-09') is midnight UTC, the evening of the 8th here.
+function tdDay(d){ if(!d) return ''; return new Date(String(d).slice(0,10)+'T12:00:00').toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'}); }
+function tdShort(d){ if(!d) return ''; return new Date(String(d).slice(0,10)+'T12:00:00').toLocaleDateString([],{month:'short',day:'numeric'}); }
+function tdFirst(n){ return String(n||'').trim().split(/\s+/)[0]||''; }
+/* "9:30 AM" / "13:45:00" / "9:00" off an hour sheet, as the 24-hour value a time box takes. */
+function tdTime24(s){
+  const m=/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?$/.exec(String(s||'').trim()); if(!m) return '';
+  let h=Number(m[1]); const ap=(m[3]||'').toUpperCase();
+  if(ap==='PM'&&h<12) h+=12; if(ap==='AM'&&h===12) h=0; if(h>23) return '';
+  return String(h).padStart(2,'0')+':'+m[2];
+}
+async function loadToday(fresh){
+  if(!isOffice()) return;
+  if(!S.today){ try{ const c=await DB.getCache('today'); if(c&&!S.today){ S.today=c; if(S.tab==='today') render(); } }catch(e){} }
+  if(S.todayBusy || (!fresh && S._todayLoading)) return;
+  if(!S.online){ if(fresh) toast('No signal — showing the last numbers this phone has.'); return; }
+  S._todayLoading=true;
+  if(fresh){ S.todayBusy=true; if(S.tab==='today') render(); }
+  try{
+    // A rebuild reads every timesheet, the PO Log, the calendar and both hour sheets: give it time.
+    const r=await api('today', fresh?{fresh:true}:{}, {bg:true, timeout: fresh?90000:45000});
+    if(r&&r.tiles){ S.today=r; S.todayErr=''; S._todayAt=Date.now(); DB.setCache('today', r); }
+  }catch(e){
+    S.todayErr = /Unknown action/i.test(e.message||'') ? 'This screen needs the newest office script.' : (e.message||'Could not load the numbers.');
+    if(fresh || !S.today) toast(S.todayErr, 6000);
+  }
+  S._todayLoading=false; S.todayBusy=false;
+  if(S.tab==='today') render();
+}
+function todayClockCard(){
+  const oe=S.openEntry;
+  const scan=`<button class="secondary" style="width:100%;margin:0 0 12px;padding:11px 8px" onclick="openDocScan()">📷 Scan receipt / estimate</button>`;
+  if(oe){
+    const site=oe['Customer/Job Site']||oe.Company||'Working';
+    return `<div class="card tdclock">
+        <div class="grow" style="min-width:0"><span class="pill ${onBreak()?'pending':'live'}">${onBreak()?'☕ On break':'On the clock'}</span>
+          <div class="tdc-t">${esc(site)}${oe['PO#']?` <span class="small muted">${esc(oe['PO#'])}</span>`:''}</div>
+          <div class="small muted">since ${fmtTime(oe.ClockIn)}</div></div>
+        <button onclick="go('clock')" style="flex:none">Open clock</button>
+      </div>${scan}`;
+  }
+  const last=(S.entries||[]).find(e=>e.ClockOut && Number(e.Hours)>0 && e.Status!=='rejected');
+  return `<div class="card tdclock">
+      <div class="grow" style="min-width:0"><div class="small muted" style="font-weight:700">Not clocked in</div>
+        <div class="tdc-t">${last?`Last: ${esc(tdShort(last.Date||last.ClockIn))} · ${(Number(last.Hours)||0).toFixed(1)} h${last['Customer/Job Site']?' · '+esc(last['Customer/Job Site']):''}`:'Ready when you are'}</div></div>
+      <button class="tdc-in" onclick="openJobPicker(false)" ${punchBusy()?'disabled':''}>${punchBusy()?'Working…':'Clock in'}</button>
+    </div>${scan}`;
+}
+function todayTiles(){
+  const d=S.today||{}, t=d.tiles||{};
+  const ip=t.inProgress||{}, inv=t.invoiced||{}, hr=t.hours||{n:0,people:[],unreadable:[]}, crew=t.crew||[];
+  const tile=(cls,lbl,num,sub,on)=>`<div class="tile ${cls}"${on?` onclick="${on}" style="cursor:pointer"`:''}>
+      <div class="lbl">${lbl}</div><div class="num">${num}</div><div class="sub">${sub}</div></div>`;
+  const unread=(hr.unreadable||[]).length;
+  const firstFlag=(d.hours||[]).find(g=>(g.days||[]).length||g.error);
+  const hrNum = unread && !hr.n ? '?' : (hr.n||0);
+  const hrSub = hr.n ? (hr.people||[]).map(p=>`${esc(tdFirst(p.name))} ${p.n}`).join(' · ')+(unread?` · can't read ${unread===1?'one sheet':'two sheets'}`:'')
+    : unread ? `Can't read ${(hr.unreadable||[]).map(n=>esc(tdFirst(n))).join(' &amp; ')}'s hour sheet` : 'The app and the hour sheets agree';
+  let crewT;
+  if(crew.length===1){ const c=crew[0];
+    crewT=tile('', `${esc(tdFirst(c.name))}, this pay period`, `${Number(c.cur).toFixed(1)}<small> h</small>`,
+      `Last period ${Number(c.prev).toFixed(1)} h · ${c.pend?Number(c.pend).toFixed(1)+' h':'0'} pending`, `go('hours')`); }
+  else if(crew.length){ const sum=crew.reduce((s,c)=>s+Number(c.cur||0),0);
+    crewT=tile('', 'Crew, this pay period', `${sum.toFixed(1)}<small> h</small>`, crew.map(c=>`${esc(tdFirst(c.name))} ${Number(c.cur).toFixed(1)}`).join(' · '), `go('hours')`); }
+  else crewT=tile('', 'Crew, this pay period', '—', 'Nobody on the crew yet', '');
+  return `<div class="tiles">
+    ${tile('', 'Jobs in progress', ip.n==null?'?':ip.n,
+      ip.n==null?"Can't read the PO Log":(ip.newest?`Newest: ${esc(ip.newest.po)} ${esc(ip.newest.name)}${ip.newest.start?' · '+esc(tdShort(ip.newest.start)):''}`:'None right now'), `go('jobs')`)}
+    ${tile((hr.n||unread)?'needs':'', "Hours that don't match", hrNum, hrSub, firstFlag?`openHoursCheck('${reg({email:firstFlag.email})}')`:'')}
+    ${tile('', 'Invoiced, not paid', inv.n==null?'?':inv.n,
+      inv.n==null?"Can't read the PO Log":(inv.oldest?`Oldest: ${esc(inv.oldest.po)} ${esc(inv.oldest.name)}${inv.oldest.end?' · '+esc(tdShort(inv.oldest.end)):''}`:'Nothing waiting'), `S.jobsShowArch=true;go('jobs')`)}
+    ${crewT}
+  </div>`;
+}
+/* The Needs-you rows, most urgent first: a lost clock-out costs somebody pay, hours that don't match
+   hold up payroll and invoicing, then what is waiting to be booked, billed or approved. */
+function todayRows(){
+  const d=S.today||{}, items=d.items||[], rows=[];
+  items.filter(i=>i.kind==='open').forEach(i=>{ const k=reg(i);
+    rows.push({c:'o', k:'Clock-out missing', t:`${tdFirst(i.name)} still clocked in since ${tdShort(i.since)} ${fmtTime(i.since)}`,
+      s:`${Math.round(i.hours)} hours ago${i.site?' · '+i.site:''}`, on:`openTodayOpen('${k}')`}); });
+  (d.hours||[]).forEach(g=>{ const k=reg({email:g.email}), n=(g.days||[]).length;
+    if(g.error) rows.push({c:'o', k:'Hours check · '+tdFirst(g.name), t:`Can't read ${tdFirst(g.name)}'s hour sheet`,
+      s:'The check is off until it opens again — that is not zero hours', on:`openHoursCheck('${k}')`});
+    else if(n) rows.push({c:'o', k:'Hours check · '+tdFirst(g.name), t:`${n} day${n===1?'':'s'} don't match the hour sheet`,
+      s:`${g.days.slice(0,6).map(x=>tdShort(x.date)).join(', ')}${n>6?' +'+(n-6):''}${g.through?' · sheet filled to '+tdShort(g.through):''}`, on:`openHoursCheck('${k}')`}); });
+  const leads=S.pendingRequests||0, apv=apvCount();
+  if(leads||apv) rows.push({c:'b', k:'Requests', t:[leads?`${leads} website lead${leads===1?'':'s'} to book`:'', apv?`${apv} waiting for your OK`:''].filter(Boolean).join(' · '),
+    s:'On the Requests tab', on:`go('requests')`});
+  items.filter(i=>i.kind==='bill').forEach(i=>{ const k=reg(i);
+    rows.push({c:'b', k:'Ready to bill?', t:`${i.po} ${i.name}`,
+      s:`${(Number(i.hours)+Number(i.pending||0)).toFixed(1)} h · last on site ${tdShort(i.last)} · ${i.calOk?'nothing booked':'calendar not checked'}`, on:`openTodayBill('${k}')`}); });
+  items.filter(i=>i.kind==='draft').forEach(i=>{ const k=reg(i);
+    rows.push({c:'b', k:'Finish the invoice', t:`${i.po} ${i.name}`, s:`Draft #${i.qb} is in QuickBooks · the PO Log still says In progress`, on:`openTodayDraft('${k}')`}); });
+  items.filter(i=>i.kind==='book').forEach(i=>{ const k=reg(i);
+    rows.push({c:'g', k:'Not booked', t:`${i.po} ${i.name}`, s:i.start?`Start date ${tdShort(i.start)} · no hours yet`:'In progress with no start date and no hours', on:`openTodayBook('${k}')`}); });
+  return rows;
+}
+function todayView(){
+  const d=S.today;
+  const at=d&&d.builtAt?new Date(d.builtAt):null;
+  const stale=at&&(Date.now()-at)>3*3600000;              // greyed and marked after three hours
+  const asof=at ? `Numbers as of ${fmtTime(d.builtAt)}${at.toDateString()!==new Date().toDateString()?' · '+esc(tdShort(d.builtAt)):''}${stale?' — tap Refresh':''}`
+    : (S.todayErr?esc(S.todayErr):(S.online?'Loading…':'No signal'));
+  const head=`<div class="tdhead"><div><h2>Today</h2><div class="tdasof${stale?' stale':''}">${asof}</div></div>
+      <button class="tdrefresh" onclick="loadToday(true)" ${S.todayBusy?'disabled':''}>${S.todayBusy?'<span class="spin" style="width:16px;height:16px;border-width:2px"></span> Checking…':'↻ Refresh'}</button></div>`;
+  if(!d) return head+todayClockCard()+`<div class="card"><p class="muted small" style="margin:0">${S.online?'<span class="spin"></span> Getting the numbers…':'Open this screen once with signal and it will be kept on the phone.'}</p></div>`;
+  const rows=todayRows();
+  const hid=d.hidden||[];
+  const hidden = hid.length ? `<div class="small muted" style="margin-top:10px">${hid.length} put aside · <a href="#" style="color:var(--accent2)" onclick="S.todayShowHidden=!S.todayShowHidden;render();return false">${S.todayShowHidden?'hide the list':'show them'}</a></div>
+      ${S.todayShowHidden?hid.map(h=>`<div class="row between small" style="padding:6px 0;border-top:1px solid var(--line)"><span>${esc(h.label)}</span><a href="#" style="color:var(--accent2);white-space:nowrap" onclick="todayUnhide('${reg(h)}');return false">Put back</a></div>`).join(''):''}` : '';
+  const errs=(d.errors||[]).length ? `<p class="small" style="color:var(--needs-ink);margin:4px 2px">Some of this could not be read just now: ${(d.errors||[]).map(esc).join('; ')}</p>` : '';
+  return `${head}${todayClockCard()}${todayTiles()}
+    <div class="card needs-list">
+      <div class="row between"><h3 style="margin:0">Needs you</h3><span class="small muted">${rows.length?rows.length+(rows.length===1?' item':' items'):''}</span></div>
+      ${rows.map(r=>`<div class="ni" onclick="${r.on}"><span class="ndot ${r.c}"></span><div class="tx"><div class="k ${r.c}">${esc(r.k)}</div><div class="t">${esc(r.t)}</div><div class="s">${esc(r.s)}</div></div><span class="go">›</span></div>`).join('')
+        || '<p class="small muted" style="margin:10px 0 2px">Nothing needs you right now. ✓</p>'}
+      ${hidden}
+    </div>${errs}`;
+}
+/* ---- the sheets behind each row ---- */
+function openHoursCheck(k){
+  const ref=dereg(k); if(!ref) return;
+  const g=((S.today&&S.today.hours)||[]).find(x=>x.email===ref.email); if(!g) return;
+  S._hcEmail=g.email;
+  sheet(hoursCheckHtml(g));
+}
+function hoursCheckHtml(g){
+  const first=esc(tdFirst(g.name));
+  const intro = g.error
+    ? `<p style="color:var(--needs-ink)">${esc(g.error)}</p><p class="small muted">Nothing is compared until it can be opened again, so this is not zero hours. Check the sheet is still shared with admin@proes.ca.</p>`
+    : `<p class="small muted" style="margin-top:-4px">The app against ${first}'s hour sheet, ${esc(tdShort(g.from))} to ${esc(tdShort(g.to))}. Charles keeps the sheet and the app only reads it. A day is listed when the two are more than half an hour apart.</p>`;
+  const days=(g.days||[]).map(d=>hcDayHtml(g,d)).join('');
+  const unread=(g.unreadable||[]).length ? `<p class="small" style="color:var(--needs-ink)">Dates on the sheet the app can't read: ${g.unreadable.map(u=>`“${esc(u.text)}” (${esc(u.tab)} tab, row ${u.row})`).join(', ')}. Those lines were left out rather than guessed.</p>` : '';
+  return `<h2>Hours check · ${esc(g.name)}</h2>${intro}${days || (g.error?'':'<p class="small muted">Every day matches. ✓</p>')}${unread}
+    <p class="small muted" style="margin:8px 0 0">Time added from here updates this list by itself. Any other fix shows after Refresh.</p>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`;
+}
+function hcDayHtml(g,d){
+  const hk=reg({key:d.key, fp:d.fp});
+  const diff=d.app-d.sheet;
+  const why = d.kind==='job' ? 'Same hours, different job' : d.app===0 ? 'On the sheet, not in the app'
+    : d.sheet===0 ? 'In the app, not on the sheet' : (diff>0 ? `App ${diff.toFixed(2)} h more` : `App ${(-diff).toFixed(2)} h less`);
+  // Each line: what it was (the job, as the PO Log names it), then when and how long.
+  const appR=(d.appRows||[]).map(r=>`<div class="hcrow"><b>${esc(r.label)}</b><span>${r.in?esc(fmtTime(r.in))+'–'+(r.out?esc(fmtTime(r.out)):'…')+' · ':''}${Number(r.h).toFixed(2)} h${r.st==='pending'?' · pending':''}</span></div>`).join('') || '<div class="hcrow"><span>Nothing</span></div>';
+  const shR=(d.sheetRows||[]).map(r=>`<div class="hcrow"><b>${esc(r.label||'Hours')}</b>${r.task?`<span>${esc(r.task)}</span>`:''}<span>${r.start?esc(r.start)+(r.end?'–'+esc(r.end):'')+' · ':''}${Number(r.h).toFixed(2)} h</span></div>`).join('') || '<div class="hcrow"><span>Nothing</span></div>';
+  const missing=d.sheet-d.app;
+  const one=(d.app===0 && (d.sheetRows||[]).length===1) ? d.sheetRows[0] : null;
+  const addK = missing>0.5 ? reg({email:g.email, date:d.date, hours:Math.round(missing*4)/4, start: one?tdTime24(one.start):''}) : '';
+  return `<div class="list-item">
+    <div class="row between" style="gap:8px"><b>${esc(tdDay(d.date))}</b><span class="pill" style="background:var(--needs-bg);color:var(--needs-ink);text-transform:none;letter-spacing:0">${esc(why)}</span></div>
+    <div class="hccols"><div><div class="small" style="font-weight:800">App · ${d.app.toFixed(2)} h</div>${appR}</div>
+      <div><div class="small" style="font-weight:800">Hour sheet · ${d.sheet.toFixed(2)} h</div>${shR}</div></div>
+    <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
+      ${addK?`<button class="secondary" style="padding:9px 12px" onclick="hcAddTime('${addK}')">➕ Add the missing time</button>`:''}
+      <button class="ghost" style="padding:9px 4px" onclick="todayHide('${hk}')">Looks right — hide this day</button>
+    </div></div>`;
+}
+/* Add time for that person on that day, with the gap pre-filled. Saving it rebuilds Today. */
+function hcAddTime(k){
+  const r=dereg(k); if(!r) return;
+  openManualFor(r.email);
+  setTimeout(()=>{
+    const dt=document.getElementById('mDate'); if(dt) dt.value=r.date;
+    const hh=document.getElementById('mHrs'); if(hh&&r.hours) hh.value=r.hours;
+    const st=document.getElementById('mIn'); if(st&&r.start) st.value=r.start;
+    try{ mnCalc(r.start?'in':'hrs'); }catch(e){}
+  }, 0);
+}
+function openTodayOpen(k){
+  const it=dereg(k); if(!it) return;
+  const mine=S.me && String(it.email).toLowerCase()===String(S.me.email).toLowerCase();
+  if(mine && S.openEntry){ openForgotFix(); return; }
+  const f=esc(tdFirst(it.name));
+  sheet(`<h2>${esc(it.name)} is still clocked in</h2>
+    <p>Since <b>${esc(tdDay(it.since))}, ${esc(fmtTime(it.since))}</b>${it.site?` on <b>${esc(it.site)}</b>`:''}: ${Math.round(it.hours)} hours ago.</p>
+    <p class="small muted">Either the clock-out is still waiting on ${f}'s phone, or it was forgotten. The app emails ${f} and the admins at 24 hours. When ${f} opens the app, a red banner asks for the time they stopped, and the fix comes to you to approve.</p>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">OK</button>`);
+}
+function openTodayBill(k){
+  const it=dereg(k); if(!it) return;
+  const pk=reg({jobSite:it.name, po:it.po}), hk=reg({key:it.key, days:14});
+  sheet(`<h2>${esc(it.name)}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(it.po)}${it.project?' · '+esc(it.project):''} · In progress on the PO Log, no invoice yet</p>
+    <p>Last on site <b>${esc(tdDay(it.last))}</b> · <b>${Number(it.hours).toFixed(2)} h</b> approved${it.pending?` and ${Number(it.pending).toFixed(2)} h waiting for approval`:''}.</p>
+    <p class="small muted">${it.calOk?'Nothing is booked for it in the next 60 days.':"The calendar couldn't be checked, so a visit may still be booked."} If the job isn't finished, put it aside and it comes back in two weeks.</p>
+    <button style="width:100%;margin-top:6px" onclick="openInvoiceList('${pk}')">🧾 Build initial draft</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobAll('${pk}')">📋 Job details</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="todayHide('${hk}')">Not finished — hide it for 2 weeks</button>
+    <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Close</button>`);
+}
+function openTodayDraft(k){
+  const it=dereg(k); if(!it) return;
+  const pk=reg({jobSite:it.name, po:it.po}), hk=reg({key:it.key, days:14});
+  sheet(`<h2>${esc(it.name)}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(it.po)} · draft #${esc(it.qb)} is in QuickBooks</p>
+    <p>The initial draft was built, but the PO Log still says <b>In progress</b>, so the invoice hasn't been finished and sent yet.</p>
+    <button style="width:100%;margin-top:6px" onclick="reqInvoice('${pk}','final',this)">✅ Build final draft</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobAll('${pk}')">📋 Job details</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="todayHide('${hk}')">Not yet — hide it for 2 weeks</button>
+    <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Close</button>`);
+}
+function openTodayBook(k){
+  const it=dereg(k); if(!it) return;
+  const hk=reg({key:it.key, days:14});
+  sheet(`<h2>${esc(it.name)}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(it.po)} · In progress on the PO Log</p>
+    <p>${it.start?`Start date ${esc(tdDay(it.start))}, but no hours logged yet`:'No start date and no hours logged'}, and ${it.calOk?'nothing on the calendar':"the calendar couldn't be checked"}.</p>
+    ${it.contact&&it.contact!==it.name?`<p class="small" style="margin:2px 0">👤 ${esc(it.contact)}</p>`:''}
+    ${it.phone?`<p class="small" style="margin:2px 0">📞 <a href="tel:${esc(String(it.phone).replace(/[^0-9+]/g,''))}" style="color:var(--accent2)">${esc(it.phone)}</a></p>`:''}
+    ${it.email?`<p class="small" style="margin:2px 0">✉️ <a href="mailto:${esc(it.email)}" style="color:var(--accent2)">${esc(it.email)}</a></p>`:''}
+    <button style="width:100%;margin-top:10px" onclick="closeSheetDom();go('requests')">📨 Book it on the Requests tab</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="todayHide('${hk}')">Not yet — hide it for 2 weeks</button>
+    <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Close</button>`);
+}
+/* Put a row aside. It leaves the screen at the tap; the office remembers it (an hours day until
+   either number changes, a job for two weeks). If the office refuses, the row comes back. */
+function tdRecount(d){
+  const people=[], unreadable=[]; let n=0;
+  (d.hours||[]).forEach(g=>{ if(g.error) unreadable.push(g.name); if((g.days||[]).length){ n+=g.days.length; people.push({name:g.name, n:g.days.length}); } });
+  d.tiles=Object.assign({}, d.tiles||{}, {hours:{n, people, unreadable}});
+}
+async function todayHide(k){
+  const it=dereg(k); const d=S.today; if(!it||!d) return;
+  const key=it.key, fp=it.fp;
+  let label=key;
+  d.hours=(d.hours||[]).map(g=>Object.assign({}, g, {days:(g.days||[]).filter(x=>{ if(x.key===key){ label=g.name+' · hours on '+x.date; return false; } return true; })}));
+  d.items=(d.items||[]).filter(x=>{ if(x.key===key){ label=x.label||key; return false; } return true; });
+  (d.hidden=d.hidden||[]).push({key, label});
+  tdRecount(d); DB.setCache('today', d);
+  const g=key.startsWith('hrs:') && S._sheet && (d.hours||[]).find(x=>x.email===S._hcEmail);
+  if(g){ const p=S._sheet.querySelector('.panel'); if(p) p.innerHTML=hoursCheckHtml(g); }
+  else closeSheet();
+  render();
+  try{ await api('todayHide', fp?{key, fp}:{key, days:it.days||14}, {bg:true});
+       toast(fp?'Hidden. It comes back by itself if either number changes.':'Hidden for two weeks.'); }
+  catch(e){ toast("Couldn't put it aside: "+e.message, 6000); loadToday(); }
+}
+async function todayUnhide(k){
+  const h=dereg(k); if(!h) return;
+  try{ await api('todayHide', {key:h.key, unhide:true}, {bg:true}); toast('Put back.'); }
+  catch(e){ toast(e.message); }
+  loadToday();
+}
+
 
 /* ----- JOBS TAB (admin + bookkeeper): per-customer hours + labour cost -----
    All-time approved hours per job, costed at each worker's CURRENT rate (a rate change
@@ -5130,6 +5450,7 @@ async function submitManual(){
   const who = forOther ? ' for '+empName(forEmail) : '';
   if (err) toast(`${n} of ${days.length} saved${who} — ${err}`, 5000);
   else toast(`${n} ${n===1?'day':'days'} ${isAdmin?'saved':'submitted for approval'}${who}${queued?' (will sync)':''}`);
+  if (S.tab==='today' && done) loadToday(true);   // v97 - so the hours check sees the time just added
 }
 
 /* ---- Edit entry (after submission too — mistakes caught later) ----
@@ -8567,6 +8888,7 @@ document.addEventListener('visibilitychange', ()=>{
   if (!S.booted || !S.session) return;
   S.online = navigator.onLine;
   flushQueue().then(n=>{ if (!n && Date.now()-(S._lastRefresh||0) > 60000 && !S._sheet) refresh(true); });
+  if (S.tab==='today' && Date.now()-(S._todayAt||0) > 10*60000) loadToday();   // v97
 });
 /* v43 — the service worker talks back: 'punchesSent' after it delivered queued punches while
    the app was closed or in the background — re-read the office so the screen is the truth. */
