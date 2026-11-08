@@ -119,6 +119,15 @@
   @keyframes hg{0%,45%{transform:rotate(0)}55%,100%{transform:rotate(180deg)}}
   .spin{width:22px;height:22px;border:3px solid var(--line);border-top-color:var(--accent2);border-radius:50%;animation:sp 1s linear infinite;display:inline-block;vertical-align:middle}
   @keyframes sp{to{transform:rotate(360deg)}}
+  /* v107 - a tapped button that is still waiting on the office spins in place */
+  .working{position:relative;color:transparent!important;pointer-events:none}
+  .working>*{visibility:hidden}
+  .working::after{content:'';position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;
+    border:2.5px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite}
+  button.secondary.working::after,.btn.secondary.working::after{border-color:rgba(31,56,100,.25);border-top-color:#1f3864}
+  .busybar{position:fixed;left:0;right:0;top:0;height:3px;z-index:70;pointer-events:none;overflow:hidden;background:rgba(31,56,100,.12)}
+  .busybar::after{content:'';position:absolute;top:0;bottom:0;width:35%;background:#2563eb;animation:bb 1s ease-in-out infinite}
+  @keyframes bb{from{left:-35%}to{left:100%}}
   /* ---- Branded header: navy band, greeting top-left, the logo's silver→blue→black
    *      "PRO" colors as a thin pulse line along the bottom edge. ---- */
   .apphead{background:linear-gradient(135deg,#1F3864,#2b5c9c); color:#fff; border-radius:var(--radius);
@@ -1195,17 +1204,29 @@ const SLOW_DELAY = 700;    // a call must run this long before the hourglass app
 const SLOW_MAX   = 35000;  // and it can never stay up longer than this, whatever happens
 const API_TIMEOUT = 30000; // a server call that hasn't answered by now is dead — abort it
                            // (kept UNDER SLOW_MAX so the clean path always wins the race)
-function busyShow(){ if(document.getElementById('busyNote')) return;
-  // Centred on screen, icon only — a banner at the top read as an error to the crew (item 6).
-  const el=document.createElement('div'); el.id='busyNote';
-  el.style.cssText='position:fixed;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;pointer-events:none';
-  el.innerHTML='<div style="background:rgba(31,56,100,.92);border-radius:22px;width:84px;height:84px;display:flex;align-items:center;justify-content:center;box-shadow:0 10px 30px rgba(31,56,100,.4)"><span class="hourglass" style="font-size:2.4rem;line-height:1">⏳</span></div>';
-  document.body.appendChild(el);
+/* v107 - THE WAIT SHOWS WHERE THE THUMB IS. Paul: "whatever it takes to keep anyone waiting
+ * for more than .7 seconds". Most taps no longer wait at all (they change the screen at once and
+ * send behind it). For the few that still must - a search, a first look-up - the button that was
+ * tapped turns into its own little spinner instead of a big hourglass over the whole screen, and
+ * nothing else is blocked. With no button to hang it on, a thin bar runs along the top. */
+let _lastTap=null, _lastTapAt=0;
+document.addEventListener('pointerdown', e=>{
+  const b=e.target && e.target.closest && e.target.closest('button,.btn,[role=button]');
+  if(b){ _lastTap=b; _lastTapAt=Date.now(); }
+}, true);
+function busyShow(){ if(document.getElementById('busyNote') || document.querySelector('.working')) return;
+  const b=_lastTap;
+  if(b && b.isConnected && Date.now()-_lastTapAt<5000 && b.getClientRects().length){ b.classList.add('working'); }
+  else{
+    const el=document.createElement('div'); el.id='busyNote'; el.className='busybar';
+    document.body.appendChild(el);
+  }
   // Last-resort net. The fetch timeout should always win first; if this ever fires, a call
   // leaked a token, so say so in the console rather than papering over it silently.
   clearTimeout(_slowDog);
   _slowDog = setTimeout(()=>{ console.warn('[busy] watchdog cleared a stuck hourglass —', _slowLive.size, 'call(s) never reported back'); busyReset(); }, SLOW_MAX); }
 function busyHide(){ const el=document.getElementById('busyNote'); if(el) el.remove();
+  document.querySelectorAll('.working').forEach(b=>b.classList.remove('working'));
   clearTimeout(_slowDog); _slowDog=null; }
 /* Force it down and forget every in-flight token. Hiding the overlay never cancels the
    work — it only stops blocking a screen the user can already use. */
@@ -1314,7 +1335,15 @@ let mutsInFlight = 0;
 let btnBusyN = 0;   // v75 - real punches only (see BTN_PUNCH)
 /* True while a punch is still being delivered. The big Clock In / Clock Out button reads this
    and disables itself, so the eleven-second double punch cannot happen even on a dead network. */
-function punchBusy(){ return btnBusyN > 0; }
+/* v107 - the big button is held for a moment after a punch, not for the whole trip to the office.
+ * It used to stay grey "Working…" until the office answered - 3 to 20 s on a slow morning, which
+ * is exactly when somebody clocks out of one job and wants to clock in on the next. The hold is
+ * now 0.7 s: long enough to stop a double tap, and the punch that follows is QUEUED BEHIND the one
+ * still travelling (mustFollow in apiMutate, and flushQueue below holds every later punch while an
+ * earlier one is in flight), so the office still receives them in the order they were tapped. */
+let _punchTapAt = 0;
+const PUNCH_HOLD = 700;
+function punchBusy(){ return btnBusyN > 0 && Date.now() - _punchTapAt < PUNCH_HOLD; }
 let inflightQids = new Set(); // queued copies currently being delivered — flushQueue must skip them
 let tempIdMap = {};           // tmp_ id -> real EntryID, learned from punch responses/replays
 /* v42 — the map survives a restart. It used to live only in memory, so an app killed between a
@@ -1377,7 +1406,10 @@ async function queueCount_(){
  * the last one goes. Tap it for the list and Send now. */
 const ACT_NAME_={clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start',
   endBreak:'break end', fixForgotClockout:'forgotten clock-out fix', editEntry:'entry change',
-  addManualEntry:'time added by hand', takeMaterial:'parts taken', logMaterials:'parts used'};
+  addManualEntry:'time added by hand', takeMaterial:'parts taken', logMaterials:'parts used',
+  approveEntry:'hours approved', rejectEntry:'hours rejected', timeOffDecide:'time-off decision',
+  allowanceDecide:'allowance decision', neoDecide:'inbox decision', requestDismiss:'request taken off the list',
+  scheduleAssign:'crew assignment', resolveMaterial:'part named', scheduleConfirm:'customer confirmation'};
 async function sendCount_(){
   try{
     const items=await DB.all();
@@ -1418,6 +1450,11 @@ async function syncLogAdd_(entry){ try{ const l=((await DB.getCache('syncLog'))|
  * protection moves to where it belongs — the button disables itself while the punch is in
  * flight (see punchBusy()).
  */
+function punchKick_(tries){ tries=tries||0;
+  DB.all().then(a=>{ if (!a.some(x=>PUNCH.test(x.action) && !inflightQids.has(x.qid))) return;
+    if (syncing){ if (tries<40) setTimeout(()=>punchKick_(tries+1), 300); return; }   // a flush is running - go right after it
+    flushQueue(); }).catch(()=>{});
+}
 async function apiMutate(action, payload, optimistic){
   // If we've since learned the real id for a tmp_ entry, swap it in before sending.
   if (payload && typeof payload.entryId==='string' && tempIdMap[payload.entryId])
@@ -1446,7 +1483,9 @@ async function apiMutate(action, payload, optimistic){
   // button is the one that has to refuse a second tap, because it sits in the same place and
   // only changes its label. That is how a Clock Out tap became a Clock In tap eleven seconds
   // later on 2026-09-10.
-  if (tracked){ mutsInFlight++; if (BTN_PUNCH.test(action)) btnBusyN++; if (S.tab==='clock' && !S._sheet) render(); }
+  if (tracked){ mutsInFlight++; if (BTN_PUNCH.test(action)){ btnBusyN++; _punchTapAt = Date.now();
+      setTimeout(()=>{ if (S.tab==='clock' && !S._sheet) render(); }, PUNCH_HOLD + 30); }   // v107 - the hold ends on time
+    if (S.tab==='clock' && !S._sheet) render(); }
   const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
   const item = { qid, action, payload, ts: Date.now(), tempId: optimistic && optimistic.tempId };
   let stored = false; // did the write-ahead copy make it into IndexedDB?
@@ -1488,9 +1527,27 @@ async function apiMutate(action, payload, optimistic){
     if (tracked){ mutsInFlight--; if (BTN_PUNCH.test(action)) btnBusyN--; if (!mutsInFlight && S.tab==='clock') render(); }
     inflightQids.delete(qid);
     queueCount_();
+    // v107 - a punch tapped while this one was travelling is waiting behind it: send it now.
+    if (tracked && PUNCH.test(action) && S.online) setTimeout(punchKick_, 60);
   }
 }
 
+/* v107 - DO IT NOW, TELL THE OFFICE AFTER. The office taps (approve, reject, confirm, ignore,
+ * dismiss, assign, name a part) used to sit on the hourglass for the 4-20 s Apps Script round
+ * trip although the answer changes nothing on the screen that we could not already draw. Now the
+ * screen changes at the tap and this sends it behind: no signal or no answer = it waits on the
+ * phone in the same queue as the punches (the badge counts it, flushQueue delivers it); a REFUSAL
+ * puts the item back - `undo` reloads the list from the office - and says why. */
+function officeDo_(action, payload, undo, okMsg){
+  return apiMutate(action, payload).then(r=>{
+    if(r && r.queued) toast('Saved on this phone - it sends by itself when there is signal.', 5000);
+    else if(typeof okMsg==='function') okMsg(r);
+    return r;
+  }).catch(e=>{
+    toast((e&&e.message||'The office did not take that')+' - it has been put back.', 8000);
+    try{ if(undo) undo(e); }catch(_){}
+  });
+}
 let syncing = false;
 /* A tmp_ id is 'tmp_' + Date.now() taken at the tap, and the clock-in's `at` is stamped the
    same millisecond — so the real entry can be found again by its ClockIn time even after the
@@ -1523,8 +1580,10 @@ async function flushQueue(){
   try {
     const items = (await DB.all()).sort((a,b)=>a.ts-b.ts);
     const idMap = {}; // tempId -> real EntryID
+    let punchAhead = false; // v107 - an earlier punch is still travelling: later punches wait their turn
     for (const it of items){
-      if (inflightQids.has(it.qid)) continue; // apiMutate is delivering this one right now
+      if (inflightQids.has(it.qid)){ if (PUNCH.test(it.action)) punchAhead = true; continue; } // apiMutate is delivering this one right now
+      if (punchAhead && PUNCH.test(it.action)) continue;      // never overtake it - tap order is the office's order
       const p = { ...it.payload };
       if (PUNCH.test(it.action)) p.queuedAt = it.ts; // v43: the office sees how long the phone held it (a day or more → LATE email)
       // remap any temp entryId to the real one (from this flush OR learned earlier)
@@ -1900,7 +1959,7 @@ async function doClockIn(payload){
   if (r && r.entry){ tempIdMap[tempId]=r.entry.EntryID; S.openEntry = r.entry; upsertLocalEntry(r.entry); }
   saveBootCache();
   if (!gps) retryGpsPatch((r && r.entry ? r.entry.EntryID : tempId), 'in');
-  if (r && r.queued) toast('Clocked in (will sync)');
+  if (r && r.queued && !S.online) toast('Clocked in (will sync)');   // v107 - online it is only waiting behind the clock-out
 }
 /* Clock-out itself now lives in the review flow (openClockOut → startClockOutReview →
    submitClockOut) — nothing is finalized until Submit is tapped there. */
@@ -3387,14 +3446,11 @@ async function schUndoMove(id, prev, name){
 function schRefreshQuiet(){ S.schedMonths={}; schEnsure(); }
 async function schSetConfirm(k, state, btn){
   const ev=dereg(k); if(!ev) return;
-  if(!S.online) return toast('You need signal.');
-  if(btn){ btn.disabled=true; }
-  try{
-    await api('scheduleConfirm',{eventId:ev.id, state},{timeout:60000});
-    schApply(ev.id,{confirm:state}); ev.confirm=state;
-    closeSheet(); render();
-    toast(schedName(ev)+': '+SCH_TONE[state].label.toLowerCase()+'.');
-  }catch(e){ toast(/unknown action/i.test(e.message)?'The office needs the latest script (v92) for this.':e.message, 8000); if(btn) btn.disabled=false; }
+  const was=ev.confirm||'none';
+  schApply(ev.id,{confirm:state}); ev.confirm=state;                 // v107 - the colour changes at the tap
+  closeSheet(); render();
+  toast(schedName(ev)+': '+SCH_TONE[state].label.toLowerCase()+'.');
+  officeDo_('scheduleConfirm',{eventId:ev.id, state}, ()=>{ schApply(ev.id,{confirm:was}); render(); });
 }
 /* v105 - ANOTHER DAY ON THE SAME JOB (Paul, 7 Nov): "if we were there that day and need more days
  * to finish it, I should be able to add more without moving the original one." The day you are
@@ -3564,7 +3620,7 @@ async function loadSchedMonth(mArg){
     const start=`${p[0]}-${p[1]}-01`;
     const end=localDateStr(new Date(Number(p[0]),Number(p[1]),1)); // first of next month
     const r=await apiBg('scheduleList',{startDate:start,endDate:end});
-    if(r&&Array.isArray(r.events)){ S.schedMonths[month]=r; DB.setCache('sched_'+month,r); }
+    if(r&&Array.isArray(r.events)){ S.schedMonths[month]=r; DB.setCache('sched_'+month,r); if(r.canAssign) evPrefetch_(r.events); }
   }catch(e){ if(!S.schedMonths[month]) toast(e.message); }
   S._smBusy[month]=false; S._smLoading=null; if(S.tab==='sched') render();
 }
@@ -3911,11 +3967,9 @@ async function toCancel(k,btn){
 }
 async function toDecide(k,approve,btn){
   const t=dereg(k); if(!t) return;
-  if(!S.online) return toast('You need signal.');
-  btn.disabled=true;
-  try{ const r=await api('timeOffDecide',{reqId:t.id,approve});
-    toast((approve?'Approved':'Denied')+' — '+t.name+' has been emailed.'); schedRefreshAll();
-  }catch(e){ toast(e.message); btn.disabled=false; }
+  const card=btn&&btn.closest('.list-item'); if(card) card.style.display='none';
+  toast((approve?'Approved':'Denied')+' — '+t.name+' will be emailed.');
+  officeDo_('timeOffDecide',{reqId:t.id,approve}, ()=>schedRefreshAll(), ()=>schedRefreshAll());
 }
 /* v59 — WHAT IS THIS BOOKING? Ask the office, don't guess.
    v57 matched a calendar event to a job by looking through the Requests list already on the
@@ -3933,12 +3987,42 @@ function schedBookedIndex(requestId){
   for(let i=0;i<bk.length;i++) if(String(bk[i].id)===String(requestId)) return i;
   return -1;
 }
+/* v107 - A JOB OPENS AT THE TAP. Its details (customer, phone, scope, the Modify button) used to
+ * be asked of the office on every tap - the slowest wait in the app, up to a minute on a cold
+ * morning. The phone now keeps every job's details it has seen, and fetches the whole month's in
+ * ONE background call (eventInfoMany, Code.gs v96) as soon as the month loads. A tap paints what is
+ * kept at once; the office is still asked, quietly, and the sheet updates in place if anything
+ * changed. Only a job never seen before shows "looking up the job". */
+let _evInfoLoaded=false, _evInfoSaveT=null, _evPrefetching=false;
+async function evInfoLoad_(){ if(_evInfoLoaded) return; _evInfoLoaded=true;
+  try{ const c=await DB.getCache('evInfo'); if(c && typeof c==='object') S.evInfo=Object.assign(c, S.evInfo||{}); }catch(e){} }
+function evInfoPut_(id, info){
+  S.evInfo=S.evInfo||{}; S.evInfo[String(id)]=Object.assign({}, info, {_at:Date.now()});
+  clearTimeout(_evInfoSaveT);
+  _evInfoSaveT=setTimeout(()=>{ try{
+    const keys=Object.keys(S.evInfo).sort((a,b)=>(S.evInfo[b]._at||0)-(S.evInfo[a]._at||0)).slice(0,250);
+    const keep={}; keys.forEach(k=>keep[k]=S.evInfo[k]); S.evInfo=keep; DB.setCache('evInfo', keep);
+  }catch(e){} }, 800);
+}
+async function evPrefetch_(events){
+  if(_evPrefetching || !S.online || !canApprove()) return;
+  await evInfoLoad_();
+  const now=Date.now(), from=now-2*86400000;
+  const ids=(events||[]).filter(e=>!e.allDay && new Date(e.end).getTime()>=from)
+    .map(e=>String(e.id)).filter(id=>{ const c=(S.evInfo||{})[id]; return !c || now-(c._at||0)>15*60000; }).slice(0,60);
+  if(!ids.length) return;
+  _evPrefetching=true;
+  try{ const r=await apiBg('eventInfoMany',{ids}); Object.keys((r&&r.infos)||{}).forEach(id=>evInfoPut_(id, r.infos[id])); }
+  catch(e){ /* an older script, or no answer: details are still fetched on the tap */ }
+  _evPrefetching=false;
+}
 async function openSchedDetail(k){
   const ev=dereg(k); if(!ev) return;
   const d=(S.sched&&S.sched.canAssign!==undefined)?S.sched:(schData(localDateStr(new Date(ev.start)))||S.sched||{});
   if(d.canAssign && !(S.employees&&S.employees.length) && S.online){
-    try{ const r=await api('listEmployees'); S.employees=r.employees||[]; }catch(e){}
+    apiBg('listEmployees').then(r=>{ S.employees=(r&&r.employees)||[]; }).catch(()=>{});   // v107 - never waited on
   }
+  await evInfoLoad_();
   const when=`${schedDayLabel(localDateStr(new Date(ev.start)))} · ${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}`;
   const asg=new Set(ev.assigned.map(a=>a.email));
   const crewHtml=`<h3 style="margin:12px 0 4px">${d.canAssign?'Assign the crew':'Who\'s on this job'}</h3>
@@ -3962,25 +4046,12 @@ async function openSchedDetail(k){
     <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">Close</button>`;
 
   if(!d.canAssign){ sheet(shell('')); return; }
-  sheet(shell('<p class="center small muted" style="margin:14px 0"><span class="spin"></span> looking up the job…</p>'));
-  const mine=S._sheet;
-  let info=null, err='';
-  // v65 — this one reads the calendar AND the Requests tab, so on a cold Apps Script start it
-  // can take well past the usual 30 s. Given longer rather than failing on a slow morning.
-  try{ info=await api('eventInfo',{eventId:ev.id},{bg:true, timeout:75000}); }
-  catch(e){ err=e.message||'Could not reach the office.'; }
-  if(S._sheet!==mine) return;                       // they moved on while it loaded
-
-  if(!info){ sheet(shell(`<p class="small" style="color:var(--bad);margin:10px 0">${esc(err)}</p>`)); return; }
+  const cached=(S.evInfo||{})[String(ev.id)];
+  const midOf=(info)=>{
   const key=reg(info);
-  let bi=info.kind==='request'?schedBookedIndex(info.requestId):-1;
-  // The booked list is what the Move / Cancel / Correct buttons index into. If this session has
-  // not opened the Requests tab yet it is empty, and the job would wrongly look unactionable.
-  if(info.kind==='request' && bi<0 && S.online){
-    try{ await loadRequests(); if(S._sheet!==mine) return; bi=schedBookedIndex(info.requestId); }catch(e){}
-  }
+  const bi=info.kind==='request'?schedBookedIndex(info.requestId):-1;
   const who=[info.customer, info.po].filter(Boolean).join(' · ');
-  const mid=`
+  return `
     ${who?`<p class="small" style="margin:6px 0 0"><b>${esc(info.customer||'')}</b>${info.po?` <span class="muted">${esc(info.po)}</span>`:''}</p>`:''}
     ${info.phone?`<p class="small" style="margin:2px 0">📞 <a href="tel:${esc(String(info.phone).replace(/[^0-9+]/g,''))}" style="color:var(--accent2)">${esc(info.phone)}</a></p>`:''}
     ${info.email?`<p class="small" style="margin:2px 0">✉️ <a href="mailto:${esc(info.email)}" style="color:var(--accent2)">${esc(info.email)}</a></p>`:''}
@@ -3991,7 +4062,28 @@ async function openSchedDetail(k){
     ${info.isJob
       ? `<button style="width:100%;margin-top:12px" onclick="openSchedModify('${key}',${bi})">✏️ Modify this booking</button>`
       : `<p class="small muted" style="margin:10px 0 0">Not a job — nothing to change here.</p>`}`;
-  sheet(shell(mid));
+  };
+  const wrap=(inner)=>`<div id="sdMid">${inner}</div>`;
+  sheet(shell(wrap(cached ? midOf(cached)
+    : '<p class="center small muted" style="margin:14px 0"><span class="spin"></span> looking up the job…</p>')));
+  const mine=S._sheet;
+  let info=null, err='';
+  // v65 — this one reads the calendar AND the Requests tab, so on a cold Apps Script start it
+  // can take well past the usual 30 s. Given longer rather than failing on a slow morning.
+  try{ info=await api('eventInfo',{eventId:ev.id},{bg:true, timeout:75000}); evInfoPut_(ev.id, info); }
+  catch(e){ err=e.message||'Could not reach the office.'; }
+  if(S._sheet!==mine) return;                       // they moved on while it loaded
+  const box=()=>document.getElementById('sdMid');
+  if(!info){ if(!cached && box()) box().innerHTML=`<p class="small" style="color:var(--bad);margin:10px 0">${esc(err)}</p>`; return; }
+  // The booked list is what the Move / Cancel / Correct buttons index into. If this session has
+  // not opened the Requests tab yet it is empty, and the job would wrongly look unactionable.
+  if(info.kind==='request' && schedBookedIndex(info.requestId)<0 && S.online){
+    try{ await loadRequests(); if(S._sheet!==mine) return; }catch(e){}
+  }
+  // Only the details block is redrawn, so ticked crew boxes are not lost; and only if it changed.
+  const strip=x=>{ const o=Object.assign({},x); delete o._at; return JSON.stringify(o); };
+  if(cached && strip(cached)===strip(info) && !(info.kind==='request')) return;
+  if(box()) box().innerHTML=midOf(info);
 }
 /* v67 — ONE DOOR, NOT FOUR.
    The sheet used to carry Move it / Cancel / Change the details side by side, and a return visit
@@ -4508,15 +4600,15 @@ async function schedSave(k,btn){
   const ev=dereg(k); if(!ev) return;
   if(!S.online) return toast('You need signal to save assignments.');
   const emails=[...document.querySelectorAll('.sa-emp:checked')].map(c=>c.value);
-  btn.disabled=true; btn.textContent='Saving…';
-  try{
-    const when=`${schedDayLabel(localDateStr(new Date(ev.start)))} · ${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}`;
-    const r=await api('scheduleAssign',{eventId:ev.id, emails, title:ev.title, when, location:ev.location,
-      appUrl: location.origin+location.pathname});
-    closeSheet();
-    toast(r.notified? `Saved — ${r.notified} ${r.notified===1?'person':'people'} emailed` : 'Saved');
-    schedRefreshAll();
-  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Save assignments'; }
+  // v107 - the crew shows on the calendar at the tap; the office emails the newly added behind.
+  const names={}; (S.employees||[]).forEach(e=>names[String(e.email).toLowerCase()]=e.name);
+  const assigned=emails.map(e=>({email:e, name:names[String(e).toLowerCase()]||String(e).split('@')[0]}));
+  schApply(ev.id,{assigned}); ev.assigned=assigned;
+  closeSheet(); render(); toast('Saved');
+  const when=`${schedDayLabel(localDateStr(new Date(ev.start)))} · ${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}`;
+  officeDo_('scheduleAssign',{eventId:ev.id, emails, title:ev.title, when, location:ev.location,
+      appUrl: location.origin+location.pathname}, ()=>schedRefreshAll(),
+    r=>{ if(r&&r.notified) toast(`${r.notified} ${r.notified===1?'person':'people'} emailed about it`); });
 }
 
 /* ----- JHA TAB (everyone): digital Job Hazard Assessment with real signatures -----
@@ -4825,9 +4917,10 @@ function allowAdminCard(){
   </div>`;
 }
 async function alDecide(k,approve,btn){
-  const c=dereg(k); if(!c) return; btn.disabled=true;
-  try{ await api('allowanceDecide',{id:c.id,approve}); toast((approve?'Approved':'Denied')+' — $'+c.amount.toFixed(2)); loadAllowAdmin(); }
-  catch(e){ toast(e.message); btn.disabled=false; }
+  const c=dereg(k); if(!c) return;
+  const card=btn&&btn.closest('.list-item'); if(card) card.style.display='none';
+  toast((approve?'Approved':'Denied')+' — $'+c.amount.toFixed(2));
+  officeDo_('allowanceDecide',{id:c.id,approve}, ()=>loadAllowAdmin(), ()=>loadAllowAdmin());
 }
 function obStatusCard(){
   const st=S.obStatus;
@@ -6367,11 +6460,8 @@ function openMediaView(k){
 
 /* ---- Admin: approvals ---- */
 async function approve(email,entryId){
-  try{
-    await api('approveEntry',{employeeEmail:email,entryId});
-    S.pending=(S.pending||[]).filter(e=>e.EntryID!==entryId); render(); // instant local update
-    toast('Approved'); refresh(true);
-  }catch(e){toast(e.message);}
+  S.pending=(S.pending||[]).filter(e=>e.EntryID!==entryId); render(); toast('Approved');   // v107 - at the tap
+  officeDo_('approveEntry',{employeeEmail:email,entryId}, ()=>refresh(true), ()=>refresh(true));
 }
 async function reject(email,entryId){
   sheet(`<h2>Reject entry</h2><label>Reason (shown to employee)</label>
@@ -6380,11 +6470,8 @@ async function reject(email,entryId){
     <button class="grow danger" onclick="confirmReject('${esc(email)}','${esc(entryId)}')">Reject</button></div>`);
 }
 async function confirmReject(email,entryId){ const note=val('rjNote'); closeSheet();
-  try{
-    await api('rejectEntry',{employeeEmail:email,entryId,note});
-    S.pending=(S.pending||[]).filter(e=>e.EntryID!==entryId); render(); // instant local update
-    toast('Rejected'); refresh(true);
-  }catch(e){toast(e.message);} }
+  S.pending=(S.pending||[]).filter(e=>e.EntryID!==entryId); render(); toast('Rejected');
+  officeDo_('rejectEntry',{employeeEmail:email,entryId,note}, ()=>refresh(true), ()=>refresh(true)); }
 
 /* ---- Admin: employees ---- */
 function openAddEmployee(){
@@ -7170,7 +7257,7 @@ function docQueueCount(q){
    unnoticed for six days. */
 function syncBanner(){
   let h='';
-  if (S.refused) h += `<div class="banner ot" style="cursor:pointer;background:#fee2e2;border-color:#fca5a5;color:#991b1b" onclick="openSyncStatus()">⚠ <b>${S.refused} punch${S.refused>1?'es were':' was'} refused by the office</b> — tap to see why.</div>`;
+  if (S.refused) h += `<div class="banner ot" style="cursor:pointer;background:#fee2e2;border-color:#fca5a5;color:#991b1b" onclick="openSyncStatus()">⚠ <b>${S.refused} thing${S.refused>1?'s were':' was'} not taken by the office</b> — tap to see why.</div>`;
   if (S.stuck) h += `<div class="banner ot" style="cursor:pointer;background:#fee2e2;border-color:#fca5a5;color:#991b1b" onclick="openSyncStatus()">⚠ <b>${S.stuck} punch${S.stuck>1?'es have':' has'} been waiting more than a day</b> — the office does NOT have ${S.stuck>1?'them':'it'}. Get signal and tap to send now.</div>`;
   // v106 - an ordinary wait is the blue badge in the top bar now; the red banners stay for the two
   // things that really need a person: refused by the office, or waiting more than a day.
@@ -7187,8 +7274,8 @@ async function openSyncStatus(){
         <div class="small ${isStuck_(it)?'':'muted'}" ${isStuck_(it)?'style="color:var(--bad)"':''}>${isStuck_(it)?'⚠ ':''}waiting ${esc(fmtAge_(punchAge_(it)))}${isStuck_(it)?' — more than a day, the office does not have this':''}</div>
         <div class="small muted">${it.conflict?'⚠ ':''}${esc(it.lastError||(it.lastTry?'':'not tried yet'))}${it.lastTry?' · last try '+fmtTime(new Date(it.lastTry).toISOString()):''}${it.stuckReported?' · admin emailed':''}</div></div>`).join('')
       :((rc||sc)?'':'<p class="muted">Nothing waiting - everything is at the office.</p>')}
-    ${refused.length?`<h3 style="margin-top:14px;color:var(--bad)">Refused by the office</h3>`+refused.map(r=>`<div class="list-item"><b>${esc(r.what)}</b><div class="small" style="color:var(--bad)">${esc(r.why)}</div></div>`).join('')
-      +`<p class="small muted">These were not saved. Enter them as a manual entry (Entries tab) if the time is owed.</p>`:''}
+    ${refused.length?`<h3 style="margin-top:14px;color:var(--bad)">Not taken by the office</h3>`+refused.map(r=>`<div class="list-item"><b>${esc(r.what)}</b><div class="small" style="color:var(--bad)">${esc(r.why)}</div></div>`).join('')
+      +`<p class="small muted">These did not go through. A punch can be entered as a manual entry (Entries tab) if the time is owed; anything else can simply be done again.</p>`:''}
     <div class="row" style="margin-top:14px">
       ${(items.length||rc||sc)?`<button class="grow" onclick="closeSheet();sendNow_()">Send now</button>`:''}
       ${refused.length?`<button class="secondary grow" onclick="DB.setCache('syncLog',[]).then(()=>{closeSheet();queueCount_();})">Clear refused</button>`:''}
@@ -7919,14 +8006,10 @@ async function neoSend(i,draft,btn){
 }
 async function neoDecide(i,action,btn){
   const it=neoItem(i); if(!it) return;
-  if(!S.online) return toast('You need signal.');
-  btn.disabled=true;
-  try{
-    await api('neoDecide',{id:it.id, action});
-    toast(action==='later'?'Put off — it will be back on the next sweep.'
-                          :'Ignored — it stays out unless they write again.', 6000);
-    neoDrop_(i);
-  }catch(e){ toast(e.message); btn.disabled=false; }
+  neoDrop_(i);                                                   // v107 - at the tap
+  toast(action==='later'?'Put off — it will be back on the next sweep.'
+                        :'Ignored — it stays out unless they write again.', 6000);
+  officeDo_('neoDecide',{id:it.id, action}, ()=>loadNeo());
 }
 
 function requestsView(){
@@ -8126,10 +8209,9 @@ async function estMark(k,answer,btn){
 }
 async function estDismiss(k,btn){
   const q=dereg(k); if(!q) return;
-  if(!S.online) return toast('You need signal.');
-  btn.disabled=true;
-  try{ await api('requestDismiss',{id:q.id}); toast('Taken off the list'); loadEstimates(); }
-  catch(e){ toast(e.message); btn.disabled=false; }
+  const card=btn&&btn.closest('.list-item,.card'); if(card) card.style.display='none';
+  toast('Taken off the list');
+  officeDo_('requestDismiss',{id:q.id}, ()=>loadEstimates(), ()=>loadEstimates());
 }
 function reqRender(){ if(S.tab==='requests') render(); else go('requests'); }
 
@@ -8303,6 +8385,9 @@ function approvalsHtml(){
       ${isAdmin?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openHoursFor()">✏️ Add or change someone's hours</button>`:''}
     </div>`;
 }
+/* v107 - if the office says no, the card comes straight back (not 3 s later when the list reloads) */
+function apvBack_(snap){ return ()=>{ if(snap){ S.approvals=snap; S.pending=snap.entries||[]; render(); } loadApprovals(); }; }
+function apvSnap_(){ try{ return S.approvals?JSON.parse(JSON.stringify(S.approvals)):null; }catch(e){ return null; } }
 function apvDrop(kind, id){ const a=S.approvals; if(!a) return;
   if(kind==='e') a.entries=(a.entries||[]).filter(x=>x.EntryID!==id);
   if(kind==='t') a.timeOff=(a.timeOff||[]).filter(x=>x.id!==id);
@@ -8473,15 +8558,11 @@ async function apvSame(k, btn){
   const known=(S.materials||[]).some(x=>lc(x.name)===lc(name))
            || (m.suggest||[]).some(x=>lc(x.name)===lc(name));
   if(!known) return toast('“'+name+'” is not in the inventory — pick one from the list, or tap Add new.', 6000);
-  if(!S.online) return toast('You need signal.');
-  if(btn) btn.disabled=true;
-  try{
-    await api('resolveMaterial',{ row:m.row, action:'addToList', name:name, unit:m.unit||undefined });
-    if(S.npPick) delete S.npPick[k];
-    S.npOpen='';
-    apvDrop('p', m.row);
-    toast('Filed as “'+name+'” ✓ — undo under the Edit log', 6000);
-  }catch(e){ toast(e.message); if(btn) btn.disabled=false; }
+  if(S.npPick) delete S.npPick[k];
+  S.npOpen='';
+  apvDrop('p', m.row);
+  toast('Filed as “'+name+'” ✓ — undo under the Edit log', 6000);
+  officeDo_('resolveMaterial',{ row:m.row, action:'addToList', name:name, unit:m.unit||undefined }, ()=>loadApprovals());
 }
 /* Paul, 3 Nov: "a log for all the changes we've made to be able to undo or edit them if we click
    confirm by accident." Each decision, newest first, with one way back. Undoing puts the job line
@@ -8530,24 +8611,18 @@ async function apvPart(k, action, _unused, btn){
   if(btn) btn.disabled=true;
   const name=val('npName').trim(), unit=val('npUnit').trim(), sku=val('npSku').trim();
   if(action==='addToList' && !name){ if(btn) btn.disabled=false; return toast('Give it a name first.'); }
-  try{
-    await api('resolveMaterial',{ row:m.row, action, name:name||undefined, unit:unit||undefined, sku:sku||undefined });
-    closeSheetDom();
-    apvDrop('p', m.row);
-    toast(action==='addToList' ? ('“'+(name||m.item)+'” is in the inventory ✓') : 'Dropped — it stays on the job as typed');
-  }catch(e){ toast(e.message); if(btn) btn.disabled=false; }
+  closeSheetDom();
+  apvDrop('p', m.row);
+  toast(action==='addToList' ? ('“'+(name||m.item)+'” is in the inventory ✓') : 'Dropped — it stays on the job as typed');
+  officeDo_('resolveMaterial',{ row:m.row, action, name:name||undefined, unit:unit||undefined, sku:sku||undefined }, ()=>loadApprovals());
 }
 async function apvEntry(k,ok,btn,fromSheet){
   const ref=dereg(k); if(!ref) return; const e=ref.e, email=ref.employeeEmail;
   if(!S.online) return toast('You need signal.');
   if(!ok){ apvRejectAsk(email,e.EntryID); return; }   // the reject form replaces whatever is open
-  if(btn) btn.disabled=true;
-  try{
-    await api('approveEntry',{employeeEmail:email,entryId:e.EntryID});
-    if(fromSheet) closeSheetDom();                     // v82 - approved from the View sheet
-    apvDrop('e',e.EntryID); toast('Approved — '+(e._name||email));
-  }
-  catch(err){ toast(err.message); if(btn) btn.disabled=false; }
+  if(fromSheet) closeSheetDom();                       // v82 - approved from the View sheet
+  const snap=apvSnap_(); apvDrop('e',e.EntryID); toast('Approved — '+(e._name||email));   // v107 - at the tap
+  officeDo_('approveEntry',{employeeEmail:email,entryId:e.EntryID}, apvBack_(snap));
 }
 function apvRejectAsk(email,entryId){
   sheet(`<h2>Reject entry</h2><label>Reason (shown to the employee)</label>
@@ -8556,21 +8631,17 @@ function apvRejectAsk(email,entryId){
     <button class="grow danger" onclick="apvRejectGo('${esc(email)}','${esc(entryId)}')">Reject</button></div>`);
 }
 async function apvRejectGo(email,entryId){ const note=val('rjNote'); closeSheet();
-  try{ await api('rejectEntry',{employeeEmail:email,entryId,note}); apvDrop('e',entryId); toast('Rejected'); }
-  catch(err){ toast(err.message); } }
+  const snap=apvSnap_(); apvDrop('e',entryId); toast('Rejected');
+  officeDo_('rejectEntry',{employeeEmail:email,entryId,note}, apvBack_(snap)); }
 async function apvTimeOff(k,ok,btn){
-  const t=dereg(k); if(!t) return; if(!S.online) return toast('You need signal.');
-  btn.disabled=true;
-  try{ await api('timeOffDecide',{reqId:t.id,approve:ok}); apvDrop('t',t.id);
-    toast((ok?'Approved':'Denied')+' — '+t.name+' has been emailed.'); if(S.sched) schedRefreshAll(); }
-  catch(err){ toast(err.message); btn.disabled=false; }
+  const t=dereg(k); if(!t) return;
+  const snap=apvSnap_(); apvDrop('t',t.id); toast((ok?'Approved':'Denied')+' — '+t.name+' will be emailed.');
+  officeDo_('timeOffDecide',{reqId:t.id,approve:ok}, apvBack_(snap), ()=>{ if(S.sched) schedRefreshAll(); });
 }
 async function apvAllow(k,ok,btn){
-  const c=dereg(k); if(!c) return; if(!S.online) return toast('You need signal.');
-  btn.disabled=true;
-  try{ await api('allowanceDecide',{id:c.id,approve:ok}); apvDrop('a',c.id);
-    toast((ok?'Approved':'Denied')+' — '+c.name+' $'+Number(c.amount).toFixed(2)); }
-  catch(err){ toast(err.message); btn.disabled=false; }
+  const c=dereg(k); if(!c) return;
+  const snap=apvSnap_(); apvDrop('a',c.id); toast((ok?'Approved':'Denied')+' — '+c.name+' $'+Number(c.amount).toFixed(2));
+  officeDo_('allowanceDecide',{id:c.id,approve:ok}, apvBack_(snap));
 }
 /* v56 — admin: add or change anyone's hours. Pick the person → their entries (Edit on each) or Add time. */
 async function openHoursFor(){
@@ -9330,12 +9401,11 @@ async function reqBook(i,btn){
 async function reqNotProceeding(i){
   const q=(S.reqEstimates||[])[i]; if(!q) return;
   if(!confirm('Close out '+(q.customer||'this estimate')+'? It stops showing here.')) return;
-  try{
-    await api('requestDismiss',{id:q.id, reason:'not proceeding'});
-    S.reqEstimates=(S.reqEstimates||[]).filter(x=>x.id!==q.id);
-    if(S.estData) S.estData.visits=S.reqEstimates;
-    toast('Closed out'); render(); if(S.tab==='est') loadEstimates();
-  }catch(e){ toast(e.message); }
+  S.reqEstimates=(S.reqEstimates||[]).filter(x=>x.id!==q.id);
+  if(S.estData) S.estData.visits=S.reqEstimates;
+  toast('Closed out'); render();
+  officeDo_('requestDismiss',{id:q.id, reason:'not proceeding'}, ()=>{ loadRequests(); if(S.tab==='est') loadEstimates(); },
+    ()=>{ if(S.tab==='est') loadEstimates(); });
 }
 /* v46 — move a booked job. The customer is emailed the new time and asked again, so the
    job goes back to amber until they answer: a time they haven't seen isn't confirmed. */
@@ -9552,11 +9622,9 @@ async function reqRenotify(i){
 }
 async function reqDismiss(i){
   const q=(S.requests||[])[i]; if(!q) return;
-  try{
-    await api('requestDismiss',{id:q.id});
-    S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
-    toast('Dismissed'); render();
-  }catch(e){ toast(e.message); }
+  S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
+  toast('Dismissed'); render();
+  officeDo_('requestDismiss',{id:q.id}, ()=>loadRequests());
 }
 /* Pop-up nudge on open when leads are waiting (Charles, item 1 of the request round). */
 function reqNudge(){
@@ -9618,8 +9686,8 @@ async function openMatReview(){
 }
 async function resolveMat(k,action){
   const m=dereg(k); if(!m) return;
-  try{ await api('resolveMaterial',{row:m.row, action}); toast(action==='addToList'?'Added to materials list':'Dismissed'); openMatReview(); }
-  catch(e){toast(e.message);}
+  toast(action==='addToList'?'Added to materials list':'Dismissed');
+  officeDo_('resolveMaterial',{row:m.row, action}, ()=>openMatReview(), ()=>openMatReview());
 }
 
 /* ---- Encouragement on clock-out ---- */
@@ -9630,20 +9698,38 @@ async function resolveMat(k,action){
 function showEncouragement(hrs, ot, breakHrs, state, why){
   const msg = ENCOURAGEMENTS[Math.floor(dayIndex()) % ENCOURAGEMENTS.length];
   const st = state||'done';
-  const icon = { sending:'⏳', done:'✅', queued:'📶', failed:'❌' }[st];
-  const head = { sending:`Clocking out — ${hrs.toFixed(2)} hrs`, done:`Clocked out — ${hrs.toFixed(2)} hrs`,
-                 queued:`Clock-out saved on this phone — ${hrs.toFixed(2)} hrs`, failed:'Clock-out did NOT save' }[st];
-  const body = st==='sending' ? '<p class="muted" style="margin:14px 0">Sending to the office…</p>'
-    : st==='queued' ? '<p style="margin:14px 0">Could not reach the office just now. Your clock-out is kept on this phone and will send by itself as soon as it can — you can close the app.</p><p class="small muted">Until it is sent, the home screen shows it as waiting.</p>'
-    : st==='failed' ? `<p style="margin:14px 0"><b>You are still clocked in.</b> The office refused this clock-out:</p><p class="small" style="color:var(--bad)">${esc(why||'')}</p><p class="small muted">Check the times and try again.</p>`
-    : `<p style="font-size:1.1rem;margin:14px 0">${esc(msg)}</p>`;
+  /* v107 - NOBODY WAITS ON THE OFFICE TO CLOCK OUT (Paul, 7 Nov: "sometimes when I clock out
+   * submit, it takes a while"). The clock-out is written to the phone at the tap, before the
+   * network is even tried, so it is safe the moment Submit is pressed - the card used to sit on
+   * an hourglass with no Done button for the whole 4-20 s round trip anyway. Now it says Clocked
+   * out with Done straight away, and the trip to the office is one small line underneath that
+   * updates itself: Sending..., then At the office, or Saved on this phone. Only a REFUSAL replaces
+   * the card, because that one really does need to be read (the clock is running again). */
+  if (st!=='failed' && st!=='sending'){
+    const line=document.getElementById('coSendSt');
+    if (line){                                   // the card is still up: update it in place
+      line.innerHTML = st==='queued'
+        ? '📶 No signal right now - it is saved on this phone and sends by itself.'
+        : '✓ At the office';
+      line.style.color = st==='queued' ? 'var(--muted)' : 'var(--good)';
+      const h=document.getElementById('coHead'); if (h && st==='done') h.textContent=`Clocked out — ${hrs.toFixed(2)} hrs`;
+      return;
+    }
+    return;                                      // card already closed: the badge has it
+  }
+  const icon = st==='failed' ? '❌' : '✅';
+  const head = st==='failed' ? 'Clock-out did NOT save' : `Clocked out — ${hrs.toFixed(2)} hrs`;
+  const body = st==='failed'
+    ? `<p style="margin:14px 0"><b>You are still clocked in.</b> The office refused this clock-out:</p><p class="small" style="color:var(--bad)">${esc(why||'')}</p><p class="small muted">Check the times and try again.</p>`
+    : `<p style="font-size:1.1rem;margin:14px 0">${esc(msg)}</p>
+       <p class="small" id="coSendSt" style="margin:0 0 10px;color:var(--muted)">Sending to the office… (it is already saved on this phone)</p>`;
   sheet(`<div class="center">
     <div style="font-size:2.6rem">${icon}</div>
-    <h2>${esc(head)}</h2>
+    <h2 id="coHead">${esc(head)}</h2>
     ${breakHrs&&st!=='failed'?`<div class="small muted">(${(breakHrs*60).toFixed(0)} min of breaks deducted)</div>`:''}
     ${body}
-    ${ot&&st==='done'?'<div class="banner ot">You\'re into overtime this week — nice hustle.</div>':''}
-    ${st==='sending'?'':`<button style="width:100%;margin-top:8px" onclick="closeSheet()">${st==='failed'?'OK':'Done'}</button>`}
+    ${ot&&st!=='failed'?'<div class="banner ot">You\'re into overtime this week — nice hustle.</div>':''}
+    <button style="width:100%;margin-top:8px" onclick="closeSheet()">${st==='failed'?'OK':'Done'}</button>
   </div>`);
   keepSheet_(); // a stray tap must not dismiss the answer before it is read
 }
@@ -9708,6 +9794,18 @@ window.addEventListener('offline', ()=>{ S.online=false; render(); sendCount_();
 /* v42 — a phone that was in a pocket does not fire 'online', and its 60-second timer was
    frozen with the screen. The moment the app is back in front: send whatever is waiting and,
    unless it was refreshed in the last minute, re-read the server so the screen is the truth. */
+/* v107 - WAKE THE OFFICE BEFORE ANYONE TAPS. The office script goes to sleep after a few idle
+ * minutes and the first call after that takes 10-20 s to start. The moment the app opens or comes
+ * back to the front, it knocks once (a plain GET, nothing read or written), so by the time a
+ * thumb reaches a button the script is awake. The office also wakes itself every 5 minutes during
+ * the day (keepWarm, Code.gs v96). */
+let _wakeAt=0;
+function wakeOffice_(){
+  if(!navigator.onLine || Date.now()-_wakeAt<4*60000) return; _wakeAt=Date.now();
+  try{ fetch(CONFIG.APPS_SCRIPT_URL+'?wake=1', {mode:'no-cors', cache:'no-store'}).catch(()=>{}); }catch(e){}
+}
+wakeOffice_();
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') wakeOffice_(); });
 document.addEventListener('visibilitychange', ()=>{
   if (document.visibilityState!=='visible'){
     // v43 — going to the background with punches waiting: the browser takes over the sending.
