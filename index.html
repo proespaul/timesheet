@@ -1954,6 +1954,13 @@ function offlineBanner(){
 /* Break helpers: break intervals live in the open entry's Breaks JSON column. */
 function openBreaks(){ try{ return JSON.parse((S.openEntry&&S.openEntry['Breaks JSON'])||'[]')||[]; }catch(e){ return []; } }
 function onBreak(){ const b=openBreaks(); return b.length>0 && !b[b.length-1].e; }
+/* v100 - breaks that were ENDED. A break still running when Clock Out is tapped is not counted:
+   it would otherwise swallow the rest of the shift (Paul, C26197, 4.07 h). The review asks for the
+   real break instead, and the office flags the entry. */
+function breakHrsClosed(){
+  let ms=0; for (const b of openBreaks()) if (b.e) ms += Math.max(0,new Date(b.e) - new Date(b.s));
+  return ms/3600000;
+}
 function breakHrsSoFar(asOf){
   const end = asOf ? new Date(asOf) : new Date();
   let ms=0; for (const b of openBreaks()) ms += Math.max(0,(b.e?new Date(b.e):end) - new Date(b.s));
@@ -2413,6 +2420,12 @@ function todayRows(){
   items.filter(i=>i.kind==='open').forEach(i=>{ const k=reg(i);
     rows.push({c:'o', k:'Clock-out missing', t:`${tdFirst(i.name)} still clocked in since ${tdShort(i.since)} ${fmtTime(i.since)}`,
       s:`${Math.round(i.hours)} hours ago${i.site?' · '+i.site:''}`, on:`openTodayOpen('${k}')`}); });
+  items.filter(i=>i.kind==='fix').forEach(i=>{ const k=reg(i);
+    rows.push({c:'o', k:'Fix this entry', t:`${tdFirst(i.name)} · ${i.short}`,
+      s:`${i.entry&&i.entry.Date?tdShort(i.entry.Date)+' · ':''}${(i.entry&&(i.entry['Customer/Job Site']||i.entry.Company))||''}`, on:`openTodayFix('${k}')`}); });
+  items.filter(i=>i.kind==='refused').forEach(i=>{ const k=reg(i);
+    rows.push({c:'o', k:'Punch refused', t:`${tdFirst(i.name)} · ${i.action==='clockOut'?'clock-out':i.action==='clockIn'?'clock-in':i.action} at ${fmtTime(i.at)} never landed`,
+      s:`${tdShort(i.at)} · the office said no and it was not sent again`, on:`openTodayRefused('${k}')`}); });
   (d.hours||[]).forEach(g=>{ const k=reg({email:g.email}), n=(g.days||[]).length;
     if(g.error) rows.push({c:'o', k:'Hours check · '+tdFirst(g.name), t:`Can't read ${tdFirst(g.name)}'s hour sheet`,
       s:'The check is off until it opens again — that is not zero hours', on:`openHoursCheck('${k}')`});
@@ -2559,6 +2572,32 @@ function openTodayOpen(k){
     <p>Since <b>${esc(tdDay(it.since))}, ${esc(fmtTime(it.since))}</b>${it.site?` on <b>${esc(it.site)}</b>`:''}: ${Math.round(it.hours)} hours ago.</p>
     <p class="small muted">Either the clock-out is still waiting on ${f}'s phone, or it was forgotten. The app emails ${f} and the admins at 24 hours. When ${f} opens the app, a red banner asks for the time they stopped, and the fix comes to you to approve.</p>
     <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">OK</button>`);
+}
+/* v100 - an entry somebody has to correct (a forgotten clock-out, a break nobody ended). The fix is
+   the ordinary Edit entry sheet, so it goes back for approval with its before-and-after. */
+function openTodayFix(k){
+  const it=dereg(k); if(!it) return;
+  const ek=reg({e:it.entry, employeeEmail:it.email}), hk=reg({key:it.key, fp:it.fp});
+  const e=it.entry||{};
+  sheet(`<h2>${esc(it.name)} · ${esc(it.why==='long'?'forgotten clock-out?':'break never ended')}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(e['Customer/Job Site']||e.Company||'')}${e['PO#']?' · '+esc(e['PO#']):''}</p>
+    <p>${esc(it.text||'')}</p>
+    <p class="small" style="color:var(--needs-ink)">${esc(it.suggest||'')}</p>
+    <button style="width:100%;margin-top:8px" onclick="closeSheetDom();openEditEntry('${ek}')">✏️ Fix this entry</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="todayHide('${hk}')">Looks right — hide it</button>
+    <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Close</button>`);
+}
+function openTodayRefused(k){
+  const it=dereg(k); if(!it) return;
+  const hk=reg({key:it.key, days:30});
+  const what=it.action==='clockOut'?'clock-out':it.action==='clockIn'?'clock-in':it.action;
+  sheet(`<h2>${esc(it.name)}'s ${esc(what)} was refused</h2>
+    <p>The phone sent a ${esc(what)} for <b>${esc(tdDay(it.at))}, ${esc(fmtTime(it.at))}</b> and the office refused it. It never arrived afterwards.</p>
+    <p class="small muted">What the office said: ${esc(it.error||'')}</p>
+    <p class="small muted">Check ${esc(tdFirst(it.name))}'s entries for that day. If the time is missing, add it by hand.</p>
+    <button style="width:100%;margin-top:8px" onclick="closeSheetDom();openManualFor('${esc(it.email)}')">➕ Add the time</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="todayHide('${hk}')">It's sorted — hide it</button>
+    <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Close</button>`);
 }
 function openTodayBill(k){
   const it=dereg(k); if(!it) return;
@@ -4865,7 +4904,8 @@ function openClockOut(){
 function startClockOutReview(){
   if (!S.openEntry){ closeSheet(); return; }
   const stopAt = new Date().toISOString();
-  const brkMin = Math.round(breakHrsSoFar(stopAt)*60);
+  const brkMin = Math.round(breakHrsClosed()*60);                       // v100 - ended breaks only
+  const ob = openBreaks(), openBreakAt = (ob.length && !ob[ob.length-1].e) ? ob[ob.length-1].s : '';
   coState = {
     entryId: S.openEntry.EntryID,
     origInAt: S.openEntry.ClockIn,   // untouched original, for "did they edit it?"
@@ -4876,7 +4916,7 @@ function startClockOutReview(){
     jobSite: S.openEntry['Customer/Job Site']||'',
     poNumber: S.openEntry['PO#']||'',
     company: S.openEntry.Company||'',
-    breakMin: brkMin, autoBreakMin: brkMin,
+    breakMin: brkMin, autoBreakMin: brkMin, openBreakAt,
     notes: '', items: mdDraftLoad_(S.openEntry['PO#']||'', S.openEntry['Customer/Job Site']||S.openEntry.Company||''),
     media: [], gps: null,
     rv: { on:false, hours:0, res:null, picked:null, notify:false },  // v34 return visit
@@ -4945,6 +4985,7 @@ function renderClockOutReview(){
           <input id="coBreak" type="number" min="0" step="5" value="${c.breakMin}" oninput="coTimes()"></div>
       </div>
       <div class="small muted" id="coWorked"></div>
+      ${c.openBreakAt?`<p class="small" style="color:var(--needs-ink);margin:6px 0 0">⚠ Your break from ${esc(fmtTime(c.openBreakAt))} was never ended, so it isn't counted. Type the break you really took in the box above.</p>`:''}
     </div>
     <label>What did you work on today?</label>
     <div class="row between" style="margin-top:2px"><span class="small" style="color:var(--navy);font-weight:700">What did you work on? (required)</span>
