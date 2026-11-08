@@ -306,6 +306,35 @@
   .ongo .og .po{width:62px; flex:none; font-size:.8rem; font-weight:700; color:var(--muted)}
   .ongo .og .nm{flex:1; min-width:0; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .ongo .og .h{flex:none; font-size:.88rem; color:var(--muted)}
+  /* v112 - money per job */
+  .money .seg{display:flex; gap:6px; margin:10px 0 4px; flex-wrap:wrap}
+  .money .seg button{background:var(--panel2); color:var(--text); padding:7px 12px; border-radius:999px; font-size:.85rem; font-weight:600}
+  .money .seg button.on{background:var(--accent); color:#fff}
+  .money .seg .n{opacity:.7; font-weight:700; margin-left:2px}
+  .money .msum{font-size:.9rem; margin:8px 0 2px; line-height:1.45}
+  .money .pos{color:#15803d} .money .neg{color:var(--bad)}
+  .money .mnote{font-size:.82rem; background:var(--needs-bg,#fff7ed); color:var(--needs-ink); border-radius:10px; padding:8px 10px; margin:8px 0 2px}
+  .money .mnote a{color:var(--accent2); font-weight:700; cursor:pointer; white-space:nowrap}
+  .money .mhdr{display:flex; justify-content:space-between; font-size:.68rem; font-weight:800; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); margin-top:10px}
+  .mrow{display:grid; grid-template-columns:minmax(0,1fr) auto; gap:2px 12px; padding:10px 0; border-top:1px solid var(--line); cursor:pointer}
+  .mhdr + .mrow{border-top:none}
+  .mrow .po{font-size:.8rem; font-weight:700; color:var(--muted); margin-right:6px}
+  .mrow .nm{font-weight:700}
+  .mrow .sub{font-size:.8rem; color:var(--muted); margin-top:1px}
+  .mrow .amt{font-weight:800; text-align:right; white-space:nowrap}
+  .mrow .mg{font-size:.8rem; text-align:right; white-space:nowrap; font-weight:600}
+  .mbar{grid-column:1/-1; height:7px; border-radius:4px; background:var(--panel2); overflow:hidden; display:flex; margin-top:5px}
+  .mbar i,.mleg i{display:block; height:100%} .mbar .c,.mleg .c{background:#64748b} .mbar .m,.mleg .m{background:#22c55e} .mbar .x,.mleg .x{background:var(--bad)}
+  .mwarn{grid-column:1/-1; font-size:.78rem; color:var(--needs-ink); margin-top:3px}
+  .mleg{display:flex; gap:12px; font-size:.75rem; color:var(--muted); margin-top:6px; align-items:center}
+  .mleg i{width:10px; height:10px; border-radius:3px; display:inline-block; margin-right:4px; vertical-align:-1px}
+  table.mtab{width:100%; border-collapse:collapse; font-size:.88rem; margin:8px 0}
+  table.mtab th{font-size:.68rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); text-align:right; padding:4px 0 6px 8px; font-weight:800}
+  table.mtab th:first-child,table.mtab td:first-child{text-align:left; padding-left:0}
+  table.mtab td{text-align:right; padding:7px 0 7px 8px; border-top:1px solid var(--line); vertical-align:top; white-space:nowrap}
+  table.mtab td:first-child{white-space:normal}
+  table.mtab tr.tot td{font-weight:800; border-top:2px solid var(--line)}
+  .mres{background:var(--panel2); border-radius:12px; padding:10px 12px; margin:8px 0; font-size:.92rem; line-height:1.5}
   @media (min-width: 900px){
     body.office{padding-left:240px; padding-bottom:24px}
     body.office .tabbar{display:none}
@@ -2591,8 +2620,9 @@ function todayRows(){
     s:'On the Requests tab', on:`go('requests')`});
   if(ests) rows.push({c:'b', k:'Estimates', t:`${ests} estimate request${ests===1?'':'s'} to answer`, s:'Send the price from the Estimates tab', on:`go('est')`});
   items.filter(i=>i.kind==='bill').forEach(i=>{ const k=reg(i);
+    const mj=moneyJob_(i.po);      // v112 - what it comes to at your rates
     rows.push({c:'b', k:'Ready to bill?', t:`${i.po} ${i.name}`,
-      s:`${(Number(i.hours)+Number(i.pending||0)).toFixed(1)} h · last on site ${tdShort(i.last)} · ${i.calOk?'nothing booked':'calendar not checked'}`, on:`openTodayBill('${k}')`}); });
+      s:`${(Number(i.hours)+Number(i.pending||0)).toFixed(1)} h${mj&&mj.worth?' · ~'+fm$(mj.worth)+' at your rates':''} · last on site ${tdShort(i.last)} · ${i.calOk?'nothing booked':'calendar not checked'}`, on:`openTodayBill('${k}')`}); });
   items.filter(i=>i.kind==='draft').forEach(i=>{ const k=reg(i);
     rows.push({c:'b', k:'Finish the invoice', t:`${i.po} ${i.name}`, s:`Draft #${i.qb} is in QuickBooks · the PO Log still says In progress`, on:`openTodayDraft('${k}')`}); });
   items.filter(i=>i.kind==='book').forEach(i=>{ const k=reg(i);
@@ -2621,7 +2651,7 @@ function todayView(){
         || '<p class="small muted" style="margin:10px 0 2px">Nothing needs you right now. ✓</p>'}
       ${hidden}
     </div>${todayFollowCard()}</div>
-    <div class="dt-only">${todayClockCard()}${todayOnGo()}</div></div>${errs}`;
+    <div class="dt-only">${todayClockCard()}${todayOnGo()}</div></div>${todayMoneyCard()}${errs}`;
 }
 /* ================= v110 - LEADS TO FOLLOW UP (Paul, 8 Nov) =======================================
  * Everyone who has gone quiet, worst first: said the time does not work or cancelled by email, has
@@ -2763,6 +2793,104 @@ function fuDismiss(){
   const snap=fuDrop_(i); fuState=null; closeSheet(); render();
   toast('Closed out');
   officeDo_('requestDismiss',{id:i.id, reason:'not proceeding'}, fuBack_(snap), ()=>{ loadRequests(); });
+}
+/* ================= v112 - MONEY PER JOB (Paul, 8 Nov: "build money per job on the Today screen") ====
+ * Built on the office with Today (Code.gs v100, todayMoney_), read only. For every job in progress,
+ * invoiced and waiting to be paid, or paid in the last 90 days:
+ *   cost          - hours x each person's pay rate + the supplier POs (the Cost tab's own figures)
+ *   at your rates - hours x each person's Charged rate (Team), rounded to the half hour like the
+ *                   invoice, the journeyman line raised to match the apprentice, + materials with the
+ *                   markup tier on the job's material total. No travel, km or permits.
+ *   invoiced      - the Amount Invoiced typed on the Cost tab; when it is blank the card uses the
+ *                   figure at your rates and marks it ~ so nobody mistakes it for the invoice.
+ * The bar is the money: grey is cost, green the margin on top of it, red what cost went past it. */
+function fm$(n){ const v=Math.round(Number(n)||0); return (v<0?'−':'')+'$'+Math.abs(v).toLocaleString('en-CA'); }
+function moneyJob_(po){ const m=S.today&&S.today.money; if(!m||!po) return null; const d=String(po).replace(/\D/g,'');
+  return (m.wip||[]).concat(m.owed||[], m.paid||[]).find(j=>String(j.po).replace(/\D/g,'')===d)||null; }
+function moneyPct_(p){ return p==null?'':(p<=-100?'loss':p+'%'); }
+function moneyFlags_(j){
+  const f=[];
+  if(j.fixes&&j.fixes.length) f.push(`⚠ ${j.fixes.length===1?'An entry':j.fixes.length+' entries'} on this job need${j.fixes.length===1?'s':''} fixing (${j.fixes[0].short}) - the cost is wrong until ${j.fixes.length===1?'it is':'they are'}`);
+  if(j.stage==='wip'&&j.quote&&j.worth>j.quote.high) f.push(`Over the quote by ${fm$(j.worth-j.quote.high)} at your rates`);
+  if(j.noRate&&j.noRate.length) f.push(`No charged rate for ${j.noRate.join(', ')} - counted at $0`);
+  return f;
+}
+const MONEY_TABS=[['wip','In progress'],['owed','Invoiced'],['paid','Paid']];
+function todayMoneyCard(){
+  const m=S.today&&S.today.money; if(!m) return '';
+  const tab=S.moneyTab||'wip', all=(m[tab]||[]), t=(m.totals||{})[tab]||{};
+  let list=all.filter(j=>j.cost||j.revenue);
+  const flagged=j=>moneyFlags_(j).filter(x=>!/^No charged rate/.test(x)).length?1:0;
+  if(tab==='paid') list.sort((a,b)=>(b.end||'').localeCompare(a.end||''));
+  else list.sort((a,b)=>(flagged(b)-flagged(a))||(b.revenue-a.revenue));
+  const seg=MONEY_TABS.map(([k,l])=>`<button class="${tab===k?'on':''}" onclick="S.moneyTab='${k}';S.moneyAll=false;render()">${l} <span class="n">${(m[k]||[]).filter(j=>j.cost||j.revenue).length}</span></button>`).join('');
+  const mg=(v,p)=>`<b class="${v<0?'neg':'pos'}">${fm$(v)}</b>${p!=null?' ('+moneyPct_(p)+')':''}`;
+  const sum = tab==='wip' ? `<b>${fm$(t.revenue)}</b> of work at your rates · ${fm$(t.cost)} cost so far · ${mg(t.margin,t.pct)} margin`
+    : tab==='owed' ? `<b>${fm$(t.revenue)}</b> waiting to be paid · ${fm$(t.cost)} cost · ${mg(t.margin,t.pct)} profit${t.estimates?`<div class="small muted">${t.estimates} of these ${t.estimates===1?'has':'have'} no amount on the Cost tab, so ~ is at your rates</div>`:''}`
+    : `Last ${m.paidDays||90} days: <b>${fm$(t.revenue)}</b> in · ${fm$(t.cost)} cost · ${mg(t.margin,t.pct)} profit${t.estimates?`<div class="small muted">${t.estimates} with no amount on the Cost tab (~ is at your rates)</div>`:''}`;
+  const noRate=(m.noRate||[]).filter(x=>all.some(j=>(j.noRate||[]).includes(x.name)));
+  const note = noRate.length ? `<div class="mnote">${noRate.map(x=>esc(x.name)).join(', ')} ${noRate.length===1?'has':'have'} no charged rate, so ${noRate.length===1?'their':'those'} hours count as $0 here. ${noRate.map(x=>`<a onclick="moneyRate('${esc(x.email)}')">Set ${esc(String(x.name).split(' ')[0])}'s rate</a>`).join(' · ')}</div>` : '';
+  const scale=Math.max(1,...list.map(j=>Math.max(j.revenue||0,j.cost||0)));
+  const bar=j=>{ const rev=Math.max(0,j.revenue||0), c=Math.max(0,j.cost||0), w=x=>(x/scale*100).toFixed(2)+'%';
+    return c<=rev ? `<div class="mbar"><i class="c" style="width:${w(c)}"></i><i class="m" style="width:${w(rev-c)}"></i></div>`
+                  : `<div class="mbar"><i class="c" style="width:${w(rev)}"></i><i class="x" style="width:${w(c-rev)}"></i></div>`; };
+  const shown=S.moneyAll?list:list.slice(0,6);
+  const rows=shown.map(j=>{ const k=reg(j), fl=moneyFlags_(j).filter(x=>!/^No charged rate/.test(x));
+    const sub=`${j.hours?j.hours+' h'+(j.pending?' ('+j.pending+' pending)':''):'no hours'} · cost ${fm$(j.cost)}${j.quote?' · quoted '+fm$(j.quote.high):''}${tab==='paid'&&j.end?' · '+tdShort(j.end):''}`;
+    return `<div class="mrow" onclick="openMoney('${k}')">
+      <div><span class="po">${esc(j.po)}</span><span class="nm">${esc(j.name)}</span><div class="sub">${esc(sub)}</div></div>
+      <div><div class="amt">${j.estimate?'~':''}${fm$(j.revenue)}</div><div class="mg ${j.margin<0?'neg':'pos'}">${j.margin>=0?'+':''}${fm$(j.margin)}${j.pct!=null?' · '+moneyPct_(j.pct):''}</div></div>
+      ${bar(j)}${fl.map(x=>`<div class="mwarn">${esc(x)}</div>`).join('')}</div>`; }).join('');
+  const more=list.length>6?`<a href="#" class="small" style="color:var(--accent2);display:block;margin-top:8px" onclick="S.moneyAll=!S.moneyAll;render();return false">${S.moneyAll?'Show fewer':'Show all '+list.length}</a>`:'';
+  const empty=tab==='wip'&&t.empty?`<div class="small muted" style="margin-top:6px">${t.empty} job${t.empty===1?'':'s'} in progress with nothing spent yet.</div>`:'';
+  return `<div class="card money">
+    <div class="row between"><h3 style="margin:0">Money per job</h3><span class="small muted">Before tax · no travel or permits</span></div>
+    <div class="seg">${seg}</div>
+    <div class="msum">${sum}</div>${note}
+    ${list.length?`<div class="mhdr"><span>Job</span><span>${tab==='wip'?'At your rates':'Invoiced'} · margin</span></div>${rows}${more}
+    <div class="mleg"><span><i class="c"></i>cost</span><span><i class="m"></i>margin</span><span><i class="x"></i>cost past it</span></div>`
+      :'<p class="small muted" style="margin:10px 0 2px">Nothing here yet.</p>'}${empty}
+  </div>`;
+}
+function openMoney(k){
+  const j=dereg(k); if(!j) return;
+  const stage={wip:'In progress', invoiced:'Invoiced · waiting to be paid', paid:'Paid'}[j.stage]||'';
+  const pp=(j.people||[]).map(p=>`<tr><td>${esc(p.name)}${p.pending?`<div class="small muted">${p.pending} h waiting for approval</div>`:''}</td>
+      <td>${Math.round((p.hours+p.pending)*100)/100} h</td><td>${fm$(p.cost)}</td>
+      <td>${p.rate?`${fm$(p.bill)}<div class="small muted">${p.billHours} h × $${p.rate}</div>`:'<span class="muted">no rate</span>'}</td></tr>`).join('');
+  const match=j.match?`<tr><td>${esc(j.match.name)} - to match the apprentice<div class="small muted">Your invoice rule: the journeyman line is at least the apprentice's</div></td>
+      <td>+${j.match.hours} h</td><td>-</td><td>${fm$(j.match.bill)}<div class="small muted">${j.match.hours} h × $${j.match.rate}</div></td></tr>`:'';
+  const mats=`<tr><td>Materials<div class="small muted">Supplier POs on this job${j.matCost>0?` · ${Math.round(j.tier*100)}% markup tier`:''}</div></td><td></td><td>${fm$(j.matCost)}</td><td>${fm$(j.matBill)}</td></tr>`;
+  const res = j.stage==='wip'
+    ? `Margin so far: <b class="${j.margin<0?'neg':'pos'}">${fm$(j.margin)}</b>${j.pct!=null?' ('+moneyPct_(j.pct)+')':''} - what the work comes to at your rates, less what it has cost.`
+    : (j.invoiced!=null
+      ? `Invoiced <b>${fm$(j.invoiced)}</b> (Cost tab) · profit <b class="${j.margin<0?'neg':'pos'}">${fm$(j.margin)}</b>${j.pct!=null?' ('+moneyPct_(j.pct)+')':''}<div class="small muted">At your rates it comes to ${fm$(j.worth)}${j.worth>j.invoiced+1?` - ${fm$(j.worth-j.invoiced)} more than was invoiced`:''}.</div>`
+      : `No Amount Invoiced on the Cost tab yet, so this uses <b>${fm$(j.worth)}</b> at your rates · profit <b class="${j.margin<0?'neg':'pos'}">~${fm$(j.margin)}</b>${j.pct!=null?' ('+moneyPct_(j.pct)+')':''}`);
+  const q=j.quote?`<div class="mres">Quoted ${j.quote.low&&j.quote.low!==j.quote.high?fm$(j.quote.low)+' – ':''}${fm$(j.quote.high)}${j.quote.answer==='yes'?' · they said yes':''}${j.stage==='wip'?`<div class="small">${j.worth>j.quote.high?`<b class="neg">At your rates the work is ${fm$(j.worth-j.quote.high)} past the quote.</b>`:`At your rates the work so far is ${Math.round(j.worth/j.quote.high*100)}% of the quote.`}</div>`:''}</div>`:'';
+  const b=j.budget?`<div class="mres">Budget ${fm$(j.budget)} · the cost so far is ${Math.round(j.cost/j.budget*100)}% of it</div>`:'';
+  const fx=(j.fixes||[]).map(f=>`<div class="mnote">⚠ ${esc(f.name)}: ${esc(f.short)} <a onclick="moneyFix('${esc(f.key)}')">Fix it</a></div>`).join('');
+  const nr=(j.people||[]).filter(p=>!p.rate).map(p=>`<div class="mnote">${esc(p.name)} has no charged rate, so their hours count as $0. <a onclick="moneyRate('${esc(p.email)}')">Set it</a></div>`).join('');
+  const jk=reg({jobSite:j.name, po:j.po});
+  sheet(`<h2>${esc(j.po)} · ${esc(j.name)}</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(stage)}${j.project?' · '+esc(j.project):''}${j.qb?' · invoice #'+esc(j.qb):''}</p>
+    ${fx}${nr}
+    <table class="mtab"><tr><th></th><th>Hours</th><th>Cost</th><th>At your rates</th></tr>
+      ${pp}${match}${mats}
+      <tr class="tot"><td>Total</td><td>${j.hours} h</td><td>${fm$(j.cost)}</td><td>${fm$(j.worth)}</td></tr></table>
+    <div class="mres">${res}</div>${q}${b}
+    <p class="small muted">Cost is pay rates × hours plus the supplier POs, the same as the Cost tab. At your rates is each person's charged rate, rounded to the half hour like the invoice, plus materials with the markup. Travel, km and permits aren't in it. Pending hours count.</p>
+    <div class="row" style="gap:8px"><button class="secondary grow" onclick="closeSheet()">Close</button><button class="grow" onclick="closeSheetDom();openJobAll('${jk}')">Open the job</button></div>`);
+}
+function moneyFix(key){
+  const it=((S.today&&S.today.items)||[]).find(x=>x.key===key);
+  if(!it) return toast('That entry is not on Today right now - it may have been fixed or put aside.');
+  closeSheetDom(); openTodayFix(reg(it));
+}
+async function moneyRate(email){
+  closeSheetDom();
+  if(!(S.employees&&S.employees.some(e=>e.email===email))){ try{ const r=await api('listEmployees'); S.employees=r.employees||[]; }catch(e){ return toast(e.message); } }
+  openEmployee(email);
+  setTimeout(()=>{ const el=document.getElementById('edCharge'); if(el){ el.scrollIntoView({block:'center'}); el.focus(); } }, 250);
 }
 /* v98 - desktop: where every job stands, left to right, and the jobs on the go with their hours. */
 function todayPipe(){
