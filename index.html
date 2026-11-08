@@ -120,9 +120,8 @@
   .spin{width:22px;height:22px;border:3px solid var(--line);border-top-color:var(--accent2);border-radius:50%;animation:sp 1s linear infinite;display:inline-block;vertical-align:middle}
   @keyframes sp{to{transform:rotate(360deg)}}
   /* v107 - a tapped button that is still waiting on the office spins in place */
-  .working{position:relative;color:transparent!important;pointer-events:none}
-  .working>*{visibility:hidden}
-  .working::after{content:'';position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;
+  .working{position:relative;opacity:.72;pointer-events:none}
+  .working::after{content:'';position:absolute;right:9px;top:50%;width:16px;height:16px;margin-top:-8px;
     border:2.5px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite}
   button.secondary.working::after,.btn.secondary.working::after{border-color:rgba(31,56,100,.25);border-top-color:#1f3864}
   .busybar{position:fixed;left:0;right:0;top:0;height:3px;z-index:70;pointer-events:none;overflow:hidden;background:rgba(31,56,100,.12)}
@@ -1484,7 +1483,7 @@ async function apiMutate(action, payload, optimistic){
   // only changes its label. That is how a Clock Out tap became a Clock In tap eleven seconds
   // later on 2026-09-10.
   if (tracked){ mutsInFlight++; if (BTN_PUNCH.test(action)){ btnBusyN++; _punchTapAt = Date.now();
-      setTimeout(()=>{ if (S.tab==='clock' && !S._sheet) render(); }, PUNCH_HOLD + 30); }   // v107 - the hold ends on time
+      setTimeout(()=>{ if ((S.tab==='clock'||S.tab==='today') && !S._sheet) render(); }, PUNCH_HOLD + 30); }   // v107 - the hold ends on time (v108: Today's button too)
     if (S.tab==='clock' && !S._sheet) render(); }
   const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
   const item = { qid, action, payload, ts: Date.now(), tempId: optimistic && optimistic.tempId };
@@ -1524,7 +1523,7 @@ async function apiMutate(action, payload, optimistic){
   } finally {
     // v42: render even under a sheet (sheets live outside #app) — otherwise the big button
     // could stay "Working…" behind the clock-out card.
-    if (tracked){ mutsInFlight--; if (BTN_PUNCH.test(action)) btnBusyN--; if (!mutsInFlight && S.tab==='clock') render(); }
+    if (tracked){ mutsInFlight--; if (BTN_PUNCH.test(action)) btnBusyN--; if (!mutsInFlight && (S.tab==='clock'||S.tab==='today')) render(); }
     inflightQids.delete(qid);
     queueCount_();
     // v107 - a punch tapped while this one was travelling is waiting behind it: send it now.
@@ -1639,6 +1638,11 @@ async function flushQueue(){
         // Write-ahead replay of a punch that already landed before the app was killed —
         // the duplicate is expected, drop it quietly.
         if (/Already clocked out|already have an open entry|Already on break|Not on break/i.test(e.message)){
+          await DB.del(it.qid); processed++; continue;
+        }
+        // v108 - same for an office tap (approve, decide, confirm...) sent again after a lost
+        // answer: "Already decided" means the first one landed, not that this one was refused.
+        if (!PUNCH.test(it.action) && /already/i.test(e.message)){
           await DB.del(it.qid); processed++; continue;
         }
         // The server said no to this one — drop it so the queue moves on, and keep the
@@ -4066,6 +4070,11 @@ async function openSchedDetail(k){
   const wrap=(inner)=>`<div id="sdMid">${inner}</div>`;
   sheet(shell(wrap(cached ? midOf(cached)
     : '<p class="center small muted" style="margin:14px 0"><span class="spin"></span> looking up the job…</p>')));
+  // v108 - a cached booking whose Requests row is not loaded yet: fetch the list quietly so the
+  // Move / Cancel / Correct buttons under Modify index into something.
+  if(cached && cached.kind==='request' && schedBookedIndex(cached.requestId)<0 && S.online && !S._reqLoading){
+    S._reqLoading=true; loadRequests().catch(()=>{}).then(()=>{ S._reqLoading=false; });
+  }
   const mine=S._sheet;
   let info=null, err='';
   // v65 — this one reads the calendar AND the Requests tab, so on a cold Apps Script start it
@@ -4090,8 +4099,17 @@ async function openSchedDetail(k){
    got only two of them — so the one booking on a quiet calendar was also the one you could not
    correct. Everything you can do to a booking now lives behind one Modify button, the same list
    whatever created the booking, with each entry saying plainly what it will and will not touch. */
-function openSchedModify(key,bi){
+async function openSchedModify(key,bi){
   const info=dereg(key); if(!info) return;
+  /* v108 - the booked index is worked out NOW, not when the sheet was drawn. Since v107 the job
+   * sheet paints from the phone before the Requests list has loaded, and a Modify built then
+   * carried -1, which opened the "this visit only" Date & time (calendar only - no PO Log, no
+   * customer confirmation) for a real booking. This is the one place a wait is worth it. */
+  if(info.kind==='request'){
+    bi=schedBookedIndex(info.requestId);
+    if(bi<0 && S.online){ try{ await loadRequests(); }catch(e){} bi=schedBookedIndex(info.requestId); }
+    if(bi<0){ toast(S.online?'Could not find this booking on the Requests list - pull down to refresh and try again.':'You need signal to modify a booking.', 6000); return; }
+  }
   const isReq=info.kind==='request' && bi>=0;
   const isVisit=info.kind==='visit';
   const row=(icon,label,sub,onclick,cls)=>`<button class="${cls||'secondary'}" style="width:100%;margin-top:8px;text-align:left;padding:14px"
