@@ -3355,6 +3355,64 @@ async function schSetConfirm(k, state, btn){
     toast(schedName(ev)+': '+SCH_TONE[state].label.toLowerCase()+'.');
   }catch(e){ toast(/unknown action/i.test(e.message)?'The office needs the latest script (v92) for this.':e.message, 8000); if(btn) btn.disabled=false; }
 }
+/* v105 - ANOTHER DAY ON THE SAME JOB (Paul, 7 Nov): "if we were there that day and need more days
+ * to finish it, I should be able to add more without moving the original one." The day you are
+ * looking at stays put; each tap of Add puts one more day on the calendar under the same name,
+ * job number, address, notes and crew, and the sheet stays open on the next work day so a
+ * three-day finish is three taps. Nobody is emailed. Needs Code.gs v95 (scheduleAddDay). */
+function schIsHoliday(d){ const data=schData(d); return !!((data&&data.holidays)||[]).some(h=>h.date===d); }
+function schNextWorkday(day){ let d=schAdd(day,1), n=0; while(([0,6].indexOf(schDate(d).getDay())>=0 || schIsHoliday(d)) && n++<14) d=schAdd(d,1); return d; }
+function schOpenAddDay(k, added){
+  const ev=dereg(k); if(!ev) return;
+  added=added||[];
+  const s=new Date(ev.start), dur=Math.round(schDur(ev)*2)/2, today=localDateStr(new Date());
+  let base=added.length?added[added.length-1].day:localDateStr(s);
+  if(base<today) base=today;
+  const day=schNextWorkday(base);
+  const hh=String(s.getHours()).padStart(2,'0'), mm=String(s.getMinutes()).padStart(2,'0');
+  const crew=(ev.assigned||[]).map(a=>a.name).join(', ');
+  const k2=reg(ev); S._addDays=added;
+  sheet(`<h2>Add another day</h2>
+    <p class="small muted" style="margin-top:-4px">${esc(schedName(ev))} · ${esc(schWhen(ev.start))} stays where it is.</p>
+    ${added.length?`<div class="banner" style="background:#ecfdf3;color:#14532d;border:1px solid #bbf7d0">✓ Added ${added.map(a=>esc(a.when)).join(' · ')}</div>`:''}
+    <div class="row"><div class="grow"><label>Day</label><input id="adDay" type="date" value="${day}"></div>
+      <div class="grow"><label>Start time</label><input id="adTime" type="time" step="900" value="${hh}:${mm}"></div></div>
+    <label>Hours that day</label><input id="adHours" type="number" min="0.5" max="12" step="0.5" value="${dur}" inputmode="decimal">
+    <p class="small muted">${crew?'Same crew: '+esc(crew)+'. ':''}Same job number, so the hours and parts go on the same invoice. Nobody is emailed.</p>
+    <div class="row" style="margin-top:10px">
+      <button class="secondary grow" onclick="closeSheet()">${added.length?'Done':'Cancel'}</button>
+      <button class="grow" onclick="schAddDayGo('${k2}',this)">${added.length?'Add one more day':'Add this day'}</button>
+    </div>`);
+}
+async function schAddDayGo(k, btn){
+  const ev=dereg(k); if(!ev) return;
+  if(!S.online) return toast('You need signal to add a day.');
+  const day=val('adDay'), tm=val('adTime'), hrs=Number(val('adHours'));
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(day)) return toast('Pick a day.');
+  if(!/^\d{1,2}:\d{2}/.test(tm)) return toast('Pick a start time.');
+  if(!(hrs>=0.5 && hrs<=12)) return toast('Hours that day: between 0.5 and 12.');
+  const p=day.split('-'), q=tm.split(':');
+  const ns=new Date(Number(p[0]),Number(p[1])-1,Number(p[2]),Number(q[0]),Number(q[1]));
+  if(ns.getTime()<Date.now()-60000 && !confirm(schWhen(ns.toISOString())+' has already passed. Add it anyway?')) return;
+  const was=btn.textContent; btn.disabled=true; btn.textContent='Adding…';
+  try{
+    const r=await api('scheduleAddDay',{eventId:ev.id, start:ns.toISOString(), hours:hrs},{timeout:90000});
+    const m=localDateStr(new Date(r.start)).slice(0,7), data=(S.schedMonths||{})[m];
+    if(data && !data.events.some(e=>String(e.id)===String(r.eventId))){
+      data.events.push({ id:r.eventId, title:r.title, start:r.start, end:r.end, allDay:false, location:r.location||'',
+        desc:r.desc||'', assigned:r.assigned||[], confirm:'none', recurring:false });
+      try{ DB.setCache('sched_'+m,data); }catch(e){}
+    }
+    S.schedYears={};
+    const added=(S._addDays||[]).concat([{day, when:schWhen(r.start)}]);
+    render();
+    schOpenAddDay(k, added);
+    if(S.online) loadSched();
+  }catch(e){
+    toast(/unknown action/i.test(e.message)?'The office needs the latest script (v95) to add a day.':e.message, 8000);
+    btn.disabled=false; btn.textContent=was;
+  }
+}
 /* v102 - for the long jumps: a date and a time, no dragging. Same move as a drop - amber, no
    email, Undo bar. */
 function schOpenMoveDate(k){
@@ -3387,7 +3445,10 @@ function schStatusHtml(k, ev){
   return `<div style="margin:10px 0 4px">
     <span class="pill" style="background:${t.bg};border:1px solid ${t.bd};color:${t.ink};font-weight:700">${esc(t.label)}</span></div>
     ${c!=='confirmed'?`<button style="width:100%;margin-top:6px;background:var(--ok)" onclick="schSetConfirm('${k}','confirmed',this)">✓ Customer confirmed</button>`:''}
-    <button class="secondary" style="width:100%;margin-top:6px" onclick="schOpenMoveDate('${k}')">📅 Move to a date</button>
+    <div class="row" style="margin-top:6px">
+      <button class="secondary grow" onclick="schOpenMoveDate('${k}')">📅 Move to a date</button>
+      <button class="secondary grow" onclick="schOpenAddDay('${k}')">➕ Add another day</button>
+    </div>
     <div class="row" style="margin-top:6px">
       ${c!=='declined'?`<button class="secondary grow" onclick="schSetConfirm('${k}','declined',this)">Needs a new time</button>`:''}
       ${c!=='waiting'?`<button class="secondary grow" onclick="schSetConfirm('${k}','waiting',this)">Not confirmed yet</button>`:''}
