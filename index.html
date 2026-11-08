@@ -205,6 +205,7 @@
   .sds b{font-size:1rem}
   .sds.on{background:var(--accent); color:#fff; border-color:var(--accent)}
   .sds.drop{border:2px dashed var(--accent2); background:#dbeafe; color:var(--text)}
+  [data-flip].flipping{background:var(--accent2) !important; color:#fff !important; box-shadow:0 0 0 3px #bfdbfe}
   .sw{display:inline-block; width:10px; height:10px; border-radius:3px; border:1px solid; vertical-align:-1px; margin-right:4px}
   .co-logo{height:20px; max-width:64px; object-fit:contain; display:inline-block; vertical-align:middle}
   .clock-logo{height:44px; max-width:180px; object-fit:contain; display:block; margin:10px auto 0}
@@ -3123,6 +3124,15 @@ function schedRefreshAll(){ // any schedule mutation: refresh the list AND drop 
   if((S.schedView||'month')!=='list') schEnsure();
 }
 function schedToggle(m){
+  // v102 - keep your place: March in Month opens March in Week and Day, and the week you were
+  // looking at opens its own month.
+  const was=S.schedView||'month';
+  if(m==='month' && was!=='month' && S.schedDay) S.schedMonth=S.schedDay.slice(0,7);
+  if((m==='week'||m==='day') && was==='month'){
+    const sm=curSchedMonth(), today=localDateStr(new Date());
+    if(sm!==today.slice(0,7)) S.schedDay=sm+'-01';
+    else if(S.schedDay && S.schedDay.slice(0,7)!==sm) S.schedDay=today;
+  }
   S.schedView=m; render();
   schEnsure();
 }
@@ -3186,9 +3196,9 @@ function schShift(dir){
 function schOpenDay(d){ S.schedDay=d; S.schedView='day'; render(); schEnsure(); }
 function schNav(label){
   return `<div class="row between" style="margin-bottom:8px">
-    <button class="secondary" style="padding:8px 16px;width:auto" onclick="schShift(-1)" aria-label="Back">‹</button>
+    <button class="secondary${schFlipCls(-1)}" data-flip="-1" style="padding:8px 16px;width:auto" onclick="schShift(-1)" aria-label="Back">‹</button>
     <b style="color:var(--navy)">${esc(label)}</b>
-    <button class="secondary" style="padding:8px 16px;width:auto" onclick="schShift(1)" aria-label="Forward">›</button>
+    <button class="secondary${schFlipCls(1)}" data-flip="1" style="padding:8px 16px;width:auto" onclick="schShift(1)" aria-label="Forward">›</button>
   </div>`;
 }
 function schLegend(data){
@@ -3223,7 +3233,7 @@ function schGrid(days, o){
       const k=reg(ev), t=schTone(ev), L=lanes[ev.id]||{lane:0,count:1}, w=100/L.count;
       const s=schHours(ev), dur=schDur(ev);
       const scope=String(ev.title||'').split(/\s+[—–-]\s+/).slice(1).join(' – ');
-      return `<div class="blk${(ev.assigned||[]).length?'':' un'}" data-ek="${k}" style="top:${(s-h0)*hh+1}px;height:${Math.max(hh/2,dur*hh)-3}px;left:calc(${L.lane*w}% + 2px);width:calc(${w}% - 4px);background:${t.bg};border-color:${t.bd};color:${t.ink}"
+      return `<div class="blk${(ev.assigned||[]).length?'':' un'}${schIsDragged(ev)?' ghosted':''}" data-ek="${k}" style="top:${(s-h0)*hh+1}px;height:${Math.max(hh/2,dur*hh)-3}px;left:calc(${L.lane*w}% + 2px);width:calc(${w}% - 4px);background:${t.bg};border-color:${t.bd};color:${t.ink}"
         onpointerdown="schedGrab(event,'${k}','${d}')" onclick="event.stopPropagation()">
         <div class="bt"><b>${esc(schedName(ev))}</b>${L.count>1?`<span class="bn" aria-label="job ${L.lane+1} of ${L.count} at this time">${L.lane+1}</span>`:''}</div>
         <div class="bs">${esc(fmtTime(ev.start))} – ${esc(fmtTime(ev.end))}</div>
@@ -3280,13 +3290,13 @@ function schUndoToast(msg, fn){
 }
 function schUndoNow(){ const f=S._undoFn; S._undoFn=null; clearTimeout(toastT); document.getElementById('toast').innerHTML=''; if(f) f(); }
 function schWhen(iso){ const d=new Date(iso); return d.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+' '+fmtTime(iso); }
-async function schMoveTo(key, day, t){
-  const ev=dereg(key); if(!ev) return;
+async function schMoveTo(evOrKey, day, t){
+  const ev=(typeof evOrKey==='string')?dereg(evOrKey):evOrKey; if(!ev) return;
   if(ev.allDay) return toast('An all-day booking can\'t be dragged to a time. Tap it to change it.');
   if(!S.online) return toast('You need signal to move a booking.');
   const old=new Date(ev.start), dur=new Date(ev.end)-old, p=day.split('-');
   let h=old.getHours(), mi=old.getMinutes();
-  if(t!==null && t!==undefined && t!==''){ h=Math.floor(Number(t)); mi=(Number(t)%1)?30:0; }
+  if(t!==null && t!==undefined && t!==''){ h=Math.floor(Number(t)); mi=Math.round((Number(t)-h)*60); }
   const ns=new Date(Number(p[0]),Number(p[1])-1,Number(p[2]),h,mi);
   if(ns.getTime()===old.getTime()) return;
   const id=ev.id, name=schedName(ev);
@@ -3321,11 +3331,37 @@ async function schSetConfirm(k, state, btn){
     toast(schedName(ev)+': '+SCH_TONE[state].label.toLowerCase()+'.');
   }catch(e){ toast(/unknown action/i.test(e.message)?'The office needs the latest script (v92) for this.':e.message, 8000); if(btn) btn.disabled=false; }
 }
+/* v102 - for the long jumps: a date and a time, no dragging. Same move as a drop - amber, no
+   email, Undo bar. */
+function schOpenMoveDate(k){
+  const ev=dereg(k); if(!ev) return;
+  const d=new Date(ev.start), hh=String(d.getHours()).padStart(2,'0'), mm=String(d.getMinutes()).padStart(2,'0');
+  const k2=reg(ev);
+  sheet(`<h2>Move ${esc(schedName(ev))}</h2>
+    <p class="small muted" style="margin-top:-4px">Now ${esc(schWhen(ev.start))}</p>
+    <div class="row"><div class="grow"><label>Day</label><input id="mdDay" type="date" value="${localDateStr(d)}"></div>
+      <div class="grow"><label>Start time</label><input id="mdTime" type="time" step="900" value="${hh}:${mm}"></div></div>
+    <p class="small muted">It keeps its length, turns amber (not confirmed yet), and nobody is emailed.</p>
+    <div class="row" style="margin-top:10px">
+      <button class="secondary grow" onclick="closeSheet()">Cancel</button>
+      <button class="grow" onclick="schMoveDateGo('${k2}')">Move it</button>
+    </div>`);
+}
+function schMoveDateGo(k){
+  const ev=dereg(k); if(!ev) return;
+  const day=val('mdDay'), tm=val('mdTime');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(day)) return toast('Pick a day.');
+  if(!/^\d{1,2}:\d{2}/.test(tm)) return toast('Pick a start time.');
+  const p=tm.split(':'), t=Number(p[0])+Number(p[1])/60;
+  closeSheet();
+  schMoveTo(ev, day, t);
+}
 function schStatusHtml(k, ev){
   const t=schTone(ev), c=ev.confirm||'waiting';
   return `<div style="margin:10px 0 4px">
     <span class="pill" style="background:${t.bg};border:1px solid ${t.bd};color:${t.ink};font-weight:700">${esc(t.label)}</span></div>
     ${c!=='confirmed'?`<button style="width:100%;margin-top:6px;background:var(--ok)" onclick="schSetConfirm('${k}','confirmed',this)">✓ Customer confirmed</button>`:''}
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="schOpenMoveDate('${k}')">📅 Move to a date</button>
     <div class="row" style="margin-top:6px">
       ${c!=='declined'?`<button class="secondary grow" onclick="schSetConfirm('${k}','declined',this)">Needs a new time</button>`:''}
       ${c!=='waiting'?`<button class="secondary grow" onclick="schSetConfirm('${k}','waiting',this)">Not confirmed yet</button>`:''}
@@ -3379,23 +3415,32 @@ function schedChip(ev){
  * that scheduling uses, with the new day already filled in, because the time still has to be
  * agreed and the customer still has to be told. */
 var SD_ = null;      // the drag in progress
+/* v102 - the drag listens on the WINDOW, not on the job it started from. Holding a job over
+ * ‹ or › turns the page (Paul, 7 Nov: "drag a job from last month's schedule onto next month...
+ * or 3 months in advance"), and turning the page redraws the calendar - which throws away the
+ * element the drag began on. Listeners on that element would go with it and the job would be
+ * stuck to the finger. The booking itself is held in SD_.ev for the same reason: the registry
+ * of tap keys is cleared on every redraw. */
 function schedGrab(e, key, day){
   if(e.button && e.button!==0) return;
   const el=e.currentTarget;
-  SD_={ key, day, el, x0:e.clientX, y0:e.clientY, id:e.pointerId, on:false, over:'',
+  SD_={ key, ev:dereg(key), day, el, x0:e.clientX, y0:e.clientY, id:e.pointerId, on:false, over:'', flipDir:0,
         timer:canApprove()?setTimeout(()=>schedLift(), 320):null };   // v101: crew taps, never drags
   try{ el.setPointerCapture(e.pointerId); }catch(err){}
-  el.onpointermove=schedMoveP; el.onpointerup=schedDrop; el.onpointercancel=schedAbort;
+  window.addEventListener('pointermove', schedMoveP, {passive:false});
+  window.addEventListener('pointerup', schedDrop);
+  window.addEventListener('pointercancel', schedAbort);
 }
 function schedLift(){
   if(!SD_) return;
   SD_.on=true;
   SD_.el.classList.add('ghosted');
   const g=document.createElement('div');
-  const gev=dereg(SD_.key); SD_.name=gev?schedName(gev):SD_.el.textContent;
+  SD_.name=SD_.ev?schedName(SD_.ev):SD_.el.textContent;
   g.className='evdrag'; g.textContent=SD_.name;
   g.style.left=SD_.x0+'px'; g.style.top=SD_.y0+'px';
   document.body.appendChild(g); SD_.ghost=g;
+  schPreloadNear();                     // the months either side, so a page turn is instant
   try{ if(navigator.vibrate) navigator.vibrate(12); }catch(e){}
 }
 function schedMoveP(e){
@@ -3407,9 +3452,21 @@ function schedMoveP(e){
   e.preventDefault();
   SD_.ghost.style.left=e.clientX+'px'; SD_.ghost.style.top=e.clientY+'px';
   const el=document.elementFromPoint(e.clientX, e.clientY);
+  // Parked over ‹ or ›: turn the page now and then every second while it stays there.
+  const fz=el&&el.closest?el.closest('[data-flip]'):null;
+  const dir=fz?Number(fz.getAttribute('data-flip')):0;
+  if(dir!==SD_.flipDir){
+    clearTimeout(SD_.flipT); SD_.flipDir=dir;
+    document.querySelectorAll('[data-flip].flipping').forEach(x=>x.classList.remove('flipping'));
+    if(dir){
+      fz.classList.add('flipping');
+      const tick=()=>{ if(!SD_||SD_.flipDir!==dir) return; schFlip(dir); SD_.flipT=setTimeout(tick, 1000); };
+      SD_.flipT=setTimeout(tick, 600);
+    }
+  }
   // v101 - any [data-drop] is a target: a month day (keeps the time), a half hour in the week
   // or day grid (that day, that time), or a day button above the day view (keeps the time).
-  const cell=el&&el.closest?el.closest('[data-drop]'):null;
+  const cell=(!dir&&el&&el.closest)?el.closest('[data-drop]'):null;
   const day=cell?cell.getAttribute('data-day'):'';
   const t=cell?(cell.getAttribute('data-t')||''):'';
   const key=day?(day+'|'+t):'';
@@ -3417,30 +3474,53 @@ function schedMoveP(e){
     document.querySelectorAll('[data-drop].drop').forEach(d=>d.classList.remove('drop'));
     if(cell && day) cell.classList.add('drop');
     SD_.over=key; SD_.overDay=day; SD_.overT=t;
-    if(SD_.ghost) SD_.ghost.textContent=SD_.name+(day?(' → '+schDate(day).toLocaleDateString([],{weekday:'short',day:'numeric'})+(t!==''?(' '+fmtTime(new Date(2000,0,1,Math.floor(t),(t%1)?30:0).toISOString())):'')):'');
+    if(SD_.ghost) SD_.ghost.textContent=SD_.name+(day?(' → '+schDate(day).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+(t!==''?(' '+fmtTime(new Date(2000,0,1,Math.floor(t),(t%1)?30:0).toISOString())):'')):'');
   }
+}
+/* One page turn while a job is held: a month in Month, a week in Week, a day in Day. */
+function schFlip(dir){
+  const v=S.schedView||'month';
+  if(v==='month') schedShiftMonth(dir); else schShift(dir);
+  if(!SD_) return;
+  SD_.over=''; SD_.overDay=''; SD_.overT='';
+  const a=document.querySelector(`[data-flip="${dir}"]`); if(a) a.classList.add('flipping');
+  if(SD_.ghost) SD_.ghost.textContent=SD_.name;
+  schPreloadNear();
+}
+function schMonthAdd(m, n){ const p=m.split('-'); const d=new Date(Number(p[0]),Number(p[1])-1+n,1);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+function schPreloadNear(){
+  if(!S.online) return;
+  const v=S.schedView||'month', m=v==='month'?curSchedMonth():schAnchor().slice(0,7);
+  [-1,1].forEach(n=>{ const x=schMonthAdd(m,n); if(!(S.schedMonths||{})[x]) loadSchedMonth(x); });
 }
 function schedDrop(e){
   if(!SD_) return;
   const was=SD_, dropped=was.on?was.overDay:'';
   schedClear();
-  if(!was.on){ const ev=dereg(was.key); if(ev) openSchedDetail(was.key); return; }   // a tap
+  if(!was.on){ if(was.ev) openSchedDetail(was.key); return; }                         // a tap
   if(!dropped) return;                                                               // put back
-  schMoveTo(was.key, dropped, was.overT===''?null:Number(was.overT));                // v101: moves at once, no sheet
+  schMoveTo(was.ev, dropped, was.overT===''?null:Number(was.overT));                 // v101: moves at once, no sheet
 }
 function schedAbort(){ schedClear(); }
 function schedClear(){
   if(!SD_) return;
-  clearTimeout(SD_.timer);
+  clearTimeout(SD_.timer); clearTimeout(SD_.flipT);
   try{ SD_.el.releasePointerCapture(SD_.id); }catch(e){}
-  SD_.el.onpointermove=null; SD_.el.onpointerup=null; SD_.el.onpointercancel=null;
-  SD_.el.classList.remove('ghosted');
+  window.removeEventListener('pointermove', schedMoveP, {passive:false});
+  window.removeEventListener('pointerup', schedDrop);
+  window.removeEventListener('pointercancel', schedAbort);
+  try{ SD_.el.classList.remove('ghosted'); }catch(e){}
+  document.querySelectorAll('.ghosted').forEach(x=>x.classList.remove('ghosted'));
+  document.querySelectorAll('[data-flip].flipping').forEach(x=>x.classList.remove('flipping'));
   // Take the ghost off the screen whatever happens: a floating label left behind after a drag
   // sits over everything and nothing else would ever remove it.
   if(SD_.ghost){ try{ SD_.ghost.remove(); }catch(e){ try{ document.body.removeChild(SD_.ghost); }catch(e2){} } }
   document.querySelectorAll('[data-drop].drop').forEach(d=>d.classList.remove('drop'));
   SD_=null;
 }
+function schFlipCls(dir){ return (SD_&&SD_.on&&SD_.flipDir===dir)?' flipping':''; }
+function schIsDragged(ev){ return !!(SD_&&SD_.on&&SD_.ev&&String(SD_.ev.id)===String(ev.id)); }
 /* Dropped on a day: the same Move sheet as everywhere else, opened on that day. The booking's
    own kind decides which one - a booked job re-dates the PO Log and re-asks the customer, a
    return visit moves only itself - so nothing about moving changes except where it starts. */
@@ -3501,7 +3581,7 @@ function schedMonthHtml(){
     const lanes=schLanes(evs);
     const show=evs.slice(0,2).map(ev=>{
       const rk=reg(ev), un=data&&data.canAssign&&!ev.assigned.length, tn=schTone(ev), L=lanes[ev.id];
-      return `<div class="ev${un?' un':''}" data-ek="${rk}" data-day="${k}" style="background:${tn.bg};color:${tn.ink};border:1px solid ${tn.bd}"
+      return `<div class="ev${un?' un':''}${schIsDragged(ev)?' ghosted':''}" data-ek="${rk}" data-day="${k}" style="background:${tn.bg};color:${tn.ink};border:1px solid ${tn.bd}"
         onpointerdown="schedGrab(event,'${rk}','${k}')" onclick="event.stopPropagation()"
         >${L&&L.count>1?`<span class="bn">${L.lane+1}</span>`:''}${schedChip(ev)}</div>`;
     }).join('');
@@ -3512,9 +3592,9 @@ function schedMonthHtml(){
   const label=new Date(y,m-1,1).toLocaleDateString([],{month:'long',year:'numeric'});
   return `<div class="card">
     <div class="row between" style="margin-bottom:8px">
-      <button class="secondary" style="padding:8px 16px" onclick="schedShiftMonth(-1)">‹</button>
+      <button class="secondary${schFlipCls(-1)}" data-flip="-1" style="padding:8px 16px" onclick="schedShiftMonth(-1)" aria-label="Previous month">‹</button>
       <b style="color:var(--navy)">${esc(label)}</b>
-      <button class="secondary" style="padding:8px 16px" onclick="schedShiftMonth(1)">›</button>
+      <button class="secondary${schFlipCls(1)}" data-flip="1" style="padding:8px 16px" onclick="schedShiftMonth(1)" aria-label="Next month">›</button>
     </div>
     <div class="cal">${cells}</div>
     <p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
