@@ -89,6 +89,10 @@
   .chip{display:inline-block; background:var(--panel2); border:1px solid var(--line); border-radius:999px;
     padding:8px 14px; margin:4px 4px 0 0; font-size:.9rem}
   .chip.sel{background:var(--accent); border-color:var(--accent); color:#fff}
+  .chip.on{background:var(--accent); border-color:var(--accent); color:#fff; cursor:pointer}
+  #fuHow .chip,#fuDays .chip{cursor:pointer}
+  a.fubtn{display:block; border-radius:12px; padding:12px 8px; background:var(--panel2); color:var(--text); font-weight:600; text-align:center; text-decoration:none}
+  a.fubtn:active{transform:scale(.98)}
   /* ---- v86: ONE materials row, everywhere material goes onto a job. Paul's sketch of
    *      29 Oct: the name, the quantity in a box, a single blue unit toggle, a bin. What was
    *      bought, what is logged, what is left and which supplier it came from are gone - the
@@ -1403,7 +1407,7 @@ async function queueCount_(){
  * bar on every tab: blue while things wait, red when something has waited a day or the office
  * refused it, grey "No signal" when there is nothing waiting, a green "All sent" for a moment when
  * the last one goes. Tap it for the list and Send now. */
-const ACT_NAME_={deleteEntry:'entry delete', clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start',
+const ACT_NAME_={followUp:'follow-up log', estimateMark:'price answer', requestDismiss:'close-out', deleteEntry:'entry delete', clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start',
   endBreak:'break end', fixForgotClockout:'forgotten clock-out fix', editEntry:'entry change',
   addManualEntry:'time added by hand', takeMaterial:'parts taken', logMaterials:'parts used',
   approveEntry:'hours approved', rejectEntry:'hours rejected', timeOffDecide:'time-off decision',
@@ -2616,8 +2620,139 @@ function todayView(){
       ${rows.map(r=>`<div class="ni" onclick="${r.on}"><span class="ndot ${r.c}"></span><div class="tx"><div class="k ${r.c}">${esc(r.k)}</div><div class="t">${esc(r.t)}</div><div class="s">${esc(r.s)}</div></div><span class="go">›</span></div>`).join('')
         || '<p class="small muted" style="margin:10px 0 2px">Nothing needs you right now. ✓</p>'}
       ${hidden}
-    </div></div>
+    </div>${todayFollowCard()}</div>
     <div class="dt-only">${todayClockCard()}${todayOnGo()}</div></div>${errs}`;
+}
+/* ================= v110 - LEADS TO FOLLOW UP (Paul, 8 Nov) =======================================
+ * Everyone who has gone quiet, worst first: said the time does not work or cancelled by email, has
+ * not confirmed a booking, has not answered a price, has waited to be booked, or asked for a price
+ * that was never sent. Each one opens with Call / Text / Email - the phone's own dialer, messages
+ * or mail, with the words already written, so nothing goes to a customer until it is sent by hand -
+ * then "Followed up" logs it (Follow-ups tab) and puts them aside until the next check. Built with
+ * Today on the office (Code.gs v98, todayFollow_). */
+const FU_META={
+  newtime:  {k:'Needs a new time',        c:'o'},
+  cancelled:{k:'Cancelled by email',      c:'o'},
+  confirm:  {k:"Hasn't confirmed",        c:'b'},
+  quote:    {k:'No answer to the price',  c:'b'},
+  book:     {k:'Waiting to be booked',    c:'g'},
+  price:    {k:'Estimate to price',       c:'g'}
+};
+const FU_HOW={call:'called', voicemail:'left a message', text:'texted', email:'emailed', note:'noted'};
+function fuAgo_(n){ return n<=0?'today':n===1?'yesterday':n+' days ago'; }
+function fuWhen_(iso){ return iso?`${tdShort(iso)} ${fmtTime(iso)}`:''; }
+function fuSub_(i){
+  const tried = i.tries ? ` · followed up ${i.tries}×${i.last&&i.last.how?' ('+(FU_HOW[i.last.how]||i.last.how)+(i.last.at?' '+tdShort(i.last.at):'')+')':''}` : '';
+  const s = i.sub==='quote'    ? `Sent ${i.detail||'a price'} ${fuAgo_(i.days)}`
+          : i.sub==='confirm'  ? `Booked ${fuWhen_(i.start)} · asked ${fuAgo_(i.days)}`
+          : i.sub==='newtime'  ? (i.detail ? `Moved off ${i.detail.replace(/^moved off /,'')} · ring to rebook` : `Said ${i.start?fuWhen_(i.start):'the time'} doesn't work`)
+          : i.sub==='cancelled'? `Cancelled ${i.start?fuWhen_(i.start):''} from the email · still on the calendar`
+          : i.sub==='book'     ? `${i.detail?i.detail.replace(/^said yes/,'Said yes')+' · ':''}waiting ${i.days} days`
+          : `Asked for a price ${fuAgo_(i.days)}`;
+  return s+tried;
+}
+function todayFollowCard(){
+  const d=S.today||{}, list=d.follow, wait=d.followWaiting||[];
+  if(!list) return '';                       // an office script older than v98
+  const show=S.fuAll?list:list.slice(0,6);
+  const rows=show.map(i=>{ const m=FU_META[i.sub]||{k:i.sub,c:'g'}, k=reg(i);
+    return `<div class="ni" onclick="openFollow('${k}')"><span class="ndot ${m.c}"></span><div class="tx"><div class="k ${m.c}">${esc(m.k)}</div>
+      <div class="t">${esc(i.name)}${i.scope?` <span class="muted" style="font-weight:500">· ${esc(i.scope.length>48?i.scope.slice(0,46)+'…':i.scope)}</span>`:''}</div>
+      <div class="s">${esc(fuSub_(i))}</div></div><span class="go">›</span></div>`; }).join('');
+  const more = list.length>6 ? `<a href="#" class="small" style="color:var(--accent2);display:block;margin-top:8px" onclick="S.fuAll=!S.fuAll;render();return false">${S.fuAll?'Show fewer':'Show all '+list.length}</a>` : '';
+  const w = wait.length ? `<div class="small muted" style="margin-top:10px">${wait.length} followed up, waiting · <a href="#" style="color:var(--accent2)" onclick="S.fuShowWait=!S.fuShowWait;render();return false">${S.fuShowWait?'hide':'show them'}</a></div>
+      ${S.fuShowWait?wait.map(h=>`<div class="row between small" style="padding:6px 0;border-top:1px solid var(--line)"><span>${esc(h.label)} <span class="muted">· ${esc((FU_META[h.sub]||{}).k||'')} · check again ${esc(tdShort(h.until))}</span></span><a href="#" style="color:var(--accent2);white-space:nowrap" onclick="todayUnhide('${reg(h)}');return false">Now</a></div>`).join(''):''}` : '';
+  return `<div class="card needs-list fu-list">
+    <div class="row between"><h3 style="margin:0">Follow up</h3><span class="small muted">${list.length?list.length+(list.length===1?' customer':' customers'):''}</span></div>
+    ${rows || '<p class="small muted" style="margin:10px 0 2px">Nobody waiting on a call back. ✓</p>'}${more}${w}</div>`;
+}
+function fuText_(i){
+  const fn=String(i.name||'').trim().split(/\s+/)[0]||'there', me=String((S.me&&S.me.name)||'Paul').split(' ')[0];
+  const sc=i.scope?(i.scope.length>60?i.scope.slice(0,58)+'…':i.scope).replace(/^./,c=>c.toLowerCase()):'';
+  const when=i.start?`${new Date(i.start).toLocaleDateString([], {weekday:'long', month:'short', day:'numeric'})} at ${fmtTime(i.start)}`:'';
+  const hi=`Hi ${fn}, it's ${me} from PRO Electrical.`;
+  return i.sub==='quote'    ? `${hi} Just checking you got the price I sent${sc?' for '+sc:''}. Happy to answer any questions, or get you booked in.`
+       : i.sub==='confirm'  ? `${hi} Just confirming we're booked for ${when||'your appointment'}. Does that still work for you?`
+       : i.sub==='newtime'  ? `${hi} You mentioned the time we had doesn't work. What days are better for you?`
+       : i.sub==='cancelled'? `${hi} I saw you cancelled ${when||'your booking'}. No problem. Would you like to pick another time, or leave it for now?`
+       : i.sub==='book'     ? `${hi} Following up${sc?' on '+sc:''}. What days work best to get it booked in?`
+       : `${hi} Following up on your request${sc?' about '+sc:''}. When's a good time to chat, or for me to come take a look?`;
+}
+let fuState=null;
+function openFollow(k){
+  const i=dereg(k); if(!i) return;
+  fuState={ i, how:'', days:3 };
+  const m=FU_META[i.sub]||{k:i.sub}, txt=fuText_(i);
+  const tel=String(i.phone||'').replace(/[^\d+]/g,'');
+  const mail=i.email?`mailto:${encodeURIComponent(i.email)}?subject=${encodeURIComponent('PRO Electrical - following up')}&body=${encodeURIComponent(txt+'\n\nThanks,\n'+((S.me&&S.me.name)||'Paul')+'\nPRO Electrical Services')}`:'';
+  const btn=(on,href,ic,l,how)=>on?`<a class="fubtn grow" href="${href}" onclick="fuPick('${how}')">${ic} ${l}</a>`
+    :`<button class="secondary grow" disabled title="Not on file">${ic} ${l}</button>`;
+  const acts = i.sub==='quote' ? `<button class="grow" onclick="fuQuote('yes')">They said yes</button><button class="secondary grow" onclick="fuQuote('no')">They said no</button>`
+    : i.sub==='confirm' ? `<button class="grow" onclick="fuConfirmed()">✓ Customer confirmed</button><button class="secondary grow" onclick="closeSheetDom();go('sched')">Open the schedule</button>`
+    : (i.sub==='newtime'||i.sub==='cancelled') ? `<button class="grow" onclick="closeSheetDom();go('requests')">Rebook or cancel on Requests</button>`
+    : i.sub==='book' ? `<button class="grow" onclick="closeSheetDom();go('requests')">Book it</button><button class="secondary grow" onclick="fuDismiss()">Didn't go ahead</button>`
+    : `<button class="grow" onclick="closeSheetDom();go('est')">Send the price</button><button class="secondary grow" onclick="fuDismiss()">Didn't go ahead</button>`;
+  sheet(`<h2>${esc(i.name)}</h2>
+    <p class="small" style="margin-top:-4px"><span class="pill pending">${esc(m.k)}</span> ${esc(fuSub_(i))}</p>
+    ${i.scope?`<p class="small muted" style="margin:6px 0">${esc(i.scope)}${i.po?' · '+esc(i.po):''}</p>`:''}
+    <p class="small" style="margin:6px 0">${i.phone?'📞 '+esc(i.phone):'<span class="muted">No phone on file</span>'}${i.email?' · ✉️ '+esc(i.email):''}</p>
+    <div class="row" style="gap:8px;margin-top:10px">
+      ${btn(!!tel,'tel:'+tel,'📞','Call','call')}
+      ${btn(!!tel,'sms:'+tel+'?body='+encodeURIComponent(txt),'💬','Text','text')}
+      ${btn(!!i.email,mail,'✉️','Email','email')}
+    </div>
+    <details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">What the text and email say</summary>
+      <p class="small" style="background:var(--bg);border-radius:10px;padding:10px;margin:6px 0">${esc(txt)}</p></details>
+    <h3 style="margin:16px 0 4px">Log it</h3>
+    <div id="fuHow">${['call','voicemail','text','email'].map(h=>`<span class="chip" data-h="${h}" onclick="fuPick('${h}')">${esc(FU_HOW[h].replace(/^./,c=>c.toUpperCase()))}</span>`).join('')}</div>
+    <input id="fuNote" placeholder="What they said (optional)" autocomplete="off" style="margin-top:8px">
+    <div class="small muted" style="margin:8px 0 4px">Check again in</div>
+    <div id="fuDays">${[1,3,7,14].map(n=>`<span class="chip${n===3?' on':''}" data-d="${n}" onclick="fuDays(${n})">${n===1?'tomorrow':n+' days'}</span>`).join('')}</div>
+    <button style="width:100%;margin-top:12px" onclick="fuLog()">✓ Followed up</button>
+    <div class="row" style="gap:8px;margin-top:8px">${acts}</div>
+    <button class="ghost" style="width:100%;margin-top:4px" onclick="fuState=null;closeSheet()">Close</button>`);
+}
+function fuPick(how){ if(!fuState) return; fuState.how=how;
+  document.querySelectorAll('#fuHow .chip').forEach(c=>c.classList.toggle('on', c.dataset.h===how)); }
+function fuDays(n){ if(!fuState) return; fuState.days=n;
+  document.querySelectorAll('#fuDays .chip').forEach(c=>c.classList.toggle('on', Number(c.dataset.d)===n)); }
+/* Off the list at the tap; back on it if the office says no. */
+function fuDrop_(i, waitUntil){
+  const d=S.today; if(!d) return null;
+  const snap={follow:(d.follow||[]).slice(), wait:(d.followWaiting||[]).slice()};
+  d.follow=(d.follow||[]).filter(x=>x.key!==i.key);
+  if(waitUntil) (d.followWaiting=d.followWaiting||[]).push({key:i.key, label:i.name, sub:i.sub, until:waitUntil, tries:(i.tries||0)+1});
+  DB.setCache('today', d); return snap;
+}
+function fuBack_(snap){ return ()=>{ const d=S.today; if(d&&snap){ d.follow=snap.follow; d.followWaiting=snap.wait; DB.setCache('today', d); render(); } }; }
+function fuLog(){
+  const st=fuState; if(!st) return; const i=st.i;
+  const how=st.how||'note', note=val('fuNote'), days=st.days||3;
+  const until=new Date(Date.now()+days*86400000).toISOString();
+  const snap=fuDrop_(i, until); fuState=null; closeSheet(); render();
+  toast(`${i.name}: ${FU_HOW[how]||'logged'} - back on the list ${days===1?'tomorrow':'in '+days+' days'}.`, 4000);
+  officeDo_('followUp',{key:i.key, id:i.id, sub:i.sub, name:i.name, how, note, days}, fuBack_(snap));
+}
+function fuQuote(answer){
+  const st=fuState; if(!st) return; const i=st.i;
+  const snap=fuDrop_(i); fuState=null; closeSheet(); render();
+  toast(answer==='yes'?`${i.name} said yes - they are on Requests to book.`:`${i.name} said no - filed as declined.`, 5000);
+  officeDo_('estimateMark',{id:i.id, answer}, fuBack_(snap), ()=>{ if(answer==='yes') loadRequests(); });
+}
+function fuConfirmed(){
+  const st=fuState; if(!st) return; const i=st.i;
+  if(!i.eventId) return toast('This booking is not on the calendar - open it on Requests.');
+  const snap=fuDrop_(i); fuState=null; closeSheet(); render();
+  try{ schApply(i.eventId,{confirm:'confirmed'}); }catch(e){}
+  toast(`${i.name}: confirmed.`);
+  officeDo_('scheduleConfirm',{eventId:i.eventId, state:'confirmed'}, fuBack_(snap));
+}
+function fuDismiss(){
+  const st=fuState; if(!st) return; const i=st.i;
+  if(!confirm('Close out '+i.name+'? It stops showing on Requests and Estimates.')) return;
+  const snap=fuDrop_(i); fuState=null; closeSheet(); render();
+  toast('Closed out');
+  officeDo_('requestDismiss',{id:i.id, reason:'not proceeding'}, fuBack_(snap), ()=>{ loadRequests(); });
 }
 /* v98 - desktop: where every job stands, left to right, and the jobs on the go with their hours. */
 function todayPipe(){
@@ -2848,6 +2983,7 @@ async function todayHide(k){
 }
 async function todayUnhide(k){
   const h=dereg(k); if(!h) return;
+  if(S.today && String(h.key).startsWith('fu:')){ S.today.followWaiting=(S.today.followWaiting||[]).filter(x=>x.key!==h.key); render(); }
   try{ await api('todayHide', {key:h.key, unhide:true}, {bg:true}); toast('Put back.'); }
   catch(e){ toast(e.message); }
   loadToday();
