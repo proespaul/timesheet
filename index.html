@@ -152,7 +152,8 @@
   .cal .ev .t{display:block; font-size:.5rem; line-height:1.1; opacity:.85; font-weight:700}
   .cal .ev .n{display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
     font-size:.54rem; line-height:1.15; font-weight:600; overflow-wrap:anywhere}
-  .cal .ev.un{background:var(--warn)}
+  .cal .ev.un{border-style:dashed !important}
+  .cal .ev .bn{float:right; width:12px; height:12px; font-size:.45rem; margin-left:2px}
   .cal .ev.ghosted{opacity:.35}
   .cal .more{font-size:.52rem; color:var(--muted); text-align:center; line-height:1.2}
   .cal .day.drop{border:2px solid var(--accent2); background:#e4efff}
@@ -170,6 +171,41 @@
   .seg{display:flex; background:var(--panel2); border-radius:12px; padding:3px; gap:3px}
   .seg button{flex:1; background:transparent; color:var(--muted); padding:7px 12px; border-radius:9px; font-size:.85rem}
   .seg button.on{background:var(--panel); color:var(--navy); box-shadow:0 1px 3px rgba(31,56,100,.15)}
+  /* v101 - the block calendar (week and day views) */
+  .tgwrap{overflow-x:auto; -webkit-overflow-scrolling:touch}
+  .tg{display:grid}
+  .tgh{background:transparent; border:0; border-bottom:1px solid var(--line); border-radius:0; padding:8px 6px;
+    text-align:left; color:var(--navy); font-size:.82rem; font-weight:400; width:auto}
+  .tgh b{font-weight:700} .tgh span{color:var(--muted)} .tgh.today b{color:var(--accent2)}
+  .tgh .hl{display:block; font-size:.64rem; color:#854d0e}
+  .tga{border-bottom:1px solid var(--line); border-left:1px solid var(--line); padding:4px; display:flex; flex-direction:column; gap:3px}
+  .tga.lbl{border-left:0; font-size:.64rem; color:var(--muted)}
+  .adc{font-size:.72rem; font-weight:600; padding:3px 6px; border-radius:7px; border:1px solid; cursor:pointer;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .tgt div{font-size:.66rem; color:var(--muted); text-align:right; padding:2px 6px 0 0; box-sizing:border-box}
+  .tgd{position:relative; border-left:1px solid var(--line)}
+  .tgc{border-top:1px solid var(--line); box-sizing:border-box}
+  .tgc.half{border-top-color:#eef2f8}
+  .tgc.drop{background:#dbeafe; box-shadow:inset 0 0 0 2px var(--accent2)}
+  .blk{position:absolute; box-sizing:border-box; border:1px solid; border-radius:9px; padding:4px 6px; overflow:hidden;
+    cursor:pointer; display:flex; flex-direction:column; gap:1px; touch-action:none;
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none}
+  .blk.un{border-style:dashed}
+  .blk.ghosted{opacity:.35}
+  .blk .bt{display:flex; justify-content:space-between; align-items:flex-start; gap:4px; font-size:.76rem; line-height:1.2}
+  .blk .bs{font-size:.7rem; line-height:1.25; opacity:.9}
+  .blk .bc{margin-top:auto; display:flex; gap:2px; padding-top:2px}
+  .bn{flex:none; width:17px; height:17px; border-radius:50%; background:var(--navy); color:#fff; font-size:.62rem;
+    font-weight:700; display:inline-flex; align-items:center; justify-content:center}
+  .cr{width:18px; height:18px; border-radius:50%; background:#fff; border:1px solid currentColor; font-size:.6rem;
+    font-weight:700; display:inline-flex; align-items:center; justify-content:center; color:var(--navy)}
+  .sdstrip{display:grid; gap:6px; margin-bottom:10px}
+  .sds{background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:6px 0;
+    display:flex; flex-direction:column; align-items:center; min-height:50px; width:auto; font-weight:400; font-size:.75rem}
+  .sds b{font-size:1rem}
+  .sds.on{background:var(--accent); color:#fff; border-color:var(--accent)}
+  .sds.drop{border:2px dashed var(--accent2); background:#dbeafe; color:var(--text)}
+  .sw{display:inline-block; width:10px; height:10px; border-radius:3px; border:1px solid; vertical-align:-1px; margin-right:4px}
   .co-logo{height:20px; max-width:64px; object-fit:contain; display:inline-block; vertical-align:middle}
   .clock-logo{height:44px; max-width:180px; object-fit:contain; display:block; margin:10px auto 0}
   .clock-logo-hd{height:56px; max-width:260px; object-fit:contain; display:block; margin:0 auto; vertical-align:middle}
@@ -3061,14 +3097,18 @@ function schedView(){
   const mode=S.schedView||'month';
   const head=`<div class="row between"><h2>Schedule</h2>${(S.schedLoading||S._smLoading)?'<span class="spin"></span>':''}</div>
     <div class="seg" style="margin-bottom:10px">
-      <button class="${mode==='month'?'on':''}" onclick="schedToggle('month')">📅 Month</button>
-      <button class="${mode==='list'?'on':''}" onclick="schedToggle('list')">☰ Next 2 weeks</button>
+      <button class="${mode==='month'?'on':''}" onclick="schedToggle('month')">Month</button>
+      <button class="${mode==='week'?'on':''}" onclick="schedToggle('week')">Week</button>
+      <button class="${mode==='day'?'on':''}" onclick="schedToggle('day')">Day</button>
+      <button class="${mode==='list'?'on':''}" onclick="schedToggle('list')">List</button>
     </div>
     ${canApprove()?`<div class="row" style="margin-bottom:10px">
       <button class="secondary grow" onclick="openAddManual('job')">⚡ Schedule a job</button>
       <button class="secondary grow" onclick="openAddManual('call')">📞 Schedule a call</button>
     </div>`:''}`;
   if(mode==='month') return head + schedMonthHtml() + (d?timeOffSection():'');
+  if(mode==='week') return head + schWeekHtml() + (d?timeOffSection():'');
+  if(mode==='day') return head + schDayHtml() + (d?timeOffSection():'');
   return head + `<div class="card">
       <p class="small muted" style="margin:0">${(S.sched&&S.sched.canAssign)
         ? 'Your admin@proes.ca calendar, next 2 weeks. Tap a job to assign the crew — new assignees get an email.'
@@ -3080,25 +3120,230 @@ function schedView(){
 function schedRefreshAll(){ // any schedule mutation: refresh the list AND drop stale month grids
   S.schedMonths={};
   loadSched();
-  if((S.schedView||'month')==='month') loadSchedMonth();
+  if((S.schedView||'month')!=='list') schEnsure();
 }
 function schedToggle(m){
   S.schedView=m; render();
-  if(m==='month') loadSchedMonth();
-  else if(S.online) loadSched();
+  schEnsure();
+}
+/* ---- v101: THE BLOCK CALENDAR (Paul, 7 Nov) ----------------------------------------------
+ * "I want to be able to look at this calendar schedule and drag and drop jobs as they come to a
+ * different date... a block version." Month, Week and Day all take a drag: Month moves a job to
+ * another date at the same time, Week and Day move it to the day AND the half hour it is dropped
+ * on. Two jobs at the same time sit side by side, each with a small 1 / 2, and neither moves -
+ * "two jobs can go at once". A moved job turns AMBER (not confirmed yet) and nothing is emailed:
+ * the move is the move, and telling the customer is a separate, deliberate tap in the job's
+ * details, next to "Customer confirmed" (green) and "Needs a new time" (red). Undo sits in the
+ * bar that comes up after every move for a few seconds. Needs Code.gs v92 (scheduleMove,
+ * scheduleConfirm, and each event's confirm state in scheduleList). */
+const SCH_TONE={
+  confirmed:{bg:'#ecfdf3',bd:'#16a34a',ink:'#14532d',label:'Customer confirmed'},
+  waiting:  {bg:'#fff7e6',bd:'#d97706',ink:'#7c2d12',label:'Not confirmed yet'},
+  declined: {bg:'#fef2f2',bd:'#dc2626',ink:'#991b1b',label:'Needs a new time'},
+  cancelled:{bg:'#f1f5f9',bd:'#94a3b8',ink:'#475569',label:'Cancelled'}};
+function schTone(ev){ return SCH_TONE[ev&&ev.confirm]||SCH_TONE.waiting; }
+function schDate(s){ const p=String(s).split('-'); return new Date(Number(p[0]),Number(p[1])-1,Number(p[2])); }
+function schAdd(s,n){ const d=schDate(s); d.setDate(d.getDate()+n); return localDateStr(d); }
+function schAnchor(){ return S.schedDay || localDateStr(new Date()); }
+function schMonday(s){ const d=schDate(s); d.setDate(d.getDate()-((d.getDay()+6)%7)); return localDateStr(d); }
+function schData(day){ return (S.schedMonths||{})[String(day).slice(0,7)]; }
+function schDayEvents(day){ const data=schData(day); if(!data) return null;
+  return data.events.filter(ev=>localDateStr(new Date(ev.start))===day).sort((a,b)=>new Date(a.start)-new Date(b.start)); }
+function schHours(ev){ const d=new Date(ev.start); return d.getHours()+d.getMinutes()/60; }
+function schDur(ev){ return Math.max(0.25,(new Date(ev.end)-new Date(ev.start))/3600000); }
+function schFindEv(id){
+  const all=S.schedMonths||{};
+  for(const m in all){ const d=all[m]; const e=d&&d.events&&d.events.find(x=>String(x.id)===String(id)); if(e) return e; }
+  return null;
+}
+/* Jobs at the same time sit side by side: lane = which column, count = how many share the block. */
+function schLanes(evs){
+  const out={}, list=evs.filter(e=>!e.allDay); let i=0;
+  while(i<list.length){
+    const cl=[list[i]]; let end=schHours(list[i])+schDur(list[i]), n=i+1;
+    while(n<list.length && schHours(list[n])<end-1e-6){ cl.push(list[n]); end=Math.max(end,schHours(list[n])+schDur(list[n])); n++; }
+    const ends=[];
+    cl.forEach(e=>{ const s=schHours(e); let l=ends.findIndex(x=>x<=s+1e-6); if(l<0){ l=ends.length; ends.push(0); } ends[l]=s+schDur(e); out[e.id]={lane:l}; });
+    cl.forEach(e=>{ out[e.id].count=ends.length; });
+    i=n;
+  }
+  return out;
+}
+function schCrew(ev){ return (ev.assigned||[]).map(a=>`<span class="cr" title="${esc(a.name)}">${esc(String(a.name||'?').trim().charAt(0).toUpperCase())}</span>`).join(''); }
+/* Load every month the view on screen needs (a week can straddle two). */
+function schEnsure(){
+  const v=S.schedView||'month';
+  if(v==='list'){ if(S.online) loadSched(); return; }
+  if(v==='month'){ loadSchedMonth(); return; }
+  const a=schAnchor(), days=v==='week'?[schMonday(a), schAdd(schMonday(a),6)]:[a];
+  [...new Set(days.map(d=>d.slice(0,7)))].forEach(m=>loadSchedMonth(m));
+}
+function schShift(dir){
+  const v=S.schedView;
+  S.schedDay=schAdd(schAnchor(), v==='week'?7*dir:dir);
+  render(); schEnsure();
+}
+function schOpenDay(d){ S.schedDay=d; S.schedView='day'; render(); schEnsure(); }
+function schNav(label){
+  return `<div class="row between" style="margin-bottom:8px">
+    <button class="secondary" style="padding:8px 16px;width:auto" onclick="schShift(-1)" aria-label="Back">‹</button>
+    <b style="color:var(--navy)">${esc(label)}</b>
+    <button class="secondary" style="padding:8px 16px;width:auto" onclick="schShift(1)" aria-label="Forward">›</button>
+  </div>`;
+}
+function schLegend(data){
+  const sw=t=>`<span class="sw" style="background:${t.bg};border-color:${t.bd}"></span>`;
+  return `<p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
+    ?'Tap a job for its details · press and hold to drag it to another day or time'
+    :'Tap a job for the address, the details and who\'s with you'}<br>
+    ${sw(SCH_TONE.confirmed)}confirmed &nbsp; ${sw(SCH_TONE.waiting)}not confirmed yet &nbsp; ${sw(SCH_TONE.declined)}needs a new time</p>`;
+}
+function schGrid(days, o){
+  const hh=o.hh, canDrag=!!o.canDrag;
+  const per=days.map(d=>schDayEvents(d)||[]);
+  let h0=7, h1=17;
+  per.forEach(l=>l.forEach(ev=>{ if(ev.allDay) return; h0=Math.min(h0,Math.floor(schHours(ev))); h1=Math.max(h1,Math.ceil(schHours(ev)+schDur(ev))); }));
+  h0=Math.max(0,h0); h1=Math.min(24,Math.max(h1,h0+1));
+  const tstr=localDateStr(new Date()), hol={};
+  days.forEach(d=>{ const data=schData(d); ((data&&data.holidays)||[]).forEach(h=>{ if(h.date===d) hol[d]=h.name; }); });
+  let html='<div class="tgh"></div>'+days.map(d=>{ const dt=schDate(d);
+    return `<button class="tgh${d===tstr?' today':''}" onclick="schOpenDay('${d}')"><b>${dt.toLocaleDateString([],{weekday:'short'})}</b> <span>${dt.toLocaleDateString([],{month:'short',day:'numeric'})}</span>${hol[d]?`<span class="hl">${esc(hol[d])}</span>`:''}</button>`; }).join('');
+  if(per.some(l=>l.some(e=>e.allDay))){
+    html+='<div class="tga lbl">All day</div>'+per.map(l=>`<div class="tga">${l.filter(e=>e.allDay).map(ev=>{ const k=reg(ev), t=schTone(ev);
+      return `<div class="adc" style="background:${t.bg};border-color:${t.bd};color:${t.ink}" onclick="openSchedDetail('${k}')">${esc(schedName(ev))}</div>`; }).join('')}</div>`).join('');
+  }
+  html+='<div class="tgt">';
+  for(let h=h0;h<h1;h++) html+=`<div style="height:${hh}px">${(h%12||12)+(h<12?' am':' pm')}</div>`;
+  html+='</div>';
+  html+=days.map((d,i)=>{
+    let cells='';
+    for(let k=0;k<(h1-h0)*2;k++){ const t=h0+k/2; cells+=`<div class="tgc${k%2?' half':''}" data-drop="1" data-day="${d}" data-t="${t}" style="height:${hh/2}px"></div>`; }
+    const evs=per[i].filter(e=>!e.allDay), lanes=schLanes(evs);
+    const blocks=evs.map(ev=>{
+      const k=reg(ev), t=schTone(ev), L=lanes[ev.id]||{lane:0,count:1}, w=100/L.count;
+      const s=schHours(ev), dur=schDur(ev);
+      const scope=String(ev.title||'').split(/\s+[—–-]\s+/).slice(1).join(' – ');
+      return `<div class="blk${(ev.assigned||[]).length?'':' un'}" data-ek="${k}" style="top:${(s-h0)*hh+1}px;height:${Math.max(hh/2,dur*hh)-3}px;left:calc(${L.lane*w}% + 2px);width:calc(${w}% - 4px);background:${t.bg};border-color:${t.bd};color:${t.ink}"
+        onpointerdown="schedGrab(event,'${k}','${d}')" onclick="event.stopPropagation()">
+        <div class="bt"><b>${esc(schedName(ev))}</b>${L.count>1?`<span class="bn" aria-label="job ${L.lane+1} of ${L.count} at this time">${L.lane+1}</span>`:''}</div>
+        <div class="bs">${esc(fmtTime(ev.start))} – ${esc(fmtTime(ev.end))}</div>
+        ${o.wide&&scope?`<div class="bs">${esc(scope)}</div>`:''}
+        ${(ev.assigned||[]).length?`<div class="bc">${o.wide?`<span class="bs">${ev.assigned.map(a=>esc(a.name)).join(', ')}</span>`:schCrew(ev)}</div>`:''}
+      </div>`; }).join('');
+    return `<div class="tgd">${cells}${blocks}</div>`;
+  }).join('');
+  return `<div class="tgwrap"><div class="tg" style="grid-template-columns:48px repeat(${days.length},minmax(${o.minCol}px,1fr))">${html}</div></div>`;
+}
+function schWeekHtml(){
+  const mon=schMonday(schAnchor());
+  const days=[0,1,2,3,4].map(i=>schAdd(mon,i));
+  [5,6].forEach(i=>{ const d=schAdd(mon,i), l=schDayEvents(d); if(l&&l.length) days.push(d); });
+  const data=schData(days[0])||schData(days[days.length-1]);
+  const loaded=days.every(d=>schData(d));
+  const fmt=(d,y)=>schDate(d).toLocaleDateString([],y?{month:'short',day:'numeric',year:'numeric'}:{month:'short',day:'numeric'});
+  return `<div class="card">${schNav(fmt(days[0])+' – '+fmt(days[days.length-1],1))}
+    ${loaded?schGrid(days,{hh:48,minCol:104,canDrag:data&&data.canAssign})
+      :'<p class="center small muted" style="margin:24px 0"><span class="spin"></span> Loading the week…</p>'}
+    ${schLegend(data)}</div>`;
+}
+function schDayHtml(){
+  const a=schAnchor(), mon=schMonday(a);
+  const strip=[0,1,2,3,4,5,6].map(i=>schAdd(mon,i)).filter((d,i)=>i<5||d===a||(schDayEvents(d)||[]).length);
+  const data=schData(a);
+  const label=schDate(a).toLocaleDateString([],{weekday:'long',month:'short',day:'numeric',year:'numeric'});
+  return `<div class="card">${schNav(label)}
+    <div class="sdstrip" style="grid-template-columns:repeat(${strip.length},minmax(0,1fr))">${strip.map(d=>{ const dt=schDate(d);
+      return `<button class="sds${d===a?' on':''}" data-drop="1" data-day="${d}" onclick="schOpenDay('${d}')">
+        <span>${dt.toLocaleDateString([],{weekday:'short'})}</span><b>${dt.getDate()}</b></button>`; }).join('')}</div>
+    ${data?schGrid([a],{hh:60,minCol:200,wide:true,canDrag:data.canAssign})
+      :'<p class="center small muted" style="margin:24px 0"><span class="spin"></span> Loading the day…</p>'}
+    ${schLegend(data)}</div>`;
+}
+/* Patch one booking everywhere the phone holds it, carrying it to another month's list when the
+   move crosses a month. */
+function schApply(id, patch){
+  const all=S.schedMonths||{}; let obj=null;
+  Object.keys(all).forEach(m=>{ const d=all[m]; if(!d||!d.events) return;
+    const i=d.events.findIndex(e=>String(e.id)===String(id)); if(i<0) return;
+    const e=d.events[i]; Object.assign(e,patch); if(!obj) obj=e;
+    if(patch.start && localDateStr(new Date(e.start)).slice(0,7)!==m) d.events.splice(i,1);
+    try{ DB.setCache('sched_'+m,d); }catch(err){} });
+  if(obj && patch.start){ const nm=localDateStr(new Date(obj.start)).slice(0,7), nd=all[nm];
+    if(nd && !nd.events.some(e=>String(e.id)===String(id))){ nd.events.push(obj); try{ DB.setCache('sched_'+nm,nd); }catch(err){} } }
+  ((S.sched&&S.sched.events)||[]).forEach(e=>{ if(String(e.id)===String(id)) Object.assign(e,patch); });
+}
+/* The bar after a move: says what happened, with Undo for a few seconds. */
+function schUndoToast(msg, fn){
+  const t=document.getElementById('toast'); S._undoFn=fn;
+  t.innerHTML=`<div class="toast" style="display:flex;align-items:center;gap:12px;width:min(92vw,520px);box-sizing:border-box;text-align:left"><span style="flex:1">${esc(msg)}</span><button class="secondary" style="padding:8px 14px;width:auto;flex:none" onclick="schUndoNow()">Undo</button></div>`;
+  clearTimeout(toastT); toastT=setTimeout(()=>{ t.innerHTML=''; S._undoFn=null; }, 7000);
+}
+function schUndoNow(){ const f=S._undoFn; S._undoFn=null; clearTimeout(toastT); document.getElementById('toast').innerHTML=''; if(f) f(); }
+function schWhen(iso){ const d=new Date(iso); return d.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+' '+fmtTime(iso); }
+async function schMoveTo(key, day, t){
+  const ev=dereg(key); if(!ev) return;
+  if(ev.allDay) return toast('An all-day booking can\'t be dragged to a time. Tap it to change it.');
+  if(!S.online) return toast('You need signal to move a booking.');
+  const old=new Date(ev.start), dur=new Date(ev.end)-old, p=day.split('-');
+  let h=old.getHours(), mi=old.getMinutes();
+  if(t!==null && t!==undefined && t!==''){ h=Math.floor(Number(t)); mi=(Number(t)%1)?30:0; }
+  const ns=new Date(Number(p[0]),Number(p[1])-1,Number(p[2]),h,mi);
+  if(ns.getTime()===old.getTime()) return;
+  const id=ev.id, name=schedName(ev);
+  const prev={start:ev.start, end:ev.end, confirm:ev.confirm||'waiting'};
+  schApply(id,{start:ns.toISOString(), end:new Date(ns.getTime()+dur).toISOString(), confirm:'waiting'});
+  render();
+  try{
+    const r=await api('scheduleMove',{eventId:id, start:ns.toISOString()},{timeout:90000});
+    schApply(id,{start:r.start, end:r.end, confirm:r.confirm||'waiting'}); render();
+    schUndoToast(`${name.split(' · ')[0]} moved to ${schWhen(r.start)} · not confirmed yet`, ()=>schUndoMove(id, prev, name));
+    if(S.online) loadSched();
+  }catch(e){
+    schApply(id,prev); render();
+    toast(/unknown action/i.test(e.message)?'The office needs the latest script (v92) before jobs can be dragged.':e.message, 8000);
+  }
+}
+async function schUndoMove(id, prev, name){
+  schApply(id,prev); render();
+  try{ await api('scheduleMove',{eventId:id, start:prev.start, confirm:prev.confirm},{timeout:90000});
+       toast(`${name} is back at ${schWhen(prev.start)}.`); if(S.online) loadSched(); }
+  catch(e){ toast('Could not put it back: '+e.message, 8000); schRefreshQuiet(); }
+}
+function schRefreshQuiet(){ S.schedMonths={}; schEnsure(); }
+async function schSetConfirm(k, state, btn){
+  const ev=dereg(k); if(!ev) return;
+  if(!S.online) return toast('You need signal.');
+  if(btn){ btn.disabled=true; }
+  try{
+    await api('scheduleConfirm',{eventId:ev.id, state},{timeout:60000});
+    schApply(ev.id,{confirm:state}); ev.confirm=state;
+    closeSheet(); render();
+    toast(schedName(ev)+': '+SCH_TONE[state].label.toLowerCase()+'.');
+  }catch(e){ toast(/unknown action/i.test(e.message)?'The office needs the latest script (v92) for this.':e.message, 8000); if(btn) btn.disabled=false; }
+}
+function schStatusHtml(k, ev){
+  const t=schTone(ev), c=ev.confirm||'waiting';
+  return `<div style="margin:10px 0 4px">
+    <span class="pill" style="background:${t.bg};border:1px solid ${t.bd};color:${t.ink};font-weight:700">${esc(t.label)}</span></div>
+    ${c!=='confirmed'?`<button style="width:100%;margin-top:6px;background:var(--ok)" onclick="schSetConfirm('${k}','confirmed',this)">✓ Customer confirmed</button>`:''}
+    <div class="row" style="margin-top:6px">
+      ${c!=='declined'?`<button class="secondary grow" onclick="schSetConfirm('${k}','declined',this)">Needs a new time</button>`:''}
+      ${c!=='waiting'?`<button class="secondary grow" onclick="schSetConfirm('${k}','waiting',this)">Not confirmed yet</button>`:''}
+    </div>`;
 }
 /* ---- Month view: Google-Calendar-style grid; tap a day for that day's jobs ---- */
 function curSchedMonth(){ return S.schedMonth || curMonthStr(); }
-async function loadSchedMonth(){
-  const month=curSchedMonth();
-  if (S._smLoading===month) return;
+async function loadSchedMonth(mArg){
+  const month=mArg||curSchedMonth();
+  S._smBusy=S._smBusy||{};
+  if (S._smBusy[month]) return;
   S.schedMonths=S.schedMonths||{};
   if (!S.schedMonths[month]){
     const c=await DB.getCache('sched_'+month);
     if(c){ S.schedMonths[month]=c; if(S.tab==='sched') render(); } // paint instantly
   }
   if (!S.online) return;
-  S._smLoading=month; if(S.tab==='sched') render();
+  S._smLoading=month; S._smBusy[month]=true; if(S.tab==='sched') render();
   try{
     const p=month.split('-');
     const start=`${p[0]}-${p[1]}-01`;
@@ -3106,7 +3351,7 @@ async function loadSchedMonth(){
     const r=await apiBg('scheduleList',{startDate:start,endDate:end});
     if(r&&Array.isArray(r.events)){ S.schedMonths[month]=r; DB.setCache('sched_'+month,r); }
   }catch(e){ if(!S.schedMonths[month]) toast(e.message); }
-  S._smLoading=null; if(S.tab==='sched') render();
+  S._smBusy[month]=false; S._smLoading=null; if(S.tab==='sched') render();
 }
 /* A chip: the time on its own line, the customer under it over two lines at most. The scope
    after the dash is dropped - it is the part that never fits and the part a tap shows anyway. */
@@ -3138,7 +3383,7 @@ function schedGrab(e, key, day){
   if(e.button && e.button!==0) return;
   const el=e.currentTarget;
   SD_={ key, day, el, x0:e.clientX, y0:e.clientY, id:e.pointerId, on:false, over:'',
-        timer:setTimeout(()=>schedLift(), 320) };
+        timer:canApprove()?setTimeout(()=>schedLift(), 320):null };   // v101: crew taps, never drags
   try{ el.setPointerCapture(e.pointerId); }catch(err){}
   el.onpointermove=schedMoveP; el.onpointerup=schedDrop; el.onpointercancel=schedAbort;
 }
@@ -3147,7 +3392,8 @@ function schedLift(){
   SD_.on=true;
   SD_.el.classList.add('ghosted');
   const g=document.createElement('div');
-  g.className='evdrag'; g.textContent=SD_.el.textContent;
+  const gev=dereg(SD_.key); SD_.name=gev?schedName(gev):SD_.el.textContent;
+  g.className='evdrag'; g.textContent=SD_.name;
   g.style.left=SD_.x0+'px'; g.style.top=SD_.y0+'px';
   document.body.appendChild(g); SD_.ghost=g;
   try{ if(navigator.vibrate) navigator.vibrate(12); }catch(e){}
@@ -3161,21 +3407,26 @@ function schedMoveP(e){
   e.preventDefault();
   SD_.ghost.style.left=e.clientX+'px'; SD_.ghost.style.top=e.clientY+'px';
   const el=document.elementFromPoint(e.clientX, e.clientY);
-  const cell=el&&el.closest?el.closest('.day[data-day]'):null;
+  // v101 - any [data-drop] is a target: a month day (keeps the time), a half hour in the week
+  // or day grid (that day, that time), or a day button above the day view (keeps the time).
+  const cell=el&&el.closest?el.closest('[data-drop]'):null;
   const day=cell?cell.getAttribute('data-day'):'';
-  if(day!==SD_.over){
-    document.querySelectorAll('.cal .day.drop').forEach(d=>d.classList.remove('drop'));
-    if(day && day!==SD_.day && cell) cell.classList.add('drop');
-    SD_.over=day;
+  const t=cell?(cell.getAttribute('data-t')||''):'';
+  const key=day?(day+'|'+t):'';
+  if(key!==SD_.over){
+    document.querySelectorAll('[data-drop].drop').forEach(d=>d.classList.remove('drop'));
+    if(cell && day) cell.classList.add('drop');
+    SD_.over=key; SD_.overDay=day; SD_.overT=t;
+    if(SD_.ghost) SD_.ghost.textContent=SD_.name+(day?(' → '+schDate(day).toLocaleDateString([],{weekday:'short',day:'numeric'})+(t!==''?(' '+fmtTime(new Date(2000,0,1,Math.floor(t),(t%1)?30:0).toISOString())):'')):'');
   }
 }
 function schedDrop(e){
   if(!SD_) return;
-  const was=SD_, dropped=was.on?was.over:'';
+  const was=SD_, dropped=was.on?was.overDay:'';
   schedClear();
   if(!was.on){ const ev=dereg(was.key); if(ev) openSchedDetail(was.key); return; }   // a tap
-  if(!dropped || dropped===was.day) return;                                          // put back
-  schedDropMove(was.key, dropped);
+  if(!dropped) return;                                                               // put back
+  schMoveTo(was.key, dropped, was.overT===''?null:Number(was.overT));                // v101: moves at once, no sheet
 }
 function schedAbort(){ schedClear(); }
 function schedClear(){
@@ -3187,7 +3438,7 @@ function schedClear(){
   // Take the ghost off the screen whatever happens: a floating label left behind after a drag
   // sits over everything and nothing else would ever remove it.
   if(SD_.ghost){ try{ SD_.ghost.remove(); }catch(e){ try{ document.body.removeChild(SD_.ghost); }catch(e2){} } }
-  document.querySelectorAll('.cal .day.drop').forEach(d=>d.classList.remove('drop'));
+  document.querySelectorAll('[data-drop].drop').forEach(d=>d.classList.remove('drop'));
   SD_=null;
 }
 /* Dropped on a day: the same Move sheet as everywhere else, opened on that day. The booking's
@@ -3247,13 +3498,14 @@ function schedMonthHtml(){
   for(let dn=1;dn<=dim;dn++){
     const k=`${y}-${String(m).padStart(2,'0')}-${String(dn).padStart(2,'0')}`;
     const evs=(evByDay[k]||[]).slice().sort((a,b)=>new Date(a.start)-new Date(b.start));
+    const lanes=schLanes(evs);
     const show=evs.slice(0,2).map(ev=>{
-      const rk=reg(ev), un=data&&data.canAssign&&!ev.assigned.length;
-      return `<div class="ev${un?' un':''}" data-ek="${rk}" data-day="${k}"
+      const rk=reg(ev), un=data&&data.canAssign&&!ev.assigned.length, tn=schTone(ev), L=lanes[ev.id];
+      return `<div class="ev${un?' un':''}" data-ek="${rk}" data-day="${k}" style="background:${tn.bg};color:${tn.ink};border:1px solid ${tn.bd}"
         onpointerdown="schedGrab(event,'${rk}','${k}')" onclick="event.stopPropagation()"
-        >${schedChip(ev)}</div>`;
+        >${L&&L.count>1?`<span class="bn">${L.lane+1}</span>`:''}${schedChip(ev)}</div>`;
     }).join('');
-    cells+=`<div class="day${k===tstr?' today':''}${holByDay[k]?' hol':''}" data-day="${k}" onclick="openSchedDay('${k}')">
+    cells+=`<div class="day${k===tstr?' today':''}${holByDay[k]?' hol':''}" data-drop="1" data-day="${k}" onclick="openSchedDay('${k}')">
       <span class="dn">${offByDay[k]?'🏖 ':''}${dn}</span>
       <div class="evs">${show}${evs.length>2?`<div class="more">+${evs.length-2}</div>`:''}</div></div>`;
   }
@@ -3266,7 +3518,7 @@ function schedMonthHtml(){
     </div>
     <div class="cal">${cells}</div>
     <p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
-      ? 'Tap a job to open it, or <b>press and hold to drag it onto another day</b> · orange = nobody assigned · 🏖 = someone off · yellow = stat holiday'
+      ? 'Tap a job to open it, or <b>press and hold to drag it onto another day</b> · green = confirmed · amber = not confirmed yet · red = needs a new time · dashed = nobody assigned · 🏖 = someone off'
       : 'Your jobs this month · 🏖 = your time off · yellow = stat holiday · tap a day to see where you\'re heading'}</p>
   </div>`;
 }
@@ -3371,7 +3623,7 @@ function schedBookedIndex(requestId){
 }
 async function openSchedDetail(k){
   const ev=dereg(k); if(!ev) return;
-  const d=S.sched||{};
+  const d=(S.sched&&S.sched.canAssign!==undefined)?S.sched:(schData(localDateStr(new Date(ev.start)))||S.sched||{});
   if(d.canAssign && !(S.employees&&S.employees.length) && S.online){
     try{ const r=await api('listEmployees'); S.employees=r.employees||[]; }catch(e){}
   }
@@ -3390,6 +3642,7 @@ async function openSchedDetail(k){
   const shell=(mid)=>`<h2>${esc(ev.title)}</h2>
     <p class="small muted" style="margin-top:-4px">${esc(when)}</p>
     ${ev.location?`<p class="small">📍 <a href="https://maps.google.com/?q=${encodeURIComponent(ev.location)}" target="_blank" style="color:var(--accent2)">${esc(ev.location)}</a></p>`:''}
+    ${(d.canAssign&&!ev.allDay)?schStatusHtml(k, ev):''}
     ${mid}
     ${ev.desc?`<details style="margin:10px 0"><summary class="small" style="color:var(--accent2);cursor:pointer">📋 Calendar notes</summary>
        <div class="card" style="margin:6px 0 0"><div class="small" style="white-space:pre-wrap">${schedLinkify(ev.desc)}</div></div></details>`:''}
@@ -3420,6 +3673,7 @@ async function openSchedDetail(k){
     ${info.phone?`<p class="small" style="margin:2px 0">📞 <a href="tel:${esc(String(info.phone).replace(/[^0-9+]/g,''))}" style="color:var(--accent2)">${esc(info.phone)}</a></p>`:''}
     ${info.email?`<p class="small" style="margin:2px 0">✉️ <a href="mailto:${esc(info.email)}" style="color:var(--accent2)">${esc(info.email)}</a></p>`:''}
     ${info.scope?`<div class="banner" style="background:var(--panel2);margin-top:8px">${esc(info.scope)}</div>`:''}
+    ${(info.isJob&&info.email)?`<button class="secondary" style="width:100%;margin-top:8px" onclick="tellCustomer('${reg({eventId:ev.id, customer:info.customer, phone:info.phone, email:info.email})}','email',this)">📧 Email them the time</button>`:''}
     ${info.detail?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openSchedEnquiry('${key}')">📨 Original inquiry</button>`:''}
     ${info.kind==='visit'?`<p class="small muted" style="margin:8px 0 0">This is a <b>return visit</b> — it continues ${info.po?esc(info.po):'an earlier job'}, so the details above are the original job's.</p>`:''}
     ${info.isJob
