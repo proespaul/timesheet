@@ -1407,7 +1407,7 @@ async function queueCount_(){
  * bar on every tab: blue while things wait, red when something has waited a day or the office
  * refused it, grey "No signal" when there is nothing waiting, a green "All sent" for a moment when
  * the last one goes. Tap it for the list and Send now. */
-const ACT_NAME_={followUp:'follow-up log', estimateMark:'price answer', requestDismiss:'close-out', deleteEntry:'entry delete', clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start',
+const ACT_NAME_={requestRenotify:'customer email', followUp:'follow-up log', estimateMark:'price answer', requestDismiss:'close-out', deleteEntry:'entry delete', clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start',
   endBreak:'break end', fixForgotClockout:'forgotten clock-out fix', editEntry:'entry change',
   addManualEntry:'time added by hand', takeMaterial:'parts taken', logMaterials:'parts used',
   approveEntry:'hours approved', rejectEntry:'hours rejected', timeOffDecide:'time-off decision',
@@ -2644,7 +2644,7 @@ function fuWhen_(iso){ return iso?`${tdShort(iso)} ${fmtTime(iso)}`:''; }
 function fuSub_(i){
   const tried = i.tries ? ` · followed up ${i.tries}×${i.last&&i.last.how?' ('+(FU_HOW[i.last.how]||i.last.how)+(i.last.at?' '+tdShort(i.last.at):'')+')':''}` : '';
   const s = i.sub==='quote'    ? `Sent ${i.detail||'a price'} ${fuAgo_(i.days)}`
-          : i.sub==='confirm'  ? `Booked ${fuWhen_(i.start)} · asked ${fuAgo_(i.days)}`
+          : i.sub==='confirm'  ? (i.detail==='not told' ? `Moved to ${fuWhen_(i.start)} ${fuAgo_(i.days)} · they haven't been told` : `Booked ${fuWhen_(i.start)} · asked ${fuAgo_(i.days)}`)
           : i.sub==='newtime'  ? (i.detail ? `Moved off ${i.detail.replace(/^moved off /,'')} · ring to rebook` : `Said ${i.start?fuWhen_(i.start):'the time'} doesn't work`)
           : i.sub==='cancelled'? `Cancelled ${i.start?fuWhen_(i.start):''} from the email · still on the calendar`
           : i.sub==='book'     ? `${i.detail?i.detail.replace(/^said yes/,'Said yes')+' · ':''}waiting ${i.days} days`
@@ -2672,7 +2672,7 @@ function fuText_(i){
   const when=i.start?`${new Date(i.start).toLocaleDateString([], {weekday:'long', month:'short', day:'numeric'})} at ${fmtTime(i.start)}`:'';
   const hi=`Hi ${fn}, it's ${me} from PRO Electrical.`;
   return i.sub==='quote'    ? `${hi} Just checking you got the price I sent${sc?' for '+sc:''}. Happy to answer any questions, or get you booked in.`
-       : i.sub==='confirm'  ? `${hi} Just confirming we're booked for ${when||'your appointment'}. Does that still work for you?`
+       : i.sub==='confirm'  ? (i.detail==='not told' ? `${hi} We've had to move your appointment to ${when||'a new time'}. Does that work for you? If not, let me know what days are better.` : `${hi} Just confirming we're booked for ${when||'your appointment'}. Does that still work for you?`)
        : i.sub==='newtime'  ? `${hi} You mentioned the time we had doesn't work. What days are better for you?`
        : i.sub==='cancelled'? `${hi} I saw you cancelled ${when||'your booking'}. No problem. Would you like to pick another time, or leave it for now?`
        : i.sub==='book'     ? `${hi} Following up${sc?' on '+sc:''}. What days work best to get it booked in?`
@@ -2688,7 +2688,7 @@ function openFollow(k){
   const btn=(on,href,ic,l,how)=>on?`<a class="fubtn grow" href="${href}" onclick="fuPick('${how}')">${ic} ${l}</a>`
     :`<button class="secondary grow" disabled title="Not on file">${ic} ${l}</button>`;
   const acts = i.sub==='quote' ? `<button class="grow" onclick="fuQuote('yes')">They said yes</button><button class="secondary grow" onclick="fuQuote('no')">They said no</button>`
-    : i.sub==='confirm' ? `<button class="grow" onclick="fuConfirmed()">✓ Customer confirmed</button><button class="secondary grow" onclick="closeSheetDom();go('sched')">Open the schedule</button>`
+    : i.sub==='confirm' ? `<button class="grow" onclick="fuConfirmed()">✓ Customer confirmed</button>${i.detail==='not told'?`<button class="secondary grow" onclick="fuEmailTime()">✉️ Email them the new time</button>`:`<button class="secondary grow" onclick="closeSheetDom();go('sched')">Open the schedule</button>`}`
     : (i.sub==='newtime'||i.sub==='cancelled') ? `<button class="grow" onclick="closeSheetDom();go('requests')">Rebook or cancel on Requests</button>`
     : i.sub==='book' ? `<button class="grow" onclick="closeSheetDom();go('requests')">Book it</button><button class="secondary grow" onclick="fuDismiss()">Didn't go ahead</button>`
     : `<button class="grow" onclick="closeSheetDom();go('est')">Send the price</button><button class="secondary grow" onclick="fuDismiss()">Didn't go ahead</button>`;
@@ -2746,6 +2746,16 @@ function fuConfirmed(){
   try{ schApply(i.eventId,{confirm:'confirmed'}); }catch(e){}
   toast(`${i.name}: confirmed.`);
   officeDo_('scheduleConfirm',{eventId:i.eventId, state:'confirmed'}, fuBack_(snap));
+}
+/* v111 - a dragged job nobody was emailed about: send the Changed-time email with fresh Yes /
+ * Reschedule / Cancel links. The office sends it; the customer is then 'asked', and the card
+ * shows them as waiting until they answer or FU_CONFIRM_DAYS pass again. */
+function fuEmailTime(){
+  const st=fuState; if(!st) return; const i=st.i;
+  if(!confirm('Email '+i.name+' the new time with Yes / Reschedule / Cancel buttons?')) return;
+  const snap=fuDrop_(i); fuState=null; closeSheet(); render();
+  toast('Emailing '+i.name+' the new time…');
+  officeDo_('requestRenotify',{id:i.id, mode:'moved'}, fuBack_(snap), (r)=>{ toast(r&&/emailed/i.test(r.note||'')?'Customer emailed ✓':(r&&r.note)||'Sent', 4000); });
 }
 function fuDismiss(){
   const st=fuState; if(!st) return; const i=st.i;
