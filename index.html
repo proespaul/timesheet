@@ -130,6 +130,13 @@
   .apphead .hello-sub{font-size:.78rem; color:rgba(255,255,255,.75); margin-top:1px}
   .apphead .hello-sub .cap{text-transform:capitalize}
   .apphead .ghost{color:#cfe3ff; padding:8px 0 8px 12px; font-weight:600}
+  .sendb{display:inline-flex; align-items:center; gap:4px; width:auto; padding:7px 11px; border-radius:999px; font-size:.78rem;
+    font-weight:700; white-space:nowrap; border:0; line-height:1.1}
+  .sendb.wait{background:#dbeafe; color:#0C447C}
+  .sendb.bad{background:#fee2e2; color:#991b1b}
+  .sendb.off{background:rgba(255,255,255,.18); color:#fff}
+  .sendb.ok{background:#dcfce7; color:#14532d}
+  @media (max-width:420px){ .sendb .sbx{display:none} .apphead .avatar.hide-narrow{display:none} }
   .apphead .avatar{border:2px solid rgba(255,255,255,.45)}
   .pulseline{height:3px; max-width:220px; margin:10px auto 14px; border-radius:2px;
     background:linear-gradient(90deg,#aeb6c2,var(--pulse) 48%,var(--pulse) 62%,#2a2e35)}
@@ -1358,6 +1365,39 @@ async function queueCount_(){
     // there when the card is dismissed.
     if (n!==(S.queued||0) || refused!==(S.refused||0) || stuck!==(S.stuck||0)){ S.queued=n; S.refused=refused; S.stuck=stuck; if(S.booted && S.session) render(); }
   }catch(e){}
+  sendCount_();
+}
+/* v106 - WAITING TO SEND (Paul's app list, #1: "works with no signal - taps saved on the phone
+ * first, a waiting-to-send badge"). The saving was already there: every punch, edit, hand-added
+ * time and parts claim is written to the phone before the network is tried, and receipt and
+ * invoice photos wait on the phone too. What was missing is being able to SEE it - only punches
+ * were counted, and only on the Clock tab. One number now covers all of it and sits in the top
+ * bar on every tab: blue while things wait, red when something has waited a day or the office
+ * refused it, grey "No signal" when there is nothing waiting, a green "All sent" for a moment when
+ * the last one goes. Tap it for the list and Send now. */
+const ACT_NAME_={clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start',
+  endBreak:'break end', fixForgotClockout:'forgotten clock-out fix', editEntry:'entry change',
+  addManualEntry:'time added by hand', takeMaterial:'parts taken', logMaterials:'parts used'};
+async function sendCount_(){
+  try{
+    const items=await DB.all();
+    const rc=((await DB.getCache('pendingReceipts'))||[]).length;
+    const total=items.length + rc + (S.scanBusy||0);
+    const prev=S.waitN||0;
+    if(total!==prev){
+      S.waitN=total;
+      if(prev>0 && total===0){ S.allSentAt=Date.now(); setTimeout(()=>{ if(S.booted && S.session) render(); }, 3200); }
+      if(S.booted && S.session) render();
+    }
+  }catch(e){}
+}
+function sendBadge(){
+  const n=S.waitN||0, bad=(S.refused||0)+(S.stuck||0);
+  if(bad) return `<button class="sendb bad" onclick="openSyncStatus()">⚠ ${n?n+' waiting':'Needs a look'}</button>`;
+  if(n) return `<button class="sendb wait" onclick="openSyncStatus()" aria-label="${n} waiting to send">${S.online?'⏳':'📵'} ${n} waiting<span class="sbx"> to send</span></button>`;
+  if(!S.online) return `<button class="sendb off" onclick="openSyncStatus()">📵 No signal</button>`;
+  if(S.allSentAt && Date.now()-S.allSentAt<3000) return `<span class="sendb ok">✓ All sent</span>`;
+  return '';
 }
 async function syncLogAdd_(entry){ try{ const l=((await DB.getCache('syncLog'))||[]).slice(-9); l.push(entry); await DB.setCache('syncLog', l); }catch(e){} queueCount_(); }
 /* v38 — the hourglass no longer sits on top of work that is already done.
@@ -1473,7 +1513,7 @@ async function requeue_(it, patch){
 }
 function describePunch_(it){
   const p=it.payload||{}; const when=p.at||new Date(it.ts).toISOString();
-  const what={clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start', endBreak:'break end', fixForgotClockout:'forgotten clock-out fix'}[it.action]||it.action;
+  const what=ACT_NAME_[it.action]||it.action;
   return what+' '+fmtDay(when)+' '+fmtTime(when)+(p.jobSite?' — '+p.jobSite:'');
 }
 async function flushQueue(){
@@ -1982,18 +2022,19 @@ function topBar(){
       ${isOffice()?`<div class="brand"><span class="bolt">${BOLT_SVG}</span><span class="nm">PRO Electrical</span></div>`:''}
       <div>
       <div class="hello">Hello, ${esc(first)}! 👋</div>
-      <div class="hello-sub">${(m.role==='admin'||m.role==='bookkeeper')?`<span class="cap">${esc(m.role)}</span> · `:''}${new Date().toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'})}</div>
+      <div class="hello-sub">${(m.role==='admin'||m.role==='bookkeeper')?`<span class="cap">${esc(m.role)}</span> · `:''}${new Date().toLocaleDateString([],(S.waitN||!S.online||S.refused||S.stuck)?{weekday:'short',month:'short',day:'numeric'}:{weekday:'long',month:'long',day:'numeric'})}</div>
       </div>
     </div>
-    <div class="row">
-      <img class="avatar" src="${esc(m.picture||'')}" onerror="this.style.display='none'">
+    <div class="row" style="gap:8px;flex:none">
+      ${sendBadge()}
+      <img class="avatar${(S.waitN||!S.online||S.refused||S.stuck)?' hide-narrow':''}" src="${esc(m.picture||'')}" onerror="this.style.display='none'">
       <button class="ghost" onclick="signOut()">Sign out</button>
     </div>
   </div>`;
 }
 function offlineBanner(){
   let h='';
-  if (!S.online) h += `<div class="banner offline">Offline — entries are saved on your phone and will sync automatically.</div>`;
+  if (!S.online) h += `<div class="banner offline">📵 No signal - keep working. What you tap is saved on this phone and sends by itself when you are back online.</div>`;
   return h;
 }
 
@@ -6576,7 +6617,7 @@ async function rcScan(input){
         const q=(await DB.getCache('pendingReceipts'))||[];
         q.push({dataBase64:p.dataBase64, mimeType:p.mimeType, jobSite:p.jobSite||'', poNumber:p.poNumber||'',
           vendor:r.vendor||'', date:r.date||'', total:r.total||0, at:Date.now()});
-        await DB.setCache('pendingReceipts', q.slice(-5)); // keep the last 5 — ~2MB ceiling
+        await DB.setCache('pendingReceipts', q.slice(-5)); sendCount_(); // keep the last 5 — ~2MB ceiling
       }catch(e){}
     }
     rcRender();
@@ -7122,6 +7163,7 @@ function docQueueCount(q){
   const n=(q||[]).filter(x=>x.needsConfirm).length;
   const b=(q||[]).filter(x=>!x.needsConfirm).length;        // v86 - photos still to be read
   if(n!==(S.scanWaiting||0) || b!==(S.scanBusy||0)){ S.scanWaiting=n; S.scanBusy=b; render(); }
+  sendCount_();
 }
 /* v42 — punches that have not reached the office yet, and punches the office refused, live on
    the home screen until they are sent or seen. A 3-second toast was how a lost clock-out went
@@ -7130,24 +7172,35 @@ function syncBanner(){
   let h='';
   if (S.refused) h += `<div class="banner ot" style="cursor:pointer;background:#fee2e2;border-color:#fca5a5;color:#991b1b" onclick="openSyncStatus()">⚠ <b>${S.refused} punch${S.refused>1?'es were':' was'} refused by the office</b> — tap to see why.</div>`;
   if (S.stuck) h += `<div class="banner ot" style="cursor:pointer;background:#fee2e2;border-color:#fca5a5;color:#991b1b" onclick="openSyncStatus()">⚠ <b>${S.stuck} punch${S.stuck>1?'es have':' has'} been waiting more than a day</b> — the office does NOT have ${S.stuck>1?'them':'it'}. Get signal and tap to send now.</div>`;
-  else if (S.queued) h += `<div class="banner ot" style="cursor:pointer" onclick="openSyncStatus()">📶 <b>${S.queued} punch${S.queued>1?'es':''} waiting to send</b> — will go by itself when there is signal. Tap to send now.</div>`;
+  // v106 - an ordinary wait is the blue badge in the top bar now; the red banners stay for the two
+  // things that really need a person: refused by the office, or waiting more than a day.
   return h;
 }
 async function openSyncStatus(){
-  const items=(await DB.all()).filter(it=>PUNCH.test(it.action)).sort((a,b)=>a.ts-b.ts);
+  const items=(await DB.all()).sort((a,b)=>a.ts-b.ts);
   const refused=(await DB.getCache('syncLog'))||[];
-  sheet(`<h2>Punches not at the office yet</h2>
+  const rc=((await DB.getCache('pendingReceipts'))||[]).length, sc=(S.scanBusy||0);
+  sheet(`<h2>Waiting to send</h2>
+    <p class="small muted" style="margin-top:-4px">${S.online?'Everything here is saved on this phone and sends by itself.':'📵 No signal. Everything here is saved on this phone and sends by itself when you are back online - you can close the app.'}</p>
+    ${(rc||sc)?`<div class="list-item"><b>${[rc?rc+' receipt photo'+(rc>1?'s':''):'', sc?sc+' invoice photo'+(sc>1?'s':'')+' being read':''].filter(Boolean).join(' · ')}</b><div class="small muted">sends with the rest</div></div>`:''}
     ${items.length?items.map(it=>`<div class="list-item"><b>${esc(describePunch_(it))}</b>
         <div class="small ${isStuck_(it)?'':'muted'}" ${isStuck_(it)?'style="color:var(--bad)"':''}>${isStuck_(it)?'⚠ ':''}waiting ${esc(fmtAge_(punchAge_(it)))}${isStuck_(it)?' — more than a day, the office does not have this':''}</div>
         <div class="small muted">${it.conflict?'⚠ ':''}${esc(it.lastError||(it.lastTry?'':'not tried yet'))}${it.lastTry?' · last try '+fmtTime(new Date(it.lastTry).toISOString()):''}${it.stuckReported?' · admin emailed':''}</div></div>`).join('')
-      :'<p class="muted">Nothing waiting — everything you punched is at the office.</p>'}
+      :((rc||sc)?'':'<p class="muted">Nothing waiting - everything is at the office.</p>')}
     ${refused.length?`<h3 style="margin-top:14px;color:var(--bad)">Refused by the office</h3>`+refused.map(r=>`<div class="list-item"><b>${esc(r.what)}</b><div class="small" style="color:var(--bad)">${esc(r.why)}</div></div>`).join('')
       +`<p class="small muted">These were not saved. Enter them as a manual entry (Entries tab) if the time is owed.</p>`:''}
     <div class="row" style="margin-top:14px">
-      ${items.length?`<button class="grow" onclick="closeSheet();toast('Sending…');flushQueue().then(n=>{ if(!n) toast(S.online?'Still could not reach the office — will keep trying.':'No signal — will send when you are back online.'); })">Send now</button>`:''}
+      ${(items.length||rc||sc)?`<button class="grow" onclick="closeSheet();sendNow_()">Send now</button>`:''}
       ${refused.length?`<button class="secondary grow" onclick="DB.setCache('syncLog',[]).then(()=>{closeSheet();queueCount_();})">Clear refused</button>`:''}
       <button class="secondary grow" onclick="closeSheet()">Close</button>
     </div>`);
+}
+async function sendNow_(){
+  if(!S.online) return toast('No signal - it will send by itself when you are back online.', 5000);
+  toast('Sending…');
+  const n=await flushQueue(); flushReceipts(); flushScans();
+  await sendCount_();
+  if(!n && (S.waitN||0)) toast('Still could not reach the office - it will keep trying.', 5000);
 }
 function scanBanner(){
   if(!S.scanWaiting && S.scanBusy)
@@ -9632,7 +9685,7 @@ async function flushReceipts(){
       toast('Receipt from earlier synced to Drive ✓');
     }
   }catch(e){ /* next reconnect retries */ }
-  S._frBusy=false;
+  S._frBusy=false; sendCount_();
 }
 /* A forgotten punch-out costs somebody a day's pay to unpick, so past 16 hours we say so out
    loud instead of hoping the banner gets noticed. Dismissible — it returns on the next open. */
@@ -9651,7 +9704,7 @@ function forgotNudge(){
     </div>`);
 }
 window.addEventListener('online', ()=>{ S.online=true; render(); toast('Back online — syncing…'); flushQueue(); flushReceipts(); flushScans(); if(!S.onboard) loadOnboarding(); });
-window.addEventListener('offline', ()=>{ S.online=false; render(); });
+window.addEventListener('offline', ()=>{ S.online=false; render(); sendCount_(); });
 /* v42 — a phone that was in a pocket does not fire 'online', and its 60-second timer was
    frozen with the screen. The moment the app is back in front: send whatever is waiting and,
    unless it was refreshed in the last minute, re-read the server so the screen is the truth. */
