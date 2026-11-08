@@ -1403,7 +1403,7 @@ async function queueCount_(){
  * bar on every tab: blue while things wait, red when something has waited a day or the office
  * refused it, grey "No signal" when there is nothing waiting, a green "All sent" for a moment when
  * the last one goes. Tap it for the list and Send now. */
-const ACT_NAME_={clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start',
+const ACT_NAME_={deleteEntry:'entry delete', clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start',
   endBreak:'break end', fixForgotClockout:'forgotten clock-out fix', editEntry:'entry change',
   addManualEntry:'time added by hand', takeMaterial:'parts taken', logMaterials:'parts used',
   approveEntry:'hours approved', rejectEntry:'hours rejected', timeOffDecide:'time-off decision',
@@ -2726,6 +2726,42 @@ function openTodayOpen(k){
 }
 /* v100 - an entry somebody has to correct (a forgotten clock-out, a break nobody ended). The fix is
    the ordinary Edit entry sheet, so it goes back for approval with its before-and-after. */
+/* v109 - DELETE AN ENTRY THAT WAS A MISTAKE (Paul, 7 Nov, on a 0.7 h entry that was all break).
+ * Approvers only. It asks first, then the entry goes at the tap and the office is told behind it;
+ * the office keeps the row marked deleted and it can be put back from "What we have decided
+ * lately". If the office says no, the entry comes straight back. */
+function edDeleteAsk(k){
+  const ref=dereg(k)||(edState&&edState.e?{e:edState.e, employeeEmail:edState.employeeEmail}:null); if(!ref||!canApprove()) return; const e=ref.e;   // the tap key can be reset by a redraw; the sheet's own state is the fallback
+  const self=ref.employeeEmail===(S.me&&S.me.email);
+  const who=self?'You':(e._name||String(ref.employeeEmail||'').split('@')[0]), whose=self?'your':who+"'s";
+  const hrs=e.Hours!=null&&e.Hours!==''?Number(e.Hours).toFixed(2)+' hrs':'(still open)';
+  const k2=reg(ref);
+  edState=null;
+  sheet(`<h2>Delete this entry?</h2>
+    <p><b>${esc(who)}</b> · ${esc(fmtDay(e.ClockIn||e.Date))} · ${esc(e['Customer/Job Site']||e.Company||'—')}${e['PO#']?' · '+esc(e['PO#']):''}</p>
+    <p class="small muted">${esc(fmtTime(e.ClockIn))}${e.ClockOut?' – '+esc(fmtTime(e.ClockOut)):''} · <b style="color:var(--text)">${esc(hrs)}</b></p>
+    <p class="small">It comes off ${esc(whose)} hours and pay. The office keeps a record, and it can be put back from <b>What we have decided lately</b> on the Requests tab.</p>
+    <label>Why? <span class="muted">(optional - goes on the record)</span></label>
+    <input id="delWhy" placeholder="e.g. clocked in by mistake" autocomplete="off">
+    <div class="row" style="margin-top:12px">
+      <button class="secondary grow" onclick="closeSheet()">Keep it</button>
+      <button class="danger grow" onclick="edDeleteGo('${k2}')">Delete</button>
+    </div>`);
+}
+function edDeleteGo(k){
+  const ref=dereg(k); if(!ref) return; const e=ref.e, id=e.EntryID, email=ref.employeeEmail||(S.me&&S.me.email);
+  const note=val('delWhy'); closeSheet();
+  // At the tap: off every local list this phone draws from.
+  const snapE=(S.entries||[]).slice(), snapA=apvSnap_(), snapT=S.today?JSON.parse(JSON.stringify(S.today)):null;
+  S.entries=(S.entries||[]).filter(x=>x.EntryID!==id);
+  if(S.openEntry&&S.openEntry.EntryID===id){ S.openEntry=null; saveBootCache(); }
+  if(S.approvals) apvDrop('e',id);
+  if(S.today&&Array.isArray(S.today.items)){ S.today.items=S.today.items.filter(i=>!(i.entry&&i.entry.EntryID===id)); }
+  render(); toast('Deleted - it can be put back from "What we have decided lately".', 5000);
+  officeDo_('deleteEntry',{employeeEmail:email, entryId:id, note},
+    ()=>{ S.entries=snapE; if(snapA){ S.approvals=snapA; S.pending=snapA.entries||[]; } if(snapT) S.today=snapT; render(); refresh(true); },
+    ()=>{ refresh(true); if(canApprove()) loadApprovals(); if(isOffice()) loadToday(true); });
+}
 function openTodayFix(k){
   const it=dereg(k); if(!it) return;
   const ek=reg({e:it.entry, employeeEmail:it.email}), hk=reg({key:it.key, fp:it.fp});
@@ -2736,6 +2772,7 @@ function openTodayFix(k){
     <p class="small" style="color:var(--needs-ink)">${esc(it.suggest||'')}</p>
     <button style="width:100%;margin-top:8px" onclick="closeSheetDom();openEditEntry('${ek}')">✏️ Fix this entry</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="todayHide('${hk}')">Looks right — hide it</button>
+    ${canApprove()?`<button class="secondary" style="width:100%;margin-top:6px;color:var(--bad)" onclick="closeSheetDom();edDeleteAsk('${ek}')">🗑 Delete it — it was a mistake</button>`:''}
     <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Close</button>`);
 }
 function openTodayRefused(k){
@@ -6304,16 +6341,21 @@ function openEditEntry(k){
     </div>
     <label>Clocked in</label>
     <div class="row" style="gap:8px">
-      <input id="eInD" type="date" value="${esc(inD)}" onchange="edCalc()" style="flex:1.3;min-width:0">
-      <input id="eInT" type="time" value="${esc(inT)}" onchange="edCalc()" style="flex:1;min-width:0">
+      <input id="eInD" type="date" value="${esc(inD)}" onchange="edBreakIn()" style="flex:1.3;min-width:0">
+      <input id="eInT" type="time" value="${esc(inT)}" onchange="edBreakIn()" style="flex:1;min-width:0">
     </div>
+    <div class="row" style="gap:8px;align-items:flex-end">
+      <div style="width:120px"><label>Break (min)</label>
+        <input id="eBreak" type="number" min="0" step="5" value="${brkMin}" oninput="edBreakIn()"></div>
+      <div style="width:130px"><label>Hours worked</label>
+        <input id="eHours" type="number" min="0" step="0.25" inputmode="decimal" placeholder="e.g. 2" oninput="edHoursIn()"></div>
+    </div>
+    <p class="small muted" style="margin:2px 0 0">Type the hours and the clock-out fills itself in (clock-in + hours + break).</p>
     <label>Clocked out</label>
     <div class="row" style="gap:8px">
-      <input id="eOutD" type="date" value="${esc(outD)}" onchange="edCalc()" style="flex:1.3;min-width:0">
-      <input id="eOutT" type="time" value="${esc(outT)}" onchange="edCalc()" style="flex:1;min-width:0">
+      <input id="eOutD" type="date" value="${esc(outD)}" onchange="edOutIn()" style="flex:1.3;min-width:0">
+      <input id="eOutT" type="time" value="${esc(outT)}" onchange="edOutIn()" style="flex:1;min-width:0">
     </div>
-    <div class="row"><div style="width:120px"><label>Break (min)</label>
-      <input id="eBreak" type="number" min="0" step="5" value="${brkMin}" oninput="edCalc()"></div></div>
     <p class="small" id="edWorked" style="margin:4px 0 0"></p>
     <label>Notes</label><textarea id="eNotes" rows="2">${esc(e.Notes||'')}</textarea>
     <label>Why the change? <span class="muted">(whoever approves it sees this)</span></label>
@@ -6323,7 +6365,30 @@ function openEditEntry(k){
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="edState=null;closeSheet()">Cancel</button>
       <button class="grow" onclick="submitEdit()">Save</button>
-    </div>`);
+    </div>
+    ${canApprove()?`<button class="ghost" style="width:100%;margin-top:10px;color:var(--bad)" onclick="edDeleteAsk('${k}')">🗑 Delete this entry — it was a mistake</button>`:''}`);
+  edState.mode='out';
+  edCalc();
+}
+/* v109 - TYPE THE HOURS, NOT THE CLOCK-OUT. Paul, 7 Nov: "I would like to be able to manually put
+ * the amount of hours I've worked instead of trying to remember what time I clocked out. I still
+ * get to choose what time I clocked in, and if I input 2 hours I want the clock out to adjust
+ * accordingly, in consideration of my input for the break as well."
+ * Whichever box was typed last is the one that rules: type hours and the clock-out follows
+ * (in + hours + break); type a clock-out and the hours box follows. A break or clock-in change
+ * re-does whichever rule is in force. The office still receives a clock-out, as it always has. */
+function edHoursIn(){ if(edState) edState.mode='hours'; edFromHours_(); }
+function edOutIn(){ if(edState) edState.mode='out'; edCalc(); }
+function edBreakIn(){ if(edState&&edState.mode==='hours') edFromHours_(); else edCalc(); }
+function edFromHours_(){
+  const iv=edWhen('In'); const di=iv?new Date(iv):null;
+  const hrs=Number(val('eHours'));
+  if(!di||isNaN(di)||!(hrs>0)){ edCalc(); return; }
+  const brk=Math.max(0,Number(val('eBreak'))||0);
+  const out=new Date(di.getTime()+hrs*3600000+brk*60000);
+  const od=document.getElementById('eOutD'), ot=document.getElementById('eOutT');
+  if(od) od.value=localDateStr(out);
+  if(ot) ot.value=fmtHM(out.toISOString());
   edCalc();
 }
 /* v93 - Paul, 3 Nov: "we would like to have the date and time separate, so as to edit one
@@ -6358,6 +6423,8 @@ function edCalc(){
   if(!(dout>di)) return void(box.innerHTML=bad('The clock-out is before the clock-in — check the days.'));
   const gms=dout-di, net=Math.max(0,gms/3600000-brk/60);
   const over=localDateStr(dout)!==localDateStr(di);
+  const hb=document.getElementById('eHours');   // v109 - the hours box follows the clock-out unless it is being typed
+  if(hb && document.activeElement!==hb) hb.value=String(Math.round(net*100)/100);
   box.innerHTML=`${fmtDur(gms)}${brk?` − ${brk} min break`:''} → <b>${net.toFixed(2)} hrs</b>`
     + (over?` <span class="pill pending">ends ${esc(fmtDay(dout.toISOString()))}</span>`:'')
     + (gms>16*3600000?` ${bad('— over 16 hours on one entry')}`:'');
@@ -8466,7 +8533,7 @@ function apvLogHtml(){
       ${x.note?`<div class="small">“${esc(x.note)}”</div>`:''}
       ${x.undoneAt
         ? `<div class="small" style="color:var(--warn)">Undone ${esc(fmtDay(x.undoneAt))} by ${esc(String(x.undoneBy||'').split('@')[0])}</div>`
-        : `<button class="secondary" style="width:100%;margin-top:6px" onclick="apvUndo(${i},this)">↩︎ Undo — put it back for a decision</button>`}
+        : `<button class="secondary" style="width:100%;margin-top:6px" onclick="apvUndo(${i},this)">${x.action==='deleted'?'↩︎ Undo — bring the entry back':'↩︎ Undo — put it back for a decision'}</button>`}
     </div>`).join('');
 }
 async function apvUndo(i, btn){
@@ -8477,8 +8544,8 @@ async function apvUndo(i, btn){
     const r=await api('approvalUndo',{ id:x.id });
     x.undoneAt=new Date().toISOString(); x.undoneBy=(S.me&&S.me.email)||'';
     const b=document.getElementById('alBody'); if(b) b.innerHTML=apvLogHtml();
-    toast('Back to “'+(r.status||'pending')+'” — '+(x.name||x.employee)+' is on the Requests tab again', 6000);
-    loadApprovals();
+    toast(x.action==='deleted' ? 'The entry is back (“'+(r.status||'pending')+'”).' : 'Back to “'+(r.status||'pending')+'” — '+(x.name||x.employee)+' is on the Requests tab again', 6000);
+    loadApprovals(); if(x.action==='deleted'){ refresh(true); if(isOffice()) loadToday(true); }
   }catch(e){ toast(e.message, 7000); if(btn){ btn.disabled=false; btn.textContent='↩︎ Undo — put it back for a decision'; } }
 }
 /* ------------------------- TYPE IT, LIKE A SEARCH BAR (v96) --------------------------------
