@@ -335,6 +335,11 @@
   table.mtab td:first-child{white-space:normal}
   table.mtab tr.tot td{font-weight:800; border-top:2px solid var(--line)}
   .mres{background:var(--panel2); border-radius:12px; padding:10px 12px; margin:8px 0; font-size:.92rem; line-height:1.5}
+  /* v113 - the note and the colours also work in a sheet (the money and bid sheets sit outside .money) */
+  .mnote{font-size:.82rem; background:var(--needs-bg,#fff7ed); color:var(--needs-ink); border-radius:10px; padding:8px 10px; margin:8px 0 2px}
+  .mnote a{color:var(--accent2); font-weight:700; cursor:pointer; white-space:nowrap}
+  .mres .neg{color:var(--bad)} .mres .pos{color:#15803d} #bidSt .chip{cursor:pointer; margin:0 6px 6px 0}
+  .bid-list .ni .k.g{color:var(--muted)}
   @media (min-width: 900px){
     body.office{padding-left:240px; padding-bottom:24px}
     body.office .tabbar{display:none}
@@ -1436,7 +1441,7 @@ async function queueCount_(){
  * bar on every tab: blue while things wait, red when something has waited a day or the office
  * refused it, grey "No signal" when there is nothing waiting, a green "All sent" for a moment when
  * the last one goes. Tap it for the list and Send now. */
-const ACT_NAME_={requestRenotify:'customer email', followUp:'follow-up log', estimateMark:'price answer', requestDismiss:'close-out', deleteEntry:'entry delete', clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start',
+const ACT_NAME_={bidSave:'bid', requestRenotify:'customer email', followUp:'follow-up log', estimateMark:'price answer', requestDismiss:'close-out', deleteEntry:'entry delete', clockIn:'clock-in', clockOut:'clock-out', switchJobSite:'job switch', startBreak:'break start',
   endBreak:'break end', fixForgotClockout:'forgotten clock-out fix', editEntry:'entry change',
   addManualEntry:'time added by hand', takeMaterial:'parts taken', logMaterials:'parts used',
   approveEntry:'hours approved', rejectEntry:'hours rejected', timeOffDecide:'time-off decision',
@@ -2650,7 +2655,7 @@ function todayView(){
       ${rows.map(r=>`<div class="ni" onclick="${r.on}"><span class="ndot ${r.c}"></span><div class="tx"><div class="k ${r.c}">${esc(r.k)}</div><div class="t">${esc(r.t)}</div><div class="s">${esc(r.s)}</div></div><span class="go">›</span></div>`).join('')
         || '<p class="small muted" style="margin:10px 0 2px">Nothing needs you right now. ✓</p>'}
       ${hidden}
-    </div>${todayFollowCard()}</div>
+    </div>${todayBidsCard()}${todayFollowCard()}</div>
     <div class="dt-only">${todayClockCard()}${todayOnGo()}</div></div>${todayMoneyCard()}${errs}`;
 }
 /* ================= v110 - LEADS TO FOLLOW UP (Paul, 8 Nov) =======================================
@@ -2793,6 +2798,117 @@ function fuDismiss(){
   const snap=fuDrop_(i); fuState=null; closeSheet(); render();
   toast('Closed out');
   officeDo_('requestDismiss',{id:i.id, reason:'not proceeding'}, fuBack_(snap), ()=>{ loadRequests(); });
+}
+/* ================= v113 - BID DEADLINES (Paul, 8 Nov: "add bid deadlines to the app") ============
+ * The GC tenders out for pricing, the soonest closing first. The office reads the inbox every hour for
+ * invitations to tender or bid (Code.gs v101, bidsSweep_ - Refresh reads it now): the closing comes
+ * from the newest email, so Lavergne's "close date change to Nov. 16th @ 2pm" beats the subject line,
+ * and an Eastern time is turned into ours. A bid can be added here by hand, and a date typed here is
+ * kept - a later email that disagrees only leaves a note. Red when it closes today, tomorrow or the day
+ * after (or inside 48 hours), blue inside the week, grey later or once our bid is sent. Sent bids drop to "waiting to hear" once they close. */
+const BID_ST={new:'Not decided', bidding:'Bidding', sent:'Sent ✓', passed:'Not bidding', won:'Won', lost:'Lost'};
+const BID_LIVE=['new','bidding','sent'];
+function bidPad_(n){ return String(n).padStart(2,'0'); }
+function bidDayDiff_(iso){ const a=new Date(); a.setHours(0,0,0,0); const b=new Date(iso); b.setHours(0,0,0,0); return Math.round((b-a)/86400000); }
+function bidWhenTxt_(b){
+  if(!b.closes) return 'No closing date yet';
+  const day=new Date(b.closes).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'});
+  return day+(b.timed?', '+fmtTime(b.closes):' · time not given');
+}
+/* How long is left, and the colour: o = red (needs you now), b = this week, g = later. */
+function bidLeft_(b){
+  if(!b.closes) return {t:'Closing date missing', c:'o'};
+  const ms=new Date(b.closes)-Date.now(), dd=bidDayDiff_(b.closes);
+  if(b.timed){
+    if(ms<0){ const h=Math.floor(-ms/3600000); return {t:h<1?'Closed just now':h<24?`Closed ${h} h ago`:`Closed ${-dd} day${dd===-1?'':'s'} ago`, c:'o', past:true}; }
+    const h=ms/3600000, c=b.status==='sent'?'g':(h<48||dd<=2)?'o':dd<=7?'b':'g';     // sent: nothing left to do but wait
+    if(h<1) return {t:`${Math.max(1,Math.round(ms/60000))} min left`, c};
+    if(dd===0) return {t:`Today ${fmtTime(b.closes)} · ${Math.floor(h)} h left`, c};
+    if(dd===1) return {t:`Tomorrow ${fmtTime(b.closes)}`, c};
+    return {t:`${dd} days`, c};
+  }
+  if(dd<0) return {t:`Closed ${-dd} day${dd===-1?'':'s'} ago`, c:'o', past:true};
+  return {t:dd===0?'Due today':dd===1?'Due tomorrow':`${dd} days`, c:b.status==='sent'?'g':dd<=2?'o':dd<=7?'b':'g'};
+}
+function bidSplit_(list){
+  const now=Date.now(), live=(list||[]).filter(b=>BID_LIVE.includes(b.status));
+  const waiting=live.filter(b=>b.status==='sent'&&(!b.closes||new Date(b.closes)<=now));
+  const open=live.filter(b=>!waiting.includes(b));
+  open.sort((a,b)=>(a.closes?new Date(a.closes).getTime():0)-(b.closes?new Date(b.closes).getTime():0));   // a missing date first: it needs one
+  waiting.sort((a,b)=>String(b.closes).localeCompare(String(a.closes)));
+  return {open, waiting};
+}
+function todayBidsCard(){
+  const d=S.today||{}, bd=d.bids;
+  if(!bd) return '';                                  // an office script older than v101
+  const {open, waiting}=bidSplit_(bd.list);
+  const rows=open.map(b=>{ const L=bidLeft_(b), k=reg(b);
+    return `<div class="ni" onclick="openBid('${k}')"><span class="ndot ${L.c}"></span><div class="tx"><div class="k ${L.c}">${esc(L.t)}</div>
+      <div class="t">${esc(b.project||'(no project name)')}</div>
+      <div class="s">${esc([b.gc, bidWhenTxt_(b), BID_ST[b.status]].filter(Boolean).join(' · '))}</div></div><span class="go">›</span></div>`; }).join('');
+  const w = waiting.length ? `<div class="small muted" style="margin-top:10px">${waiting.length} sent, waiting to hear · <a href="#" style="color:var(--accent2)" onclick="S.bidShowWait=!S.bidShowWait;render();return false">${S.bidShowWait?'hide':'show them'}</a></div>
+      ${S.bidShowWait?waiting.map(b=>`<div class="row between small" style="padding:6px 0;border-top:1px solid var(--line);cursor:pointer" onclick="openBid('${reg(b)}')"><span>${esc(b.project)} <span class="muted">· ${esc(b.gc)} · closed ${esc(b.closes?tdShort(b.closes):'')}</span></span><span style="color:var(--accent2);white-space:nowrap">Won / lost ›</span></div>`).join(''):''}` : '';
+  const chk = bd.checked ? `<div class="small muted" style="margin-top:8px">Inbox checked ${esc(fmtTime(bd.checked))}${new Date(bd.checked).toDateString()!==new Date().toDateString()?' '+esc(tdShort(bd.checked)):''}${bd.error?' · '+esc(bd.error):''}</div>` : '';
+  return `<div class="card needs-list bid-list">
+    <div class="row between"><h3 style="margin:0">Bids closing</h3><a href="#" class="small" style="color:var(--accent2);font-weight:600" onclick="openBid('new');return false">+ Add a bid</a></div>
+    ${rows || '<p class="small muted" style="margin:10px 0 2px">No bids open. Invitations to tender in the inbox show up here by themselves.</p>'}${w}${chk}</div>`;
+}
+let bidState=null;
+function openBid(k){
+  const fresh = k==='new';
+  const b = fresh ? {id:'h'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), status:'new', closes:'', timed:false, project:'', gc:'', where:'', note:'', threads:[], src:'hand'} : dereg(k);
+  if(!b) return;
+  bidState={b, fresh, status:b.status};
+  const L=bidLeft_(b), cd=b.closes?new Date(b.closes):null;
+  const day=cd?`${cd.getFullYear()}-${bidPad_(cd.getMonth()+1)}-${bidPad_(cd.getDate())}`:'';
+  const tm=cd&&b.timed?`${bidPad_(cd.getHours())}:${bidPad_(cd.getMinutes())}`:'';
+  const after = L.past || b.status==='sent' || b.status==='won' || b.status==='lost';
+  const sts=['new','bidding','sent','passed'].concat(after?['won','lost']:[]);
+  const mail=(b.threads||[]).length?`https://mail.google.com/mail/?authuser=admin@proes.ca#all/${encodeURIComponent(b.threads[b.threads.length-1])}`:'';
+  sheet(`${fresh?'<h2>Add a bid</h2>':`<h2>${esc(b.project||'(no project name)')}</h2>
+      <p class="small muted" style="margin-top:-4px">${esc([b.gc, b.where].filter(Boolean).join(' · '))}${b.src==='hand'?' · added by hand':''}</p>`}
+    ${fresh?`<label class="small muted">Project<input id="bidProj" placeholder="e.g. Grimshaw arena lighting" autocomplete="off"></label>
+      <label class="small muted">General contractor<input id="bidGc" placeholder="e.g. Lavergne Construction" autocomplete="off"></label>`
+    :`<div class="mres"><b class="${L.c==='o'?'neg':''}">${esc(L.t)}</b><div class="small">Closes ${esc(bidWhenTxt_(b))}</div>${b.said&&b.by==='email'?`<div class="small muted">The email said: “${esc(b.said)}”</div>`:''}${b.by==='hand'?'<div class="small muted">Date set in the app - the inbox leaves it alone</div>':''}</div>`}
+    ${b.note&&!fresh?`<div class="mnote">${esc(b.note)}</div>`:''}
+    <div class="small muted" style="margin:12px 0 4px">Where it stands</div>
+    <div id="bidSt">${sts.map(s=>`<span class="chip${s===b.status?' on':''}" data-s="${s}" onclick="bidPick('${s}')">${esc(BID_ST[s].replace(' ✓',''))}</span>`).join('')}</div>
+    <div class="row" style="gap:8px;margin-top:12px">
+      <label class="grow small muted">Closing day<input type="date" id="bidDay" value="${day}"></label>
+      <label class="grow small muted">Time<input type="time" id="bidTime" value="${tm}"></label></div>
+    <div class="small muted" style="margin-top:2px">Leave the time empty if the GC didn't give one.</div>
+    <label class="small muted" style="display:block;margin-top:10px">Note<input id="bidNote" value="${esc(fresh?'':(b.note||''))}" placeholder="Optional" autocomplete="off"></label>
+    <button style="width:100%;margin-top:14px" onclick="bidSaveTap()">Save</button>
+    ${mail?`<a class="fubtn" style="display:block;text-align:center;margin-top:8px" href="${mail}" target="_blank" rel="noopener">✉️ Open the email</a>`:''}
+    <button class="ghost" style="width:100%;margin-top:4px" onclick="bidState=null;closeSheet()">Close</button>`);
+}
+function bidPick(s){ if(!bidState) return; bidState.status=s;
+  document.querySelectorAll('#bidSt .chip').forEach(c=>c.classList.toggle('on', c.dataset.s===s)); }
+function bidSaveTap(){
+  const st=bidState; if(!st) return; const b=st.b;
+  const p={id:b.id, status:st.status};
+  if(st.fresh){
+    p.project=val('bidProj').trim(); p.gc=val('bidGc').trim();
+    if(!p.project) return toast('Put in the project name.');
+  }
+  const day=val('bidDay'), tm=val('bidTime');
+  if(day){ const d=new Date(`${day}T${tm||'14:00'}:00`); if(isNaN(d)) return toast('That closing date could not be read.'); p.closes=d.toISOString(); p.timed=!!tm; }
+  else p.closes='';
+  // only what changed travels: an untouched date stays the inbox's
+  if(!st.fresh && (p.closes===(b.closes||'') || (p.closes && b.closes && Math.abs(new Date(p.closes)-new Date(b.closes))<60000)) && !!p.timed===!!b.timed){ delete p.closes; delete p.timed; }
+  if(!st.fresh && !day && !b.closes){ delete p.closes; delete p.timed; }
+  const note=val('bidNote').trim(); if(st.fresh ? note : note!==(b.note||'')) p.note=note;
+  if(!st.fresh && p.status===b.status) delete p.status;
+  if(!st.fresh && Object.keys(p).length===1){ bidState=null; closeSheet(); return; }
+  // on the screen at the tap; back as it was if the office says no
+  const d=S.today; const snap=d&&d.bids?JSON.parse(JSON.stringify(d.bids)):null;
+  const nb=Object.assign({}, b, p, p.closes!=null?{by:'hand'}:{}, {status:p.status||b.status});
+  if(d&&d.bids){ const L=d.bids.list||(d.bids.list=[]), i=L.findIndex(x=>x.id===b.id); if(i>=0) L[i]=nb; else L.push(nb); DB.setCache('today', d); }
+  bidState=null; closeSheet(); render();
+  const gone=!BID_LIVE.includes(nb.status);
+  toast(st.fresh?`Added: ${nb.project}`:gone?`${nb.project}: ${BID_ST[nb.status].toLowerCase()} - off the list.`:'Saved', 3500);
+  officeDo_('bidSave', p, ()=>{ const t=S.today; if(t&&snap){ t.bids=snap; DB.setCache('today', t); render(); } },
+    r=>{ const t=S.today; if(r&&r.bid&&t&&t.bids){ const L=t.bids.list, i=L.findIndex(x=>x.id===r.bid.id); if(i>=0) L[i]=r.bid; else L.push(r.bid); DB.setCache('today', t); render(); } });
 }
 /* ================= v112 - MONEY PER JOB (Paul, 8 Nov: "build money per job on the Today screen") ====
  * Built on the office with Today (Code.gs v100, todayMoney_), read only. For every job in progress,
