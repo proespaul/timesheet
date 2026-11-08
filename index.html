@@ -148,7 +148,7 @@
   /* Two lines: the time, then who it is for. A cell is 50px wide on a phone, so one line could
    * only ever show "7a P…" - which is a dot with extra steps. */
   .cal .ev{padding:2px 3px; border-radius:4px; background:var(--accent); color:#fff;
-    touch-action:none; overflow:hidden}
+    overflow:hidden; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none}
   .cal .ev .t{display:block; font-size:.5rem; line-height:1.1; opacity:.85; font-weight:700}
   .cal .ev .n{display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
     font-size:.54rem; line-height:1.15; font-weight:600; overflow-wrap:anywhere}
@@ -188,7 +188,7 @@
   .tgc.half{border-top-color:#eef2f8}
   .tgc.drop{background:#dbeafe; box-shadow:inset 0 0 0 2px var(--accent2)}
   .blk{position:absolute; box-sizing:border-box; border:1px solid; border-radius:9px; padding:4px 6px; overflow:hidden;
-    cursor:pointer; display:flex; flex-direction:column; gap:1px; touch-action:none;
+    cursor:pointer; display:flex; flex-direction:column; gap:1px;
     -webkit-user-select:none; user-select:none; -webkit-touch-callout:none}
   .blk.un{border-style:dashed}
   .blk.ghosted{opacity:.35}
@@ -3131,7 +3131,7 @@ function schedView(){
     ${d?timeOffSection():''}`;
 }
 function schedRefreshAll(){ // any schedule mutation: refresh the list AND drop stale month grids
-  S.schedMonths={};
+  S.schedMonths={}; S.schedYears={};
   loadSched();
   if((S.schedView||'month')!=='list') schEnsure();
 }
@@ -3140,7 +3140,8 @@ function schedToggle(m){
   // looking at opens its own month.
   const was=S.schedView||'month';
   if(m==='year') S.schedYear=Number((was==='month'?curSchedMonth():schAnchor()).slice(0,4));
-  if(m==='month' && was!=='month' && S.schedDay) S.schedMonth=S.schedDay.slice(0,7);
+  if(m==='month' && was==='year' && S.schedYear && S.schedYear!==Number(curSchedMonth().slice(0,4))) S.schedMonth=S.schedYear+'-'+(S.schedYear===new Date().getFullYear()?String(new Date().getMonth()+1).padStart(2,'0'):'01');
+  else if(m==='month' && was!=='month' && was!=='year' && S.schedDay) S.schedMonth=S.schedDay.slice(0,7);
   if((m==='week'||m==='day') && was==='month'){
     const sm=curSchedMonth(), today=localDateStr(new Date());
     if(sm!==today.slice(0,7)) S.schedDay=sm+'-01';
@@ -3163,8 +3164,12 @@ const SCH_TONE={
   confirmed:{bg:'#ecfdf3',bd:'#16a34a',ink:'#14532d',label:'Customer confirmed'},
   waiting:  {bg:'#fff7e6',bd:'#d97706',ink:'#7c2d12',label:'Not confirmed yet'},
   declined: {bg:'#fef2f2',bd:'#dc2626',ink:'#991b1b',label:'Needs a new time'},
-  cancelled:{bg:'#f1f5f9',bd:'#94a3b8',ink:'#475569',label:'Cancelled'}};
-function schTone(ev){ return SCH_TONE[ev&&ev.confirm]||SCH_TONE.waiting; }
+  cancelled:{bg:'#f1f5f9',bd:'#94a3b8',ink:'#475569',label:'Cancelled'},
+  none:     {bg:'#e6f1fb',bd:'#2E75B6',ink:'#0C447C',label:'Booked'}};
+/* v104 - a booking the customer was never asked about (a return visit, something put straight on
+ * the calendar) is BLUE, "Booked": amber means somebody is waiting on an answer, and a calendar
+ * that is amber everywhere says nothing. Paul's own rule: blue = next step, orange = needs you. */
+function schTone(ev){ return SCH_TONE[ev&&ev.confirm]||SCH_TONE.none; }
 function schDate(s){ const p=String(s).split('-'); return new Date(Number(p[0]),Number(p[1])-1,Number(p[2])); }
 function schAdd(s,n){ const d=schDate(s); d.setDate(d.getDate()+n); return localDateStr(d); }
 function schAnchor(){ return S.schedDay || localDateStr(new Date()); }
@@ -3220,7 +3225,7 @@ function schLegend(data){
   return `<p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
     ?'Tap a job for its details · press and hold to drag it to another day or time'
     :'Tap a job for the address, the details and who\'s with you'}<br>
-    ${sw(SCH_TONE.confirmed)}confirmed &nbsp; ${sw(SCH_TONE.waiting)}not confirmed yet &nbsp; ${sw(SCH_TONE.declined)}needs a new time</p>`;
+    ${sw(SCH_TONE.none)}booked &nbsp; ${sw(SCH_TONE.confirmed)}confirmed &nbsp; ${sw(SCH_TONE.waiting)}not confirmed yet &nbsp; ${sw(SCH_TONE.declined)}needs a new time</p>`;
 }
 function schGrid(days, o){
   const hh=o.hh, canDrag=!!o.canDrag;
@@ -3247,8 +3252,8 @@ function schGrid(days, o){
       const k=reg(ev), t=schTone(ev), L=lanes[ev.id]||{lane:0,count:1}, w=100/L.count;
       const s=schHours(ev), dur=schDur(ev);
       const scope=String(ev.title||'').split(/\s+[—–-]\s+/).slice(1).join(' – ');
-      return `<div class="blk${(ev.assigned||[]).length?'':' un'}${schIsDragged(ev)?' ghosted':''}" data-ek="${k}" style="top:${(s-h0)*hh+1}px;height:${Math.max(hh/2,dur*hh)-3}px;left:calc(${L.lane*w}% + 2px);width:calc(${w}% - 4px);background:${t.bg};border-color:${t.bd};color:${t.ink}"
-        onpointerdown="schedGrab(event,'${k}','${d}')" onclick="event.stopPropagation()">
+      return `<div class="blk${(ev.assigned||[]).length?'':' un'}${schIsDragged(ev)?' ghosted':''}" data-ek="${k}" role="button" tabindex="0" aria-label="${esc(schedName(ev))}, ${esc(fmtTime(ev.start))}" style="top:${(s-h0)*hh+1}px;height:${Math.max(hh/2,dur*hh)-3}px;left:calc(${L.lane*w}% + 2px);width:calc(${w}% - 4px);background:${t.bg};border-color:${t.bd};color:${t.ink}"
+        onpointerdown="schedGrab(event,'${k}','${d}')" ontouchmove="schTouchClaim(event)" onclick="event.stopPropagation()">
         <div class="bt"><b>${esc(schedName(ev))}</b>${L.count>1?`<span class="bn" aria-label="job ${L.lane+1} of ${L.count} at this time">${L.lane+1}</span>`:''}</div>
         <div class="bs">${esc(fmtTime(ev.start))} – ${esc(fmtTime(ev.end))}</div>
         ${o.wide&&scope?`<div class="bs">${esc(scope)}</div>`:''}
@@ -3256,7 +3261,7 @@ function schGrid(days, o){
       </div>`; }).join('');
     return `<div class="tgd">${cells}${blocks}</div>`;
   }).join('');
-  return `<div class="tgwrap"><div class="tg" style="grid-template-columns:48px repeat(${days.length},minmax(${o.minCol}px,1fr))">${html}</div></div>`;
+  return `<div class="tgwrap"><div class="tg" ontouchmove="schTouchClaim(event)" style="grid-template-columns:48px repeat(${days.length},minmax(${o.minCol}px,1fr))">${html}</div></div>`;
 }
 function schWeekHtml(){
   const mon=schMonday(schAnchor());
@@ -3307,21 +3312,26 @@ function schWhen(iso){ const d=new Date(iso); return d.toLocaleDateString([],{we
 async function schMoveTo(evOrKey, day, t){
   const ev=(typeof evOrKey==='string')?dereg(evOrKey):evOrKey; if(!ev) return;
   if(ev.allDay) return toast('An all-day booking can\'t be dragged to a time. Tap it to change it.');
+  if(ev.recurring) return toast('That is a repeating event - move it in Google Calendar.', 6000);
   if(!S.online) return toast('You need signal to move a booking.');
   const old=new Date(ev.start), dur=new Date(ev.end)-old, p=day.split('-');
   let h=old.getHours(), mi=old.getMinutes();
   if(t!==null && t!==undefined && t!==''){ h=Math.floor(Number(t)); mi=Math.round((Number(t)-h)*60); }
   const ns=new Date(Number(p[0]),Number(p[1])-1,Number(p[2]),h,mi);
   if(ns.getTime()===old.getTime()) return;
+  // v104 - a drop onto a day that has passed is almost always a slip of the finger on the month
+  // grid. Ask once; it is still allowed, because a job that actually happened on another day may
+  // need to be put there.
+  if(ns.getTime()<Date.now()-60000 && !confirm(schedName(ev)+': '+schWhen(ns.toISOString())+' has already passed. Move it there anyway?')) return;
   const id=ev.id, name=schedName(ev);
-  const prev={start:ev.start, end:ev.end, confirm:ev.confirm||'waiting'};
+  const prev={start:ev.start, end:ev.end, confirm:ev.confirm||'none'};
   schApply(id,{start:ns.toISOString(), end:new Date(ns.getTime()+dur).toISOString(), confirm:'waiting'});
   render();
   try{
     const r=await api('scheduleMove',{eventId:id, start:ns.toISOString()},{timeout:90000});
     schApply(id,{start:r.start, end:r.end, confirm:r.confirm||'waiting'}); S.schedYears={}; render();
     schUndoToast(`${name.split(' · ')[0]} moved to ${schWhen(r.start)}`, ()=>schUndoMove(id, prev, name));
-    if(S.online) loadSched();
+    if(S.online){ loadSched(); loadRequests(); }   // the Requests tab shows the booked time too
   }catch(e){
     schApply(id,prev); render();
     toast(/unknown action/i.test(e.message)?'The office needs the latest script (v92) before jobs can be dragged.':e.message, 8000);
@@ -3330,7 +3340,7 @@ async function schMoveTo(evOrKey, day, t){
 async function schUndoMove(id, prev, name){
   schApply(id,prev); render();
   try{ await api('scheduleMove',{eventId:id, start:prev.start, confirm:prev.confirm},{timeout:90000});
-       toast(`${name} is back at ${schWhen(prev.start)}.`); if(S.online) loadSched(); }
+       S.schedYears={}; toast(`${name} is back at ${schWhen(prev.start)}.`); if(S.online){ loadSched(); loadRequests(); } }
   catch(e){ toast('Could not put it back: '+e.message, 8000); schRefreshQuiet(); }
 }
 function schRefreshQuiet(){ S.schedMonths={}; schEnsure(); }
@@ -3371,7 +3381,9 @@ function schMoveDateGo(k){
   schMoveTo(ev, day, t);
 }
 function schStatusHtml(k, ev){
-  const t=schTone(ev), c=ev.confirm||'waiting';
+  const t=schTone(ev), c=ev.confirm||'none';
+  if(ev.recurring) return `<div style="margin:10px 0 4px"><span class="pill" style="background:${t.bg};border:1px solid ${t.bd};color:${t.ink};font-weight:700">${esc(t.label)}</span></div>
+    <p class="small muted" style="margin:6px 0 0">This is a repeating event. Move it or change it in Google Calendar.</p>`;
   return `<div style="margin:10px 0 4px">
     <span class="pill" style="background:${t.bg};border:1px solid ${t.bd};color:${t.ink};font-weight:700">${esc(t.label)}</span></div>
     ${c!=='confirmed'?`<button style="width:100%;margin-top:6px;background:var(--ok)" onclick="schSetConfirm('${k}','confirmed',this)">✓ Customer confirmed</button>`:''}
@@ -3419,7 +3431,7 @@ function schYearHtml(){
     let cells=['S','M','T','W','T','F','S'].map(x=>`<span class="ydw">${x}</span>`).join('')+'<span></span>'.repeat(first);
     let days=0, hrs=0;
     for(let dn=1;dn<=dim;dn++){
-      const k=mk+'-'+String(dn).padStart(2,'0'), h=Number(d.hours[k]||0), L=lvl(h);
+      const k=mk+'-'+String(dn).padStart(2,'0'), h=Number((d.hours||{})[k]||0), L=lvl(h);
       if(h){ days++; hrs+=h; }
       const lab=new Date(y,mi,dn).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+(h?`: ${Math.round(h*10)/10} h booked`:': nothing booked')+(hol[k]?' · '+hol[k]:'');
       cells+=`<button class="yd${k===tstr?' today':''}${hol[k]?' hol':''}" style="background:${SH[L]}" title="${esc(lab)}" aria-label="${esc(lab)}" onclick="schOpenDay('${k}')"></button>`;
@@ -3488,14 +3500,29 @@ var SD_ = null;      // the drag in progress
  * of tap keys is cleared on every redraw. */
 function schedGrab(e, key, day){
   if(e.button && e.button!==0) return;
-  const el=e.currentTarget;
-  SD_={ key, ev:dereg(key), day, el, x0:e.clientX, y0:e.clientY, id:e.pointerId, on:false, over:'', flipDir:0,
-        timer:canApprove()?setTimeout(()=>schedLift(), 320):null };   // v101: crew taps, never drags
+  const el=e.currentTarget, ev=dereg(key);
+  // v104 - a repeating event (set up in Google Calendar) is never dragged: every instance shares
+  // one id, so the office could not tell which one moved and would move the first of the series.
+  const canDrag=canApprove() && !(ev&&ev.recurring);
+  SD_={ key, ev, day, el, x0:e.clientX, y0:e.clientY, lx:e.clientX, ly:e.clientY, id:e.pointerId, on:false, over:'', flipDir:0,
+        timer:canDrag?setTimeout(()=>schedLift(), 320):null };   // v101: crew taps, never drags
   try{ el.setPointerCapture(e.pointerId); }catch(err){}
   window.addEventListener('pointermove', schedMoveP, {passive:false});
   window.addEventListener('pointerup', schedDrop);
   window.addEventListener('pointercancel', schedAbort);
+  // v104 - THE PAGE STILL SCROLLS. Blocks used to carry touch-action:none, which made a swipe that
+  // happened to start on a job do nothing at all - and in the Day view a job is the whole width.
+  // Now a swipe scrolls as normal (the browser cancels our pointer and schedAbort tidies up);
+  // only once the hold has fired do we claim the gesture, by cancelling the touch moves.
+  window.addEventListener('contextmenu', schCtxBlock);
 }
+/* Chrome decides at the first touch whether the thing under the finger has a handler that may
+ * cancel a scroll, so the handler has to be there already: it is written on every job block and
+ * chip (ontouchmove), not added when the drag begins. On the block itself rather than the grid
+ * because a page turn mid-drag rebuilds the calendar, and touch events keep going to the block
+ * the finger first landed on even once it is out of the page. */
+function schTouchClaim(e){ if(SD_&&SD_.on) e.preventDefault(); }
+function schCtxBlock(e){ if(SD_) e.preventDefault(); }
 function schedLift(){
   if(!SD_) return;
   SD_.on=true;
@@ -3515,8 +3542,16 @@ function schedMoveP(e){
     return;
   }
   e.preventDefault();
-  SD_.ghost.style.left=e.clientX+'px'; SD_.ghost.style.top=e.clientY+'px';
-  const el=document.elementFromPoint(e.clientX, e.clientY);
+  SD_.lx=e.clientX; SD_.ly=e.clientY;
+  schHit();
+  schEdge();
+}
+/* What is under the finger right now: a page-turn arrow, or a drop target. Called on every move
+ * and again on every auto-scroll tick, because scrolling moves the calendar under a still finger. */
+function schHit(){
+  if(!SD_||!SD_.on) return;
+  SD_.ghost.style.left=SD_.lx+'px'; SD_.ghost.style.top=SD_.ly+'px';
+  const el=document.elementFromPoint(SD_.lx, SD_.ly);
   // Parked over ‹ or ›: turn the page now and then every second while it stays there.
   const fz=el&&el.closest?el.closest('[data-flip]'):null;
   const dir=fz?Number(fz.getAttribute('data-flip')):0;
@@ -3542,6 +3577,35 @@ function schedMoveP(e){
     if(SD_.ghost) SD_.ghost.textContent=SD_.name+(day?(' → '+schDate(day).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+(t!==''?(' '+fmtTime(new Date(2000,0,1,Math.floor(t),(t%1)?30:0).toISOString())):'')):'');
   }
 }
+/* v104 - AUTO-SCROLL AT THE EDGES. A drag cannot reach 4 pm when the screen shows 7 to 12, and on
+ * a phone the week grid is wider than the screen. Near the top or bottom of the window the page
+ * scrolls; near the left or right edge of the week grid, the grid does. Nothing scrolls while the
+ * finger is on a page-turn arrow. */
+function schEdge(){
+  if(!SD_||!SD_.on) return;
+  let vy=0, hx=0;
+  if(!SD_.flipDir){
+    const topZ=70, botZ=innerHeight-(innerWidth<900?76:0)-70;
+    if(SD_.ly<topZ) vy=-1; else if(SD_.ly>botZ) vy=1;
+    const wrap=document.querySelector('.tgwrap');
+    if(wrap && wrap.scrollWidth>wrap.clientWidth+2){
+      const r=wrap.getBoundingClientRect();
+      if(SD_.ly>=r.top && SD_.ly<=r.bottom){ if(SD_.lx<r.left+32) hx=-1; else if(SD_.lx>r.right-32) hx=1; }
+    }
+  }
+  if(!vy && !hx){ if(SD_.scrollT){ clearInterval(SD_.scrollT); SD_.scrollT=null; } return; }
+  if(SD_.scrollT) return;
+  SD_.scrollT=setInterval(()=>{
+    if(!SD_||!SD_.on||SD_.flipDir){ return; }
+    let moved=false;
+    if(SD_.ly<70 || SD_.ly>innerHeight-(innerWidth<900?76:0)-70){ const before=scrollY; scrollBy(0, SD_.ly<70?-14:14); moved=scrollY!==before; }
+    const wrap=document.querySelector('.tgwrap');
+    if(wrap){ const r=wrap.getBoundingClientRect();
+      if(SD_.ly>=r.top && SD_.ly<=r.bottom && (SD_.lx<r.left+32 || SD_.lx>r.right-32)){ const b=wrap.scrollLeft; wrap.scrollLeft+=(SD_.lx<r.left+32?-12:12); moved=moved||wrap.scrollLeft!==b; } }
+    if(!moved){ clearInterval(SD_.scrollT); SD_.scrollT=null; return; }   // at the end: stop, so the hit test rests
+    schHit();
+  }, 40);
+}
 /* One page turn while a job is held: a month in Month, a week in Week, a day in Day. */
 function schFlip(dir){
   const v=S.schedView||'month';
@@ -3563,18 +3627,19 @@ function schedDrop(e){
   if(!SD_) return;
   const was=SD_, dropped=was.on?was.overDay:'';
   schedClear();
-  if(!was.on){ if(was.ev) openSchedDetail(was.key); return; }                         // a tap
+  if(!was.on){ if(was.ev) openSchedDetail(reg(was.ev)); return; }                     // a tap (a fresh key: a redraw may have cleared the old one)
   if(!dropped) return;                                                               // put back
   schMoveTo(was.ev, dropped, was.overT===''?null:Number(was.overT));                 // v101: moves at once, no sheet
 }
 function schedAbort(){ schedClear(); }
 function schedClear(){
   if(!SD_) return;
-  clearTimeout(SD_.timer); clearTimeout(SD_.flipT);
+  clearTimeout(SD_.timer); clearTimeout(SD_.flipT); if(SD_.scrollT) clearInterval(SD_.scrollT);
   try{ SD_.el.releasePointerCapture(SD_.id); }catch(e){}
   window.removeEventListener('pointermove', schedMoveP, {passive:false});
   window.removeEventListener('pointerup', schedDrop);
   window.removeEventListener('pointercancel', schedAbort);
+  window.removeEventListener('contextmenu', schCtxBlock);
   try{ SD_.el.classList.remove('ghosted'); }catch(e){}
   document.querySelectorAll('.ghosted').forEach(x=>x.classList.remove('ghosted'));
   document.querySelectorAll('[data-flip].flipping').forEach(x=>x.classList.remove('flipping'));
@@ -3647,7 +3712,7 @@ function schedMonthHtml(){
     const show=evs.slice(0,2).map(ev=>{
       const rk=reg(ev), un=data&&data.canAssign&&!ev.assigned.length, tn=schTone(ev), L=lanes[ev.id];
       return `<div class="ev${un?' un':''}${schIsDragged(ev)?' ghosted':''}" data-ek="${rk}" data-day="${k}" style="background:${tn.bg};color:${tn.ink};border:1px solid ${tn.bd}"
-        onpointerdown="schedGrab(event,'${rk}','${k}')" onclick="event.stopPropagation()"
+        onpointerdown="schedGrab(event,'${rk}','${k}')" ontouchmove="schTouchClaim(event)" onclick="event.stopPropagation()"
         >${L&&L.count>1?`<span class="bn">${L.lane+1}</span>`:''}${schedChip(ev)}</div>`;
     }).join('');
     cells+=`<div class="day${k===tstr?' today':''}${holByDay[k]?' hol':''}" data-drop="1" data-day="${k}" onclick="openSchedDay('${k}')">
@@ -3661,9 +3726,9 @@ function schedMonthHtml(){
       <b style="color:var(--navy)">${esc(label)}</b>
       <button class="secondary${schFlipCls(1)}" data-flip="1" style="padding:8px 16px" onclick="schedShiftMonth(1)" aria-label="Next month">›</button>
     </div>
-    <div class="cal">${cells}</div>
+    <div class="cal" ontouchmove="schTouchClaim(event)">${cells}</div>
     <p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
-      ? 'Tap a job to open it, or <b>press and hold to drag it onto another day</b> · green = confirmed · amber = not confirmed yet · red = needs a new time · dashed = nobody assigned · 🏖 = someone off'
+      ? 'Tap a job to open it, or <b>press and hold to drag it onto another day</b> · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · dashed = nobody assigned · 🏖 = someone off'
       : 'Your jobs this month · 🏖 = your time off · yellow = stat holiday · tap a day to see where you\'re heading'}</p>
   </div>`;
 }
