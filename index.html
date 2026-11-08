@@ -205,6 +205,16 @@
   .sds b{font-size:1rem}
   .sds.on{background:var(--accent); color:#fff; border-color:var(--accent)}
   .sds.drop{border:2px dashed var(--accent2); background:#dbeafe; color:var(--text)}
+  .yr{display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px}
+  .ym{border:1px solid var(--line); border-radius:12px; padding:8px; background:var(--panel)}
+  .ymh{display:flex; flex-wrap:wrap; gap:2px 6px; justify-content:space-between; align-items:baseline; width:100%; background:transparent; color:var(--navy);
+    padding:2px 2px 6px; border-radius:8px; font-size:.85rem; font-weight:400}
+  .ymh span{font-size:.68rem; color:var(--muted)}
+  .ymg{display:grid; grid-template-columns:repeat(7,1fr); gap:2px}
+  .ydw{font-size:.55rem; color:var(--muted); text-align:center}
+  .yd{height:16px; padding:0; border:0; border-radius:3px; width:auto; min-width:0}
+  .yd.today{box-shadow:0 0 0 2px var(--accent2)}
+  .yd.hol{box-shadow:inset 0 0 0 2px #f59e0b}
   [data-flip].flipping{background:var(--accent2) !important; color:#fff !important; box-shadow:0 0 0 3px #bfdbfe}
   .sw{display:inline-block; width:10px; height:10px; border-radius:3px; border:1px solid; vertical-align:-1px; margin-right:4px}
   .co-logo{height:20px; max-width:64px; object-fit:contain; display:inline-block; vertical-align:middle}
@@ -3098,6 +3108,7 @@ function schedView(){
   const mode=S.schedView||'month';
   const head=`<div class="row between"><h2>Schedule</h2>${(S.schedLoading||S._smLoading)?'<span class="spin"></span>':''}</div>
     <div class="seg" style="margin-bottom:10px">
+      <button class="${mode==='year'?'on':''}" onclick="schedToggle('year')">Year</button>
       <button class="${mode==='month'?'on':''}" onclick="schedToggle('month')">Month</button>
       <button class="${mode==='week'?'on':''}" onclick="schedToggle('week')">Week</button>
       <button class="${mode==='day'?'on':''}" onclick="schedToggle('day')">Day</button>
@@ -3108,6 +3119,7 @@ function schedView(){
       <button class="secondary grow" onclick="openAddManual('call')">📞 Schedule a call</button>
     </div>`:''}`;
   if(mode==='month') return head + schedMonthHtml() + (d?timeOffSection():'');
+  if(mode==='year') return head + schYearHtml();
   if(mode==='week') return head + schWeekHtml() + (d?timeOffSection():'');
   if(mode==='day') return head + schDayHtml() + (d?timeOffSection():'');
   return head + `<div class="card">
@@ -3127,6 +3139,7 @@ function schedToggle(m){
   // v102 - keep your place: March in Month opens March in Week and Day, and the week you were
   // looking at opens its own month.
   const was=S.schedView||'month';
+  if(m==='year') S.schedYear=Number((was==='month'?curSchedMonth():schAnchor()).slice(0,4));
   if(m==='month' && was!=='month' && S.schedDay) S.schedMonth=S.schedDay.slice(0,7);
   if((m==='week'||m==='day') && was==='month'){
     const sm=curSchedMonth(), today=localDateStr(new Date());
@@ -3184,6 +3197,7 @@ function schCrew(ev){ return (ev.assigned||[]).map(a=>`<span class="cr" title="$
 function schEnsure(){
   const v=S.schedView||'month';
   if(v==='list'){ if(S.online) loadSched(); return; }
+  if(v==='year'){ loadSchedYear(schYear()); return; }
   if(v==='month'){ loadSchedMonth(); return; }
   const a=schAnchor(), days=v==='week'?[schMonday(a), schAdd(schMonday(a),6)]:[a];
   [...new Set(days.map(d=>d.slice(0,7)))].forEach(m=>loadSchedMonth(m));
@@ -3305,8 +3319,8 @@ async function schMoveTo(evOrKey, day, t){
   render();
   try{
     const r=await api('scheduleMove',{eventId:id, start:ns.toISOString()},{timeout:90000});
-    schApply(id,{start:r.start, end:r.end, confirm:r.confirm||'waiting'}); render();
-    schUndoToast(`${name.split(' · ')[0]} moved to ${schWhen(r.start)} · not confirmed yet`, ()=>schUndoMove(id, prev, name));
+    schApply(id,{start:r.start, end:r.end, confirm:r.confirm||'waiting'}); S.schedYears={}; render();
+    schUndoToast(`${name.split(' · ')[0]} moved to ${schWhen(r.start)}`, ()=>schUndoMove(id, prev, name));
     if(S.online) loadSched();
   }catch(e){
     schApply(id,prev); render();
@@ -3341,7 +3355,7 @@ function schOpenMoveDate(k){
     <p class="small muted" style="margin-top:-4px">Now ${esc(schWhen(ev.start))}</p>
     <div class="row"><div class="grow"><label>Day</label><input id="mdDay" type="date" value="${localDateStr(d)}"></div>
       <div class="grow"><label>Start time</label><input id="mdTime" type="time" step="900" value="${hh}:${mm}"></div></div>
-    <p class="small muted">It keeps its length, turns amber (not confirmed yet), and nobody is emailed.</p>
+    <p class="small muted">It keeps its length and nobody is emailed.</p>
     <div class="row" style="margin-top:10px">
       <button class="secondary grow" onclick="closeSheet()">Cancel</button>
       <button class="grow" onclick="schMoveDateGo('${k2}')">Move it</button>
@@ -3366,6 +3380,57 @@ function schStatusHtml(k, ev){
       ${c!=='declined'?`<button class="secondary grow" onclick="schSetConfirm('${k}','declined',this)">Needs a new time</button>`:''}
       ${c!=='waiting'?`<button class="secondary grow" onclick="schSetConfirm('${k}','waiting',this)">Not confirmed yet</button>`:''}
     </div>`;
+}
+/* v103 - THE YEAR AT A GLANCE (Paul, 7 Nov). Twelve small months, each day shaded by the hours
+ * booked on it - empty, under 3 h, 3 to 6 h, a full day - so busy stretches and dead weeks show
+ * at once. Tap a month to open it, tap a day to open that day. One call to the office per year
+ * (scheduleYear, Code.gs v93); it is kept on the phone and refetched after any move. */
+function schYear(){ return S.schedYear || Number(schAnchor().slice(0,4)); }
+async function loadSchedYear(y){
+  S.schedYears=S.schedYears||{}; S._syBusy=S._syBusy||{};
+  if(!S.schedYears[y]){ const c=await DB.getCache('schedY_'+y); if(c){ S.schedYears[y]=c; if(S.tab==='sched') render(); } }
+  if(!S.online || S._syBusy[y]) return;
+  S._syBusy[y]=true;
+  try{ const r=await apiBg('scheduleYear',{year:y}); if(r&&r.hours){ S.schedYears[y]=r; DB.setCache('schedY_'+y,r); } }
+  catch(e){ if(!S.schedYears[y]) S._syErr=/unknown action/i.test(e.message)?'The office needs the latest script (v93) for the year view.':e.message; }
+  S._syBusy[y]=false; if(S.tab==='sched') render();
+}
+function schYearShift(dir){
+  const now=new Date().getFullYear(), y=schYear()+dir;
+  if(y<now-2||y>now+1) return toast('The year view goes from '+(now-2)+' to '+(now+1)+'.');
+  S.schedYear=y; render(); loadSchedYear(y);
+}
+function schOpenMonth(m){ S.schedMonth=m; S.schedView='month'; render(); schEnsure(); }
+function schYearHtml(){
+  const y=schYear(), d=(S.schedYears||{})[y], tstr=localDateStr(new Date());
+  const SH=['var(--panel2)','#bfdbfe','#4a90d9','#1F3864'];
+  const lvl=h=>!h?0:(h<3?1:(h<6?2:3));
+  const hol={}; ((d&&d.holidays)||[]).forEach(h=>hol[h.date]=h.name);
+  const legend=`<p class="small muted" style="margin:10px 0 0">Booked: ${['none','under 3 h','3 to 6 h','6 h or more'].map((t,i)=>`<span class="sw" style="background:${SH[i]};border-color:${i?SH[i]:'var(--line)'}"></span>${t}`).join(' &nbsp; ')} · tap a month or a day to open it</p>`;
+  const nav=`<div class="row between" style="margin-bottom:10px">
+    <button class="secondary" style="padding:8px 16px;width:auto" onclick="schYearShift(-1)" aria-label="Previous year">‹</button>
+    <b style="color:var(--navy)">${y}</b>
+    <button class="secondary" style="padding:8px 16px;width:auto" onclick="schYearShift(1)" aria-label="Next year">›</button></div>`;
+  if(!d) return `<div class="card">${nav}<p class="center small muted" style="margin:24px 0">${S._syErr?esc(S._syErr):'<span class="spin"></span> Loading the year…'}</p></div>`;
+  let totalDays=0, totalH=0;
+  const months=[...Array(12).keys()].map(mi=>{
+    const first=new Date(y,mi,1).getDay(), dim=new Date(y,mi+1,0).getDate();
+    const mk=y+'-'+String(mi+1).padStart(2,'0');
+    let cells=['S','M','T','W','T','F','S'].map(x=>`<span class="ydw">${x}</span>`).join('')+'<span></span>'.repeat(first);
+    let days=0, hrs=0;
+    for(let dn=1;dn<=dim;dn++){
+      const k=mk+'-'+String(dn).padStart(2,'0'), h=Number(d.hours[k]||0), L=lvl(h);
+      if(h){ days++; hrs+=h; }
+      const lab=new Date(y,mi,dn).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+(h?`: ${Math.round(h*10)/10} h booked`:': nothing booked')+(hol[k]?' · '+hol[k]:'');
+      cells+=`<button class="yd${k===tstr?' today':''}${hol[k]?' hol':''}" style="background:${SH[L]}" title="${esc(lab)}" aria-label="${esc(lab)}" onclick="schOpenDay('${k}')"></button>`;
+    }
+    totalDays+=days; totalH+=hrs;
+    return `<div class="ym"><button class="ymh" onclick="schOpenMonth('${mk}')"><b>${new Date(y,mi,1).toLocaleDateString([],{month:'long'})}</b><span>${days?days+' day'+(days===1?'':'s')+' · '+Math.round(hrs)+' h':'—'}</span></button>
+      <div class="ymg">${cells}</div></div>`;
+  }).join('');
+  return `<div class="card">${nav}
+    <p class="small muted" style="margin:0 0 10px">${totalDays} days booked · ${Math.round(totalH)} hours on the calendar in ${y}</p>
+    <div class="yr">${months}</div>${legend}</div>`;
 }
 /* ---- Month view: Google-Calendar-style grid; tap a day for that day's jobs ---- */
 function curSchedMonth(){ return S.schedMonth || curMonthStr(); }
