@@ -8249,7 +8249,8 @@ async function runStatPay(btn){
  * lands. The data is a few seconds stale for a moment, which for a list of leads is nothing. */
 function applyRequests(r){
   S.requests=r.requests||[];
-  S.reqEstimates=r.estimates||[];   // v46: estimate calls held but not yet turned into jobs
+  // v116 - sorted the way the Estimates tab sorts its visits, so both lists put a customer at the same place
+  S.reqEstimates=(r.estimates||[]).slice().sort((a,b)=>String(b.start).localeCompare(String(a.start)));   // v46: estimate calls held but not yet turned into jobs
   S.reqBooked=r.booked||[];         // v46: booked jobs + whether the customer has confirmed
   S.reqCalls=r.calls||[];           // v52: customers to ring because their job was moved
   S.reqCollateral=r.collateral||[]; // v51: jobs that lost their slot and need a new time
@@ -8262,13 +8263,14 @@ async function loadRequests(){
   try{
     if(!S.requests){
       const c=await DB.getCache('requests');
-      if(c){ applyRequests(c); if(S.tab==='requests') render(); }
+      if(c){ applyRequests(c); if(S.tab==='requests') render(); sjRepaint_(); }
     }
     if(!S.online){ S._reqLoading=false; return; }
     const r=await apiBg('requestList',{});
     applyRequests(r); S.reqErr='';
     DB.setCache('requests', r);
     if(S.tab==='requests') render();
+    sjRepaint_();                                   // v116 - the job picker lists these too
   }catch(e){ if(!S.requests) S.reqErr=e.message; if(S.tab==='requests') render(); }
   S._reqLoading=false;
   if(S.tab==='est') loadEstimates();   // v99 - booking, moving or closing a visit from the Estimates tab
@@ -8600,9 +8602,9 @@ function estCard(q,i,kind){
       <button class="secondary grow" onclick="openReqSchedule(${i},'estLead')">📅 Book a visit to look</button>
       </div><div class="row" style="margin-top:6px"><button class="ghost" onclick="estDismiss('${k}',this)">Not going ahead</button>`;
   else if(kind==='visit') btns=`<button class="grow" onclick="openEstSend('visit',${i})">💲 Send the estimate</button>
-      <button class="secondary grow" onclick="openReqBook(${i})">🔧 They said yes — book it</button>
-      </div><div class="row" style="margin-top:6px"><button class="secondary grow" onclick="openReqMove(${i},'est')">📅 Move the visit</button>
-      <button class="ghost" onclick="reqNotProceeding(${i})">Didn't go ahead</button>`;
+      <button class="secondary grow" onclick="openReqBook(estVisitIdx('${esc(String(q.id))}'))">🔧 They said yes — book it</button>
+      </div><div class="row" style="margin-top:6px"><button class="secondary grow" onclick="openReqMove(estVisitIdx('${esc(String(q.id))}'),'est')">📅 Move the visit</button>
+      <button class="ghost" onclick="reqNotProceeding(estVisitIdx('${esc(String(q.id))}'))">Didn't go ahead</button>`;
   else if(kind==='sent') btns=`<button class="grow" onclick="estMark('${k}','yes',this)">✅ They said yes</button>
       <button class="secondary grow" onclick="openEstSend('sent',${i})">📧 Send again</button>
       <button class="ghost" onclick="estMark('${k}','no',this)">They said no</button>`;
@@ -8631,16 +8633,23 @@ function estimatesView(){
 }
 async function loadEstimates(){
   if(!canApprove()) return;
-  if(!S.estData){ try{ const c=await DB.getCache('estimates'); if(c&&!S.estData){ S.estData=c; S.reqEstimates=c.visits||[]; if(S.tab==='est') render(); } }catch(e){} }
+  if(!S.estData){ try{ const c=await DB.getCache('estimates'); if(c&&!S.estData){ S.estData=c; S.reqEstimates=c.visits||[]; if(S.tab==='est') render(); sjRepaint_(); } }catch(e){} }
   if(S._estLoading||!S.online) return;
   S._estLoading=true;
   try{
     const r=await apiBg('estimateList',{});
     S.estData=r; S.reqEstimates=r.visits||[]; S.pendingEstimates=(r.leads||[]).length; S.estErr='';
     DB.setCache('estimates', r);
+    sjRepaint_();                                   // v116
   }catch(e){ S.estErr=/Unknown action/i.test(e.message||'')?'This tab needs the newest office script.':e.message; }
   S._estLoading=false;
   if(S.tab==='est'||S.tab==='today') render();
+}
+/* v116 - where a visit sits in the list the buttons read, found at the tap by its id */
+function estVisitIdx(id){
+  const i=(S.reqEstimates||[]).findIndex(x=>String(x.id)===String(id));
+  if(i<0){ toast('That one has just changed - refreshing the list.'); loadEstimates(); }
+  return i;
 }
 function estPick(kind,i){ const d=S.estData||{}; return (kind==='lead'?d.leads:kind==='visit'?d.visits:d.sent||[])[i]; }
 function openEstSend(kind,i){
@@ -9509,6 +9518,8 @@ async function dayPickGo(btn){
   try{
     const msg=await d.onConfirm(start.toISOString(), Number(d.hours)||1, !!d.bump);
     dpState=null; closeSheet(); toast(msg||'Booked ✓',8000); loadRequests();
+    if(S.tab==='sched') schedRefreshAll();          // v116 - the new booking shows on the calendar
+    if(S.estData) loadEstimates();
   }catch(e){ toast(e.message,10000); dayPickRender(); dayPickLoad(); }
 }
 
@@ -9545,25 +9556,185 @@ function openAddManual(kind, fresh, day, estMode){
 function openEstAdd(mode){ openAddManual('call', true, '', mode==='visit'?'visit':'lead'); }
 function amSetCallMin(m){ amSave(); if(amState){ amState.hours=m/60; addManualRender(); } }
 let sjResults=[];
+/* v116 - THE PICKER SHOWS WHO IS WAITING (Paul, 8 Nov: "click on a day and add the customers that
+ * are waiting on the estimate lists or the appointment booking lists rather than just those that
+ * have the PO numbers. If I book them, fill out the PO Log so they get their PO numbers with all
+ * the details included"). Customers waiting for a day (Requests, and jobs that lost their slot)
+ * and customers on the Estimates tab (waiting for a price, a visit booked, a price sent) come first,
+ * then the jobs already in progress. Booking a waiting customer is the office's own booking -
+ * requestSchedule as a job, or requestBook after a visit to look - which takes the next PO number
+ * and writes the PO Log row from the request: contact, company, phone, email, address,
+ * description of work, start date, type, In progress. */
 function openScheduleJobPick(){
   custHydrateSync_();                               // the saved list, before the first paint
   sheet(`<h2>⚡ Schedule a job</h2>
     ${amDay?`<div class="banner sync">📅 For <b>${esc(amDayLabel(amDay))}</b></div>`:''}
-    <p class="small muted" style="margin-top:-4px">Jobs in progress — pick the one this work belongs to and it keeps its job number.</p>
-    <input id="sjSearch" placeholder="Search the jobs in progress…" autocomplete="off" oninput="sjFilter(this.value)">
-    <div id="sjList" style="max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:0 12px;margin-top:6px">${sjListHtml('')}</div>
+    <p class="small muted" style="margin-top:-4px">Customers waiting for a day or a price come first: booking one gives them their PO number. Then the jobs in progress, which keep theirs.</p>
+    <input id="sjSearch" placeholder="Search customers and jobs…" autocomplete="off" oninput="sjFilter(this.value)">
+    <div id="sjList" style="max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:0 12px;margin-top:6px">${sjListHtml('')}</div>
     <button class="secondary" style="width:100%;margin-top:10px" onclick="openAddManual('job',true,amDay)">➕ New customer — not on the list</button>
     <button class="ghost" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
-  loadCustomers(true);                              // and refresh it behind the screen
+  loadCustomers(true);                              // and refresh them all behind the screen;
+  loadRequests(); if(canApprove()) loadEstimates(); // each one redraws this list when it lands
+}
+let sjWaitResults=[];
+const SJ_PILL={col:'rejected', yes:'approved', req:'live', sent:'pending', visit:'live', lead:'pending'};
+function sjNorm(x){ return String(x==null?'':x).toLowerCase().replace(/[^a-z0-9@.]+/g,' ').trim(); }
+function sjShortDay(d){ const t=d?new Date(d):null; return t&&!isNaN(t)?t.toLocaleDateString([],{month:'short',day:'numeric'}):''; }
+function sjWaiting(qs){
+  const q=sjNorm(qs), est=S.estData||{}, out=[], seen={};
+  const add=(src,x,tag,pill)=>{ if(!x||!x.id||seen[x.id]) return; seen[x.id]=1; out.push({src,q:x,tag,pill:pill||SJ_PILL[src]}); };
+  (S.reqCollateral||[]).forEach(x=>add('col',x,'Needs a new time'));
+  (S.requests||[]).forEach(x=>{ const yes=/said yes to the estimate/i.test(String(x.detail||''));
+    add('req',x,yes?'Said yes · needs a day':'Needs a day',yes?SJ_PILL.yes:SJ_PILL.req); });
+  (est.sent||[]).forEach(x=>{ const qt=x.quote||{}, m=estMoney(qt.low,qt.high); add('sent',x,'Price sent'+(m?' '+m:'')); });
+  (est.visits||(!S.estData&&S.reqEstimates)||[]).forEach(x=>add('visit',x,'Visit '+sjShortDay(x.start)));
+  (est.leads||[]).forEach(x=>add('lead',x,'Waiting for a price'));
+  if(!q) return out;
+  return out.filter(w=>{ const x=w.q;
+    return [x.customer,x.company,x.address,x.scope,x.phone,x.email,x.po].some(v=>sjNorm(v).includes(q)); });
+}
+function sjWaitRowHtml(w){
+  const x=w.q, sub=[x.scope,x.address].filter(Boolean).map(v=>String(v).replace(/^\s*⚠\s*/,'')).join(' · ');
+  return `<div class="row between" style="gap:8px;align-items:flex-start">
+      <b style="min-width:0">${esc(x.customer||'—')}</b>
+      <span class="pill ${w.pill}" style="flex:none;font-size:.72rem;white-space:nowrap">${esc(w.tag)}</span></div>
+    ${x.po?`<div class="small muted" style="margin-top:1px">PO ${esc(x.po)}</div>`:''}
+    ${sub?`<div class="small muted" style="margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(sub)}</div>`:''}`;
 }
 function sjListHtml(q){
-  const list=openPOs(q);
-  sjResults=list;
-  if (!S.customers) return `<p class="small muted">${S.online?'Loading the jobs in progress…':'No job list saved on this phone yet.'}</p>`;
-  if (!list.length) return `<p class="small muted">${q?'No job in progress matches — add the customer below.':'No jobs are in progress. Add the customer below.'}</p>`;
-  return list.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="sjPick(${i})">${poRowHtml(c)}</div>`).join('');
+  const wait=sjWaiting(q); sjWaitResults=wait;
+  const list=openPOs(q); sjResults=list;
+  const head=t=>`<div class="small" style="font-weight:700;color:var(--navy);margin:12px 0 2px;text-transform:uppercase;letter-spacing:.04em">${t}</div>`;
+  const loadingW=!S.requests&&!S.estData;
+  let html=head('Waiting for a day or a price');
+  html+=wait.length ? wait.map((w,i)=>`<div class="list-item" style="cursor:pointer" onclick="sjPickWaiting(${i})">${sjWaitRowHtml(w)}</div>`).join('')
+    : `<p class="small muted">${loadingW?(S.online?'Loading who is waiting…':'Not saved on this phone yet.'):(q?'Nobody waiting matches.':'Nobody is waiting.')}</p>`;
+  html+=head('Jobs in progress — keep their job number');
+  if (!S.customers) html+=`<p class="small muted">${S.online?'Loading the jobs in progress…':'No job list saved on this phone yet.'}</p>`;
+  else if (!list.length) html+=`<p class="small muted">${q?'No job in progress matches — add the customer below.':'No jobs are in progress. Add the customer below.'}</p>`;
+  else html+=list.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="sjPick(${i})">${poRowHtml(c)}</div>`).join('');
+  return html;
 }
 function sjFilter(q){ const el=document.getElementById('sjList'); if(el) el.innerHTML=sjListHtml(q||''); }
+function sjRepaint_(){ if(document.getElementById('sjList')) sjFilter(val('sjSearch')); }
+
+/* v116 - BOOK A WAITING CUSTOMER. Their details are shown to check or fill in first, because those
+ * are what go on the PO Log row; a change is saved to their request (requestUpdate) before it is
+ * booked, so the row is written with it. The job name is the PO Log's Project Name - the short
+ * name the crew see - which the script never makes up on its own (v67): it is written only when it
+ * is typed or kept here, and only into a blank cell. */
+let bwState=null;
+function sjPickWaiting(i){
+  const w=sjWaitResults[i]; if(!w) return;
+  const x=w.q, keepPo=String(x.po||'').trim();
+  let jn=String(x.scope||'').replace(/^\s*⚠\s*/,'').split(/\s+[—–-]\s+|;|\(|:/)[0].trim();
+  if(jn.length>48) jn='';
+  bwState={ src:w.src, tag:w.tag, q:x, day:amDay,
+    f:{ customer:String(x.customer||'').trim(), company:String(x.company||'').trim(), phone:String(x.phone||'').trim(),
+        email:String(x.email||'').trim(), address:String(x.address||'').trim(), scope:String(x.scope||'').trim(),
+        jobName:keepPo?'':jn, hours:Number(x.bookedHours||x.hours)||2 },
+    assign:[], notify:true, notifyCustomer:!!String(x.email||'').trim() };
+  bwRender();
+  if(!(S.employees||[]).length && S.online)
+    apiBg('listEmployees').then(r=>{ S.employees=(r&&r.employees)||[]; if(bwState&&document.getElementById('bwCustomer')){ bwSave(); bwRender(); } }).catch(()=>{});
+}
+function bwFrom(b){
+  const x=b.q, qt=x.quote||{};
+  if(b.src==='col') return 'Needs a new time: it lost its slot to another booking.';
+  if(b.src==='req') return /said yes to the estimate/i.test(String(x.detail||''))?'From Requests: they said yes to the estimate.':'From Requests: waiting for a day.';
+  if(b.src==='sent') return 'From Estimates: price sent'+(estMoney(qt.low,qt.high)?' '+estMoney(qt.low,qt.high):'')+(qt.sentAt?' on '+sjShortDay(qt.sentAt):'')+'.';
+  if(b.src==='visit') return 'From Estimates: visit to look on '+sjShortDay(x.start)+'. The visit stays on the calendar.';
+  return 'From Estimates: waiting for a price.';
+}
+function bwRender(){
+  const b=bwState; if(!b) return;
+  const f=b.f, keepPo=String(b.q.po||'').trim();
+  const crew=(S.employees||[]).filter(e=>e.active);
+  const dup=keepPo?[]:openPOs('').filter(c=>{ const n=sjNorm(c.name); return n && (n===sjNorm(f.customer)||n===sjNorm(f.company)); });
+  const inp=(id,label,v,type,ph)=>`<label>${label}</label><input id="${id}" type="${type||'text'}" value="${esc(v||'')}"${ph?` placeholder="${esc(ph)}"`:''}>`;
+  sheet(`<h2>Book ${esc(f.customer||'the job')}</h2>
+    ${b.day?`<div class="banner sync">📅 For <b>${esc(amDayLabel(b.day))}</b></div>`:''}
+    <p class="small muted" style="margin-top:-4px">${esc(bwFrom(b))}</p>
+    ${keepPo?`<div class="banner sync">Keeps <b>${esc(keepPo)}</b>. Its PO Log row gets the new start date.</div>`
+      :`<div class="banner" style="background:#ecfdf3;color:#14532d;border:1px solid #bbf7d0">Booking it gives the job the next PO number and fills its PO Log row with the details below, set to In progress.</div>`}
+    ${dup.length?`<div class="banner ot">Heads up: ${dup.map(c=>esc(c.name)+' already has '+esc(c.po)+(c.project?' ('+esc(c.project)+')':'')).join(', ')} in progress. Booking this gives it a new number of its own.</div>`:''}
+    ${inp('bwCustomer','Customer <span class="muted">(needed)</span>',f.customer)}
+    ${inp('bwCompany','Company <span class="muted">(blank for a homeowner)</span>',f.company)}
+    <p class="small muted" style="margin:2px 0 0">With a company it is a Commercial job (C number); without one, Residential (R number).</p>
+    <div class="row"><div class="grow">${inp('bwPhone','Phone',f.phone,'tel')}</div><div class="grow">${inp('bwEmail','Email',f.email,'email')}</div></div>
+    ${inp('bwAddress','Job address',f.address)}
+    <label>What is the job?</label><textarea id="bwScope" rows="3">${esc(f.scope)}</textarea>
+    ${keepPo?'':inp('bwJobName','Job name for the PO Log <span class="muted">(short, what the crew sees)</span>',f.jobName,'text','e.g. Basement outlets')}
+    <label>How long is the job? (hours)</label><input id="bwHours" type="number" step="0.25" min="0.25" max="12" value="${f.hours}" inputmode="decimal">
+    <label>Who's going?</label>
+    <div>${crew.map(e=>`<div class="perm"><input type="checkbox" id="bw_${esc(e.email)}" ${b.assign.indexOf(e.email)>=0?'checked':''}><label for="bw_${esc(e.email)}" style="margin:0">${esc(e.name||e.email)}</label></div>`).join('')||`<p class="small muted">${S.online?'Loading the crew…':'No crew list on this phone.'}</p>`}</div>
+    <div class="perm"><input type="checkbox" id="bwNotify" ${b.notify?'checked':''}><label for="bwNotify" style="margin:0">Email the crew their assignment</label></div>
+    <div class="perm"><input type="checkbox" id="bwNotifyCust" ${b.notifyCustomer?'checked':''}><label for="bwNotifyCust" style="margin:0">Email the customer to confirm the time${f.email?'':' (no email on file)'}</label></div>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="bwBack()">‹ Back</button>
+      <button class="grow" onclick="bwPickTime()">📅 ${b.day?'Pick a time on '+esc(schDate(b.day).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})):'Pick a time'} ›</button>
+    </div>`);
+}
+function bwSave(){
+  const b=bwState; if(!b||!document.getElementById('bwCustomer')) return;
+  const f=b.f;
+  f.customer=val('bwCustomer').trim(); f.company=val('bwCompany').trim(); f.phone=val('bwPhone').trim();
+  f.email=val('bwEmail').trim(); f.address=val('bwAddress').trim(); f.scope=val('bwScope').trim();
+  if(document.getElementById('bwJobName')) f.jobName=val('bwJobName').trim();
+  f.hours=Math.max(0.25,Math.min(12,Number(val('bwHours'))||f.hours||2));
+  b.assign=(S.employees||[]).filter(e=>e.active&&(document.getElementById('bw_'+e.email)||{}).checked).map(e=>e.email);
+  b.notify=(document.getElementById('bwNotify')||{}).checked!==false;
+  b.notifyCustomer=(document.getElementById('bwNotifyCust')||{}).checked===true;
+}
+function bwBack(){ bwSave(); bwState=null; openScheduleJobPick(); }
+function bwPickTime(){
+  bwSave(); const b=bwState; if(!b) return;
+  if(!b.f.customer) return toast('The customer needs a name.');
+  if(/^[A-Z]{1,2}-?\s?\d{5,}$/i.test(b.f.customer)) return toast('"'+b.f.customer+'" is a job number, not a name.');
+  if(b.f.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.f.email)) return toast('That email does not look right.');
+  dayPickOpen({
+    title:'When is the job? — '+b.f.customer,
+    sub:[b.f.scope,b.f.address].filter(Boolean).join(' · '),
+    hours:b.f.hours, date:b.day||todayStr(), startDay:!!b.day, back:'bwRender()',
+    onConfirm:(start,hours,bump)=>bwBook(start,hours,bump)
+  });
+}
+async function bwBook(start, hours, bump){
+  const b=bwState; if(!b) throw new Error('Start again from the calendar.');
+  const x=b.q, f=b.f, keepPo=String(x.po||'').trim(), notes=[];
+  // 1. corrections first, so the PO Log row is written with them
+  const ch={id:x.id}; let any=false;
+  ['customer','company','phone','email','address','scope'].forEach(k=>{
+    if(String(f[k]||'').trim()!==String(x[k]==null?'':x[k]).trim()){ ch[k]=f[k]; any=true; } });
+  if(any){ await api('requestUpdate',ch,{timeout:120000}); Object.keys(ch).forEach(k=>{ if(k!=='id') x[k]=ch[k]; }); }
+  // 2. book it as a job: the office takes the next PO number and fills the PO Log row
+  const pl={id:x.id, start, hours, assign:b.assign, notify:b.notify, notifyCustomer:b.notifyCustomer,
+            crew:b.assign.length||x.crew||1, bump:!!bump};
+  let r;
+  try{
+    r = b.src==='visit' ? await api('requestBook',pl,{timeout:120000})
+                        : await api('requestSchedule',Object.assign({type:'APPOINTMENT'},pl),{timeout:120000});
+  }catch(e){
+    // a booking that ran after the phone stopped waiting comes back as "already"
+    if(/already on the calendar|already has a PO/i.test(e.message||'')){ bwState=null; return (f.customer||'It')+' is already booked ✓'; }
+    throw e;
+  }
+  const po=String((r&&r.po)||'').trim();
+  // 3. the short job name, typed here by a person, into a blank Project Name only
+  if(po && !keepPo && f.jobName){
+    try{ await api('poLogUpdate',{po, fields:{'Project Name':f.jobName}, onlyBlank:true},{timeout:60000}); }
+    catch(e){ notes.push('job name not saved: '+e.message); }
+  }
+  bwState=null;
+  let msg=(f.customer||'Booked')+' — '+fmtDay(start)+' '+fmtTime(start);
+  if(po) msg+=' · '+po+(keepPo?' kept':' added to the PO Log');
+  if(r&&r.poNote&&/FAILED/i.test(r.poNote)) msg+=' · PO Log NOT updated: '+r.poNote;
+  if(r&&r.custNote&&/NOT notified|unavailable/i.test(r.custNote)) msg+=' · '+r.custNote;
+  const back=(r&&r.bumped&&r.bumped.length)||0; if(back) msg+=' · '+back+' job(s) now need a new time';
+  if(notes.length) msg+=' · '+notes.join(' · ');
+  return msg;
+}
 /* The job's own contact details come off its PO Log row, so nothing is retyped and nothing
    disagrees with what is already filed. The form opens straight away and fills in behind. */
 async function sjPick(i){
@@ -9875,6 +10046,7 @@ async function reqSchedule(i,btn){
    the type switch: choosing this IS choosing APPOINTMENT. */
 function openReqBook(i){
   const q=(S.reqEstimates||[])[i]; if(!q) return;
+  S._bkQ=q;                                         // v116 - Book it books THIS customer, even if the list reloads
   const sug=new Date(Date.now()+86400000);
   const pad=n=>String(n).padStart(2,'0');
   const d=`${sug.getFullYear()}-${pad(sug.getMonth()+1)}-${pad(sug.getDate())}`;
@@ -9899,7 +10071,7 @@ function openReqBook(i){
     </div>`);
 }
 async function reqBook(i,btn){
-  const q=(S.reqEstimates||[])[i]; if(!q) return;
+  const q=S._bkQ||(S.reqEstimates||[])[i]; if(!q) return;
   const date=val('bkDate'), time=val('bkTime'), hours=Number(val('bkHours'))||q.hours||1;
   if(!date||!time) return toast('Pick the date and time.');
   const start=new Date(date+'T'+time);
@@ -9910,7 +10082,7 @@ async function reqBook(i,btn){
   btn.disabled=true; btn.textContent='Booking…';
   try{
     const r=await api('requestBook',{id:q.id, start:start.toISOString(), hours, assign, notify, notifyCustomer, crew:assign.length||q.crew||1},{timeout:120000});
-    S.reqEstimates=(S.reqEstimates||[]).filter(x=>x.id!==q.id);
+    S.reqEstimates=(S.reqEstimates||[]).filter(x=>x.id!==q.id); S._bkQ=null;
     toast('Booked ✓' + (r&&r.po?(' — '+r.po):'') + (assign.length?', crew notified':''));
     if (r && r.poNote && /FAILED/i.test(r.poNote)) setTimeout(()=>toast('PO Log not updated: '+r.poNote), 2600);
     if (r && r.custNote && /NOT notified|unavailable/i.test(r.custNote)) setTimeout(()=>toast(r.custNote), 2600);
@@ -10026,6 +10198,7 @@ async function reqSaveEdit(k,i,btn){
 function openReqMove(i,k){
   k=k||'bk';
   const q=reqList(k)[i]; if(!q) return;
+  S._mvQ=q;                                         // v116 - Move it moves THIS booking, even if the list reloads
   const isEst=k==='est';
   const cur=q.start&&!isNaN(new Date(q.start))?new Date(q.start):new Date(Date.now()+86400000);
   const pad=n=>String(n).padStart(2,'0');
@@ -10060,7 +10233,7 @@ function mvSetCall(m){
 }
 async function reqMove(i,btn,k){
   k=k||'bk';
-  const q=reqList(k)[i]; if(!q) return;
+  const q=S._mvQ||reqList(k)[i]; if(!q) return;
   const date=val('mvDate'), time=val('mvTime'), hours=Number(val('mvHours'))||q.bookedHours||q.hours||1;
   if(!date||!time) return toast('Pick the date and time.');
   const start=new Date(date+'T'+time);
@@ -10072,7 +10245,7 @@ async function reqMove(i,btn,k){
     const bump=(document.getElementById('mvBump')||{checked:false}).checked===true;
     const r=await api('requestReschedule',{id:q.id, start:start.toISOString(), hours,
       callMinutes:callMinutes||undefined, notify:notifyCustomer, bump},{timeout:120000});
-    const back=(r&&r.bumped&&r.bumped.length)||0;
+    const back=(r&&r.bumped&&r.bumped.length)||0; S._mvQ=null;
     toast('Moved ✓'+(notifyCustomer?' — customer emailed':'')
       +(back?' · '+back+' job(s) now need a new time':''),back?7000:4000);
     loadRequests(); if(S.sched) schedRefreshAll(); render();   // v57
