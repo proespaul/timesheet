@@ -2681,6 +2681,47 @@ function todayRows(){
     rows.push({c:'g', k:'Not booked', t:`${i.po} ${i.name}`, s:i.start?`Start date ${tdShort(i.start)} · no hours yet`:'In progress with no start date and no hours', on:`openTodayBook('${k}')`}); });
   return rows;
 }
+/* v122 - ONE LINE PER KIND OF THING (Charles, 9 Nov: "each category should be one line; we then
+   click on that one line and it opens all the things in that category", like Requests' "5 jobs
+   to book"). Rows of the same kind fold into one line that says how many and names the first few;
+   tapping it opens them all. A kind with only one thing in it still opens that thing directly. */
+const TD_GROUP_WORDS = {
+  'Clock-out missing': n=>`${n} people still clocked in`,
+  'Fix this entry':    n=>`${n} entries to fix`,
+  'Punch refused':     n=>`${n} punches never landed`,
+  'Hours check':       n=>`${n} days don't match the hour sheets`,
+  'Ready to bill?':    n=>`${n} jobs to bill`,
+  'Finish the invoice':n=>`${n} invoices to finish`,
+  'Not booked':        n=>`${n} jobs never booked`
+};
+function tdGroups_(rows){
+  const order=[], by={};
+  rows.forEach(r=>{ const key=/^Hours check/.test(r.k)?'Hours check':r.k;
+    if(!by[key]){ by[key]={k:key, c:r.c, items:[]}; order.push(key); }
+    by[key].items.push(r); if(r.c==='o') by[key].c='o'; });
+  const groups=order.map(key=>{ const g=by[key], n=g.items.length;
+    if(n===1){ const r=g.items[0]; return {k:r.k, c:r.c, t:r.t, s:r.s, on:r.on, items:g.items}; }
+    let count=n, sub;
+    if(key==='Hours check'){
+      count=g.items.reduce((m,r)=>{ const x=String(r.t).match(/^(\d+)/); return m+(x?Number(x[1]):1); },0);
+      sub=g.items.map(r=>r.k.replace(/^Hours check · /,'')+' '+(String(r.t).match(/^(\d+)/)||['',''])[1]).join(' · ');
+    } else if(/^(Fix this entry|Punch refused)$/.test(key)){
+      const per={}; g.items.forEach(r=>{ const who=String(r.t).split(' · ')[0]; per[who]=(per[who]||0)+1; });
+      sub=Object.keys(per).map(w=>`${w} ${per[w]}`).join(' · ');
+    } else {
+      sub=g.items.slice(0,3).map(r=>String(r.t).split(' · ')[0]).join(' · ')+(n>3?` +${n-3}`:'');
+    }
+    return {k:key, c:g.c, t:(TD_GROUP_WORDS[key]||(m=>`${m} to look at`))(count), s:sub, items:g.items};
+  });
+  S._tdGroups=groups;
+  return groups;
+}
+function tdOpenGroup(i){
+  const g=(S._tdGroups||[])[i]; if(!g) return;
+  sheet(`<h2>${esc(g.k)}</h2><p class="small muted" style="margin-top:-4px">${esc(g.t)}. Tap one to deal with it.</p>
+    <div class="needs-list">${g.items.map(r=>`<div class="ni" onclick="closeSheetDom();${r.on}"><span class="ndot ${r.c}"></span><div class="tx"><div class="t">${esc(r.t)}</div><div class="s">${esc(r.s)}</div></div><span class="go">›</span></div>`).join('')}</div>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+}
 function todayView(){
   const d=S.today;
   const at=d&&d.builtAt?new Date(d.builtAt):null;
@@ -2690,7 +2731,7 @@ function todayView(){
   const head=`<div class="tdhead"><div><h2>Today</h2><div class="tdasof${stale?' stale':''}">${asof}</div></div>
       <button class="tdrefresh" onclick="loadToday(true)" ${S.todayBusy?'disabled':''}>${S.todayBusy?'<span class="spin" style="width:16px;height:16px;border-width:2px"></span> Checking…':'↻ Refresh'}</button></div>`;
   if(!d) return head+todayClockCard()+`<div class="card"><p class="muted small" style="margin:0">${S.online?'<span class="spin"></span> Getting the numbers…':'Open this screen once with signal and it will be kept on the phone.'}</p></div>`;
-  const rows=todayRows();
+  const rows=todayRows(), groups=tdGroups_(rows);
   const hid=d.hidden||[];
   const hidden = hid.length ? `<div class="small muted" style="margin-top:10px">${hid.length} put aside · <a href="#" style="color:var(--accent2)" onclick="S.todayShowHidden=!S.todayShowHidden;render();return false">${S.todayShowHidden?'hide the list':'show them'}</a></div>
       ${S.todayShowHidden?hid.map(h=>`<div class="row between small" style="padding:6px 0;border-top:1px solid var(--line)"><span>${esc(h.label)}</span><a href="#" style="color:var(--accent2);white-space:nowrap" onclick="todayUnhide('${reg(h)}');return false">Put back</a></div>`).join(''):''}` : '';
@@ -2699,7 +2740,7 @@ function todayView(){
     <div class="tdgrid"><div>
     <div class="card needs-list">
       <div class="row between"><h3 style="margin:0">Needs you</h3><span class="small muted">${rows.length?rows.length+(rows.length===1?' item':' items'):''}</span></div>
-      ${rows.map(r=>`<div class="ni" onclick="${r.on}"><span class="ndot ${r.c}"></span><div class="tx"><div class="k ${r.c}">${esc(r.k)}</div><div class="t">${esc(r.t)}</div><div class="s">${esc(r.s)}</div></div><span class="go">›</span></div>`).join('')
+      ${groups.map((g,i)=>`<div class="ni" onclick="${g.on||`tdOpenGroup(${i})`}"><span class="ndot ${g.c}"></span><div class="tx"><div class="k ${g.c}">${esc(g.k)}</div><div class="t">${esc(g.t)}</div><div class="s">${esc(g.s)}</div></div><span class="go">›</span></div>`).join('')
         || '<p class="small muted" style="margin:10px 0 2px">Nothing needs you right now. ✓</p>'}
       ${hidden}
       ${canApprove()?`<div class="small" style="margin-top:8px"><a href="#" style="color:var(--accent2)" onclick="openChangeLog();return false">🕘 Changes made</a></div>`:''}
