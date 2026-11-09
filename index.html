@@ -6671,7 +6671,7 @@ function openManual(){
         <button class="ghost" onclick="mnToggleJob()">Change</button>
       </div>
       <div id="mnJobPick">
-        <input id="mnJobSearch" placeholder="Search open jobs…" autocomplete="off" oninput="mnJobFilter(this.value)">
+        <input id="mnJobSearch" placeholder="${canApprove()?'Search jobs, open or closed…':'Search open jobs…'}" autocomplete="off" oninput="mnJobFilter(this.value)">
         <div id="mnJobList" style="max-height:30vh;overflow:auto"></div>
         <label>Internal company time (no PO)</label>
         <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="mnPickCompany(companyOptions()[${i}].c)">${o.noPO?esc(o.label):coFace(o.c)}</span>`).join('')}</div>
@@ -6698,11 +6698,33 @@ function openManual(){
 /* Job picker — same behaviour as the Edit sheet, separate state so the two never collide. */
 function mnToggleJob(){ const d=document.getElementById('mnJobPick'); if(!d) return;
   d.classList.toggle('hidden'); if(!d.classList.contains('hidden')) mnJobFilter(val('mnJobSearch')); }
+/* v120 - CLOSED JOBS WHEN CORRECTING HOURS (Charles, 9 Nov: "some of these corrections need to be
+   made to closed jobs ... the job will not appear"). Add time and Edit entry list the open jobs
+   first and then, for whoever approves hours, the closed and invoiced ones underneath, newest
+   first, each marked with its status. Clocking in still shows open jobs only. */
+function fixPOs(q){
+  const open=openPOs(q);
+  if(!canApprove()) return open;
+  const ql=(q||'').trim().toLowerCase();
+  const rest=(S.customers||[]).filter(c=>c.po && !poOpen(c.status))
+    .filter(c=>!ql || c.name.toLowerCase().includes(ql) || c.po.toLowerCase().includes(ql) || String(c.project||'').toLowerCase().includes(ql))
+    .sort((a,b)=>String(b.po).localeCompare(String(a.po), undefined, {numeric:true}));
+  rest.forEach(c=>c._closed=true);
+  return open.concat(rest);
+}
+function fixPOsHtml(list, pick){
+  let hdr=false;
+  return list.map((c,i)=>{
+    const h = (c._closed && !hdr) ? (hdr=true, `<div class="small muted" style="font-weight:800;padding:10px 0 4px;border-top:1px solid var(--line)">Closed and invoiced jobs</div>`) : '';
+    const st = c._closed ? `<span class="pill" style="flex:none;text-transform:none;letter-spacing:0">${esc(c.status||'Closed')}</span>` : '';
+    return `${h}<div class="list-item row between" style="cursor:pointer;gap:8px" onclick="${pick}(${i})"><div style="min-width:0">${poRowHtml(c)}</div>${st}</div>`;
+  }).join('');
+}
 function mnJobFilter(q){
   const box=document.getElementById('mnJobList'); if(!box) return;
-  mnJobResults=openPOs(q);
-  box.innerHTML = mnJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="mnPickJob(${i})">${poRowHtml(c)}</div>`).join('')
-    || `<p class="small muted">${S.customers?'No open POs match.':(S.online?'Loading open jobs…':'No job list saved on this phone yet.')}</p>`;
+  mnJobResults=fixPOs(q);
+  box.innerHTML = fixPOsHtml(mnJobResults, 'mnPickJob')
+    || `<p class="small muted">${S.customers?'No jobs match.':(S.online?'Loading jobs…':'No job list saved on this phone yet.')}</p>`;
 }
 function mnPickJob(i){ const c=mnJobResults[i]; if(!c||!mnState) return;
   mnState.jobSite=c.name; mnState.poNumber=c.po; mnState.company='';
@@ -6826,7 +6848,7 @@ function openEditEntry(k, todayK){
         <button class="ghost" onclick="edToggleJob()">Change</button>
       </div>
       <div id="edJobPick" class="hidden">
-        <input id="edJobSearch" placeholder="Search open jobs…" autocomplete="off" oninput="edJobFilter(this.value)">
+        <input id="edJobSearch" placeholder="${canApprove()?'Search jobs, open or closed…':'Search open jobs…'}" autocomplete="off" oninput="edJobFilter(this.value)">
         <div id="edJobList" style="max-height:30vh;overflow:auto"></div>
         <label>Internal company time (no PO)</label>
         <div>${companyOptions().map((o,i)=>`<span class="chip" onclick="edPickCompany(companyOptions()[${i}].c)">${o.noPO?esc(o.label):coFace(o.c)}</span>`).join('')}</div>
@@ -6926,9 +6948,9 @@ function edToggleJob(){ const d=document.getElementById('edJobPick'); if(!d) ret
   d.classList.toggle('hidden'); if(!d.classList.contains('hidden')) edJobFilter(val('edJobSearch')); }
 function edJobFilter(q){
   const box=document.getElementById('edJobList'); if(!box) return;
-  edJobResults=openPOs(q);
-  box.innerHTML = edJobResults.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="edPickJob(${i})">${poRowHtml(c)}</div>`).join('')
-    || '<p class="small muted">No open POs match.</p>';
+  edJobResults=fixPOs(q);
+  box.innerHTML = fixPOsHtml(edJobResults, 'edPickJob')
+    || '<p class="small muted">No jobs match.</p>';
 }
 function edPickJob(i){ const c=edJobResults[i]; if(!c||!edState) return;
   edState.jobSite=c.name; edState.poNumber=c.po; edState.company=''; edState.jobEdited=true;
