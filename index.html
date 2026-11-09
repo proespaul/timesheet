@@ -3648,10 +3648,11 @@ function schedView(){
     ${canApprove()?(()=>{ // v114 - in the Day view these book on the day you are looking at
       const dd=(mode==='day' && schAnchor()>=localDateStr(new Date()))?schAnchor():'';
       const on=dd?' · '+schDate(dd).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'}):'';
-      return `<div class="row" style="margin-bottom:10px">
+      const past=mode==='day' && !dd;
+      return `<div class="row" style="margin-bottom:${past?4:10}px">
       <button class="secondary grow" onclick="openAddManual('job',false,'${dd}')">⚡ Schedule a job${esc(on)}</button>
       <button class="secondary grow" onclick="openAddManual('call',false,'${dd}')">📞 Schedule a call${esc(on)}</button>
-    </div>`; })():''}`;
+    </div>${past?'<p class="small muted" style="margin:0 0 10px">This day has passed, so these book from today.</p>':''}`; })():''}`;
   if(mode==='month') return head + schedMonthHtml() + (d?timeOffSection():'');
   if(mode==='year') return head + schYearHtml();
   if(mode==='week') return head + schWeekHtml() + (d?timeOffSection():'');
@@ -8613,15 +8614,18 @@ function estimatesView(){
   if(d) S.reqEstimates=d.visits||[];   // book / move / close-out read S.reqEstimates[i]: keep it the list on screen
   const sec=(title,note,list,kind)=>list&&list.length?`<h3 style="margin-top:18px">${title}</h3>${note?`<p class="small muted" style="margin-top:-4px">${note}</p>`:''}
     <div class="card">${list.map((q,i)=>estCard(q,i,kind)).join('')}</div>`:'';
-  const empty=d&&!(d.leads||[]).length&&!(d.visits||[]).length&&!(d.sent||[]).length;
+  /* v115 - the two lists you add customers to always show, with their own Add button */
+  const addSec=(title,note,list,kind,btn)=>`<div class="row between" style="margin-top:18px;align-items:center"><h3 style="margin:0">${title}</h3>${btn}</div>
+    ${note?`<p class="small muted" style="margin:4px 0 0">${note}</p>`:''}
+    <div class="card">${list&&list.length?list.map((q,i)=>estCard(q,i,kind)).join(''):'<p class="muted small" style="margin:0">Nobody here right now.</p>'}</div>`;
+  const empty=false;
   return `<div class="row between"><h2>📝 Estimates</h2>${S._estLoading&&!d?'<span class="spin"></span>':''}</div>
     <p class="small muted" style="margin-top:-4px">Everyone who asked for a price, from the website or by email. Send it from here; a yes moves it to Requests to book.</p>
-    <div class="row" style="margin:8px 0 4px"><button class="secondary grow" onclick="openAddManual('call')">➕ Add a request by hand</button></div>
     ${S.estErr?`<div class="banner ot">${esc(S.estErr)}</div>`:''}
     ${!d?`<div class="card"><p class="muted small" style="margin:0">${S.online?'<span class="spin"></span> Loading…':'Open this tab once with signal.'}</p></div>`:''}
     ${empty?'<div class="card"><p class="muted small" style="margin:0">Nothing waiting. 🎉</p></div>':''}
-    ${d?sec('New — waiting for a price','',d.leads,'lead'):''}
-    ${d?sec('Visit booked','You are going to look first. Send the price after, or book the job if they said yes on the spot.',d.visits,'visit'):''}
+    ${d?addSec('New — waiting for a price','',d.leads,'lead',`<button class="secondary" style="width:auto;padding:8px 14px" onclick="openEstAdd('lead')">➕ Add a customer</button>`):''}
+    ${d?addSec('Visit booked','You are going to look first. Send the price after, or book the job if they said yes on the spot.',d.visits,'visit',`<button class="secondary" style="width:auto;padding:8px 14px" onclick="openEstAdd('visit')">📅 Book a visit</button>`):''}
     ${d?sec('Sent — waiting on them','They can answer with the buttons in the email. Phoned instead? Mark it here.',d.sent,'sent'):''}
     ${d?sec('Said no (last 30 days)','',d.declined,'no'):''}`;
 }
@@ -9309,6 +9313,9 @@ function dayPickOpen(o){
             title:o.title||'Pick a time', sub:o.sub||'', back:o.back||'', onConfirm:o.onConfirm,
             mdata:null, mloading:true, merr:'',
             data:null, err:'', loading:false, time:'', bump:false };
+  // v115 - opened from a day on the calendar: go straight to that day and skip the month fetch
+  // (it loads only if they tap back to the whole month).
+  if(o.startDay){ dpState.view='day'; dpState.mloading=false; dpState.loading=true; dayPickRender(); dayPickLoad(); return; }
   dayPickRender(); dpMonthLoad();
 }
 function dayPickRender(){ if(!dpState) return; dpState.view==='month'?dpMonthRender():dpDayRender(); }
@@ -9383,7 +9390,7 @@ function dpBackToMonth(){
   if(!dpState) return;
   const m=dpMonthOf(dpState.date);
   dpState.view='month';
-  if(m!==dpState.month){ dpState.month=m; dpState.mdata=null; dpState.mloading=true; dayPickRender(); dpMonthLoad(); return; }
+  if(m!==dpState.month || !dpState.mdata){ dpState.month=m; dpState.mdata=null; dpState.mloading=true; dayPickRender(); dpMonthLoad(); return; }
   dayPickRender();
 }
 
@@ -9523,13 +9530,20 @@ let amState=null;
  * time picker opens straight on it. Everywhere else the day is cleared, so nothing carries over. */
 let amDay='';
 function amDayLabel(d){ return d?schDate(d).toLocaleDateString([],{weekday:'long',month:'short',day:'numeric'}):''; }
-function openAddManual(kind, fresh, day){
-  if (!fresh) amDay = day || '';                    // "New customer" from the pick list keeps the day
+function openAddManual(kind, fresh, day, estMode){
+  amDay = day || '';                                // v115 - always passed in, never left over from last time
   if (kind !== 'call' && !fresh) return openScheduleJobPick();
   amState={ kind:kind==='call'?'call':'job', emergency:kind!=='call', po:'', customer:'', phone:'', email:'',
-            address:'', scope:'', company:'', hours:kind==='call'?0.5:2, notifyCustomer:true, day:amDay };
+            address:'', scope:'', company:'', hours:kind==='call'?0.5:2, notifyCustomer:true, day:amDay,
+            estMode:kind==='call'?(estMode||''):'' };
   addManualRender();
 }
+/* v115 - ADD A CUSTOMER STRAIGHT TO AN ESTIMATES LIST (Paul, 8 Nov). 'lead' goes under New -
+ * waiting for a price (no time, no job number); 'visit' books a visit to look, which goes on the
+ * calendar under their name and under Visit booked - no job number, and the customer is not
+ * emailed. Both are an estimate call to the office (requestAddManual kind 'call'). */
+function openEstAdd(mode){ openAddManual('call', true, '', mode==='visit'?'visit':'lead'); }
+function amSetCallMin(m){ amSave(); if(amState){ amState.hours=m/60; addManualRender(); } }
 let sjResults=[];
 function openScheduleJobPick(){
   custHydrateSync_();                               // the saved list, before the first paint
@@ -9538,7 +9552,7 @@ function openScheduleJobPick(){
     <p class="small muted" style="margin-top:-4px">Jobs in progress — pick the one this work belongs to and it keeps its job number.</p>
     <input id="sjSearch" placeholder="Search the jobs in progress…" autocomplete="off" oninput="sjFilter(this.value)">
     <div id="sjList" style="max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:0 12px;margin-top:6px">${sjListHtml('')}</div>
-    <button class="secondary" style="width:100%;margin-top:10px" onclick="openAddManual('job',true)">➕ New customer — not on the list</button>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="openAddManual('job',true,amDay)">➕ New customer — not on the list</button>
     <button class="ghost" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
   loadCustomers(true);                              // and refresh it behind the screen
 }
@@ -9582,11 +9596,16 @@ function amSave(){
 }
 function addManualRender(){
   const a=amState; if(!a) return;
-  const isCall=a.kind==='call';
-  sheet(`<h2>${isCall?'📞 Schedule a phone call':'⚡ Schedule a job'}</h2>
+  const isCall=a.kind==='call', em=isCall?a.estMode:'';
+  const callMin=Math.round((Number(a.hours)||0.5)*60);
+  sheet(`<h2>${em==='lead'?'➕ Add a customer for a price':em==='visit'?'📅 Book a visit to look':isCall?'📞 Schedule a phone call':'⚡ Schedule a job'}</h2>
     ${a.day?`<div class="banner sync">📅 For <b>${esc(amDayLabel(a.day))}</b></div>`:''}
     ${a.po?`<div class="banner sync">On <b>${esc(a.po)}</b>${a.project?' · '+esc(a.project):''} — it keeps this job number.</div>`:''}
-    <p class="small muted" style="margin-top:-4px">${isCall
+    <p class="small muted" style="margin-top:-4px">${em==='lead'
+      ? 'Goes under New — waiting for a price on the Estimates tab. No job number until they say yes.'
+      : em==='visit'
+      ? 'Goes on the calendar under their name and under Visit booked. No job number until they say yes, and the customer is not emailed.'
+      : isCall
       ? 'Blocks the call on the calendar and files it on the Estimate tab. No job number is used — nothing is sold yet.'
       : (a.po ? 'Books the time against the job that is already open. Its PO Log row is re-dated — no new number.'
               : 'A new customer: this gets the next job number and a full PO Log row, the same as scheduling a website lead.')}</p>
@@ -9597,44 +9616,54 @@ function addManualRender(){
       <div class="grow"><label>Email</label><input id="amEmail" type="email" value="${esc(a.email)}"></div>
     </div>
     <label>Address</label><input id="amAddr" value="${esc(a.address)}">
-    <label>What is the ${isCall?'call about':'job'}?</label>
+    <label>What is the ${em?'job they want priced':isCall?'call about':'job'}?</label>
     <textarea id="amScope" rows="3" placeholder="${isCall?'What do they want quoted?':'What needs doing?'}">${esc(a.scope)}</textarea>
-    <div class="row">
+    ${em==='visit'?`<label>Billed to (company)</label><input id="amCo" value="${esc(a.company)}">
+    <label>How long is the visit?</label>
+    <div class="seg" style="margin-bottom:6px">${[[15,'15 min'],[30,'30 min'],[60,'1 h'],[120,'2 h']].map(([m,t])=>`<button type="button" class="${m===callMin?'on':''}" onclick="amSetCallMin(${m})">${t}</button>`).join('')}</div>
+    <input type="hidden" id="amHours" value="${a.hours}">`
+    : em==='lead'?`<label>Billed to (company)</label><input id="amCo" value="${esc(a.company)}"><input type="hidden" id="amHours" value="${a.hours}">`
+    :`<div class="row">
       <div class="grow"><label>Billed to (company)</label><input id="amCo" value="${esc(a.company)}"></div>
       <div class="grow"><label>How long? (hours)</label><input id="amHours" type="number" step="0.25" min="0.25" value="${a.hours}"></div>
-    </div>
+    </div>`}
     ${isCall?'':`<label class="row" style="gap:10px;align-items:center;margin-top:10px;cursor:pointer">
       <input type="checkbox" id="amEmg" ${a.emergency?'checked':''} style="width:20px;height:20px;flex:none;margin:0">
       <span class="small"><b>Emergency</b> — may go after hours, today, or on top of a job already there</span></label>
     <label class="row" style="gap:10px;align-items:center;margin-top:6px;cursor:pointer">
       <input type="checkbox" id="amNotify" ${a.notifyCustomer!==false?'checked':''} style="width:18px;height:18px;flex:none;margin:0">
       <span class="small">Email the customer to confirm the time</span></label>`}
+    ${em==='lead'?`<div class="row" style="margin-top:12px">
+      <button class="ghost grow" onclick="closeSheet()">Cancel</button>
+      <button class="grow" onclick="amLater(this)">➕ Add to the list</button>
+    </div>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="amSave();amState.estMode='visit';amState.hours=0.5;addManualRender()">📅 Book a visit to look instead ›</button>`:`
     <div class="row" style="margin-top:12px">
       <button class="ghost grow" onclick="closeSheet()">Cancel</button>
       <button class="secondary grow" onclick="amLater(this)">Save — no time yet</button>
     </div>
-    <button class="grow" style="width:100%;margin-top:8px" onclick="amPickTime()">📅 ${a.day?'Pick a time on '+esc(schDate(a.day).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})):'Pick a time'} ›</button>`);
+    <button class="grow" style="width:100%;margin-top:8px" onclick="amPickTime()">📅 ${a.day?'Pick a time on '+esc(schDate(a.day).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})):'Pick a time'} ›</button>`}`);
 }
 function amPickTime(){
   amSave(); const a=amState; if(!a) return;
   if(!a.customer) return toast('Who is it for? Give at least a name.');
   dayPickOpen({
-    title:(a.kind==='call'?'When is the call? — ':'When is the job? — ')+a.customer,
+    title:(a.estMode==='visit'?'When is the visit? — ':a.kind==='call'?'When is the call? — ':'When is the job? — ')+a.customer,
     sub:[a.scope,a.address].filter(Boolean).join(' · '),
-    hours:a.hours, date:a.day||todayStr(), back:'addManualRender()',
+    hours:a.hours, date:a.day||todayStr(), startDay:!!a.day, back:'addManualRender()',
     onConfirm:async(start,hours,bump)=>{
       const r=await api('requestAddManual',{ kind:a.kind, po:a.po||'', customer:a.customer, phone:a.phone,
         email:a.email, address:a.address, scope:a.scope, company:a.company, hours:hours,
         start:start, bump:!!bump, emergency:!!a.emergency,
         notifyCustomer:a.notifyCustomer!==false },{timeout:120000});
       amState=null;
+      if(a.kind==='call') loadEstimates();          // v115 - the visit shows under Visit booked
       const back=(r&&r.bumped&&r.bumped.length)||0;
       return (a.kind==='call'?'Call booked — ':'Job booked — ')+fmtDay(start)+' '+fmtTime(start)
         +((r&&r.po)?' · '+r.po:'')
         +(back?' · '+back+' job(s) now need a new time':'');
     }
   });
-  if(a.day) dpOpenDay(a.day);                       // v114 - straight to the day that was tapped
 }
 async function amLater(btn){
   amSave(); const a=amState; if(!a) return;
@@ -9645,8 +9674,8 @@ async function amLater(btn){
     await api('requestAddManual',{ kind:a.kind, po:a.po||'', customer:a.customer, phone:a.phone, email:a.email,
       address:a.address, scope:a.scope, company:a.company, hours:a.hours, emergency:!!a.emergency });
     amState=null; closeSheet();
-    toast((a.kind==='call'?'Call':'Job')+' saved — it is waiting at the top of Requests.',7000);
-    loadRequests();
+    if(a.kind==='call'){ toast(a.customer+' added — Estimates tab, under New — waiting for a price.',7000); loadEstimates(); }
+    else { toast('Job saved — it is waiting at the top of Requests.',7000); loadRequests(); }
   }catch(e){ toast(e.message,9000); btn.disabled=false; btn.textContent='Save — no time yet'; }
 }
 
