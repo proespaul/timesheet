@@ -2549,13 +2549,60 @@ async function loadToday(fresh){
   try{
     // A rebuild reads every timesheet, the PO Log, the calendar and both hour sheets: give it time.
     const r=await api('today', fresh?{fresh:true}:{}, {bg:true, timeout: fresh?90000:45000});
-    if(r&&r.tiles){ S.today=r; S.todayErr=''; S._todayAt=Date.now(); DB.setCache('today', r); }
+    if(r&&r.tiles){ hcNotWork_(r); S.today=r; S.todayErr=''; S._todayAt=Date.now(); DB.setCache('today', r); }
   }catch(e){
     S.todayErr = /Unknown action/i.test(e.message||'') ? 'This screen needs the newest office script.' : (e.message||'Could not load the numbers.');
     if(fresh || !S.today) toast(S.todayErr, 6000);
   }
   S._todayLoading=false; S.todayBusy=false;
   if(S.tab==='today') render();
+  statPayAuto_();
+}
+/* v121 - LINES ON AN HOUR SHEET THAT ARE NOT TIME WORKED (Charles, 9 Nov: his cellphone allowance
+   and stat-day lines were flagged; "they should be recognized because of the description").
+   A sheet line whose place, task or notes says cellphone / phone allowance, allowance, stat or
+   status day, or holiday is taken out of the sheet's total before the two are compared: the
+   allowance is paid from the Allowances list and the stat from Post stat holiday pay, never as
+   app time. A day that then agrees within half an hour leaves the list. Works on whatever the
+   office sends for each line; if it sends no notes, those lines cannot be told apart here. */
+const HC_NOT_WORK = /(cell\s*phone|phone\s*allowance|allowance|\bstat(us|utory)?\s*(day|holiday|pay)\b|\bstat\b|holiday)/i;
+function hcNotWork_(r){
+  (r.hours||[]).forEach(g=>{
+    g.days=(g.days||[]).filter(d=>{
+      const rows=d.sheetRows||[];
+      const nw=rows.filter(x=>HC_NOT_WORK.test([x.label,x.task,x.note,x.notes,x.Notes,x.place].filter(Boolean).join(' ')));
+      if(!nw.length) return true;
+      const off=nw.reduce((n,x)=>n+(Number(x.h)||0),0);
+      d.sheetRows=rows.map(x=>nw.includes(x)?Object.assign({},x,{notWork:true}):x);
+      d.sheet=Math.max(0,(Number(d.sheet)||0)-off);
+      return Math.abs((Number(d.app)||0)-d.sheet) > 0.5;
+    });
+  });
+  tdRecount(r);
+}
+/* v121 - STAT HOLIDAY PAY POSTS ITSELF (Charles, 9 Nov: "the app should add the status day
+   automatically"). The office's Post stat holiday pay - Alberta average daily wage, 5-of-9 rule,
+   an approved entry on the holiday - was a button nobody was reminded to press; it last ran on
+   10 Sep, so Thanksgiving was never posted. It now runs on its own the first time an approver
+   opens Today each day. It is safe to repeat: anyone already posted is skipped. What it posts is
+   shown once, so nobody is surprised by a new entry; in January it also finishes last year. */
+async function statPayAuto_(){
+  if(!canApprove() || !S.online) return;
+  const day=localDateStr(new Date()), key='statPayAuto';
+  try{ if(localStorage.getItem(key)===day) return; localStorage.setItem(key, day); }catch(e){ return; }
+  const y=new Date().getFullYear(), years=new Date().getMonth()===0?[y-1,y]:[y];
+  const posted=[];
+  for(const yr of years){
+    try{ const r=await api('statPayRun',{year:yr},{bg:true}); (r.posted||[]).forEach(x=>posted.push(x)); }
+    catch(e){ try{ localStorage.removeItem(key); }catch(_){} return; }
+  }
+  if(!posted.length) return;
+  refresh(true); loadToday(true);
+  if(S._sheet) { toast(`Stat holiday pay posted for ${posted.length} ${posted.length===1?'person':'people'} - see Admin.`, 7000); return; }
+  sheet(`<h2>🍁 Stat holiday pay posted</h2>
+    <p class="small muted">The app posts it by itself now: Alberta average daily wage, only for people the 5-of-9 rule makes eligible. Each one is an approved entry on the holiday, and shows in Changes made.</p>
+    ${posted.map(x=>`<div class="list-item small"><b>${esc(x.who)}</b> · ${esc(x.holiday)} · ${x.hours} hrs ≈ $${Number(x.amount).toFixed(2)}</div>`).join('')}
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">OK</button>`);
 }
 function todayClockCard(){
   const oe=S.openEntry;
@@ -3080,7 +3127,7 @@ function hcDayHtml(g,d){
     : d.sheet===0 ? 'In the app, not on the sheet' : (diff>0 ? `App ${diff.toFixed(2)} h more` : `App ${(-diff).toFixed(2)} h less`);
   // Each line: what it was (the job, as the PO Log names it), then when and how long.
   const appR=(d.appRows||[]).map(r=>`<div class="hcrow"><b>${esc(r.label)}</b><span>${r.in?esc(fmtTime(r.in))+'–'+(r.out?esc(fmtTime(r.out)):'…')+' · ':''}${Number(r.h).toFixed(2)} h${r.st==='pending'?' · pending':''}</span></div>`).join('') || '<div class="hcrow"><span>Nothing</span></div>';
-  const shR=(d.sheetRows||[]).map(r=>`<div class="hcrow"><b>${esc(r.label||'Hours')}</b>${r.task?`<span>${esc(r.task)}</span>`:''}<span>${r.start?esc(r.start)+(r.end?'–'+esc(r.end):'')+' · ':''}${Number(r.h).toFixed(2)} h</span></div>`).join('') || '<div class="hcrow"><span>Nothing</span></div>';
+  const shR=(d.sheetRows||[]).map(r=>`<div class="hcrow"${r.notWork?' style="opacity:.55"':''}><b>${esc(r.label||'Hours')}</b>${r.task?`<span>${esc(r.task)}</span>`:''}${(r.note||r.notes)?`<span>${esc(r.note||r.notes)}</span>`:''}<span>${r.start?esc(r.start)+(r.end?'–'+esc(r.end):'')+' · ':''}${Number(r.h).toFixed(2)} h${r.notWork?' · not time worked':''}</span></div>`).join('') || '<div class="hcrow"><span>Nothing</span></div>';
   const missing=d.sheet-d.app;
   const one=(d.app===0 && (d.sheetRows||[]).length===1) ? d.sheetRows[0] : null;
   const addK = missing>0.5 ? reg({email:g.email, date:d.date, hours:Math.round(missing*4)/4, start: one?tdTime24(one.start):''}) : '';
