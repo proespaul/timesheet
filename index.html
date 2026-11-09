@@ -3159,7 +3159,7 @@ function openTodayFix(k){
     <p class="small muted" style="margin-top:-4px">${esc(e['Customer/Job Site']||e.Company||'')}${e['PO#']?' · '+esc(e['PO#']):''}</p>
     <p>${esc(it.text||'')}</p>
     <p class="small" style="color:var(--needs-ink)">${esc(it.suggest||'')}</p>
-    <button style="width:100%;margin-top:8px" onclick="closeSheetDom();openEditEntry('${ek}')">✏️ Fix this entry</button>
+    <button style="width:100%;margin-top:8px" onclick="closeSheetDom();openEditEntry('${ek}','${hk}')">✏️ Fix this entry</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="todayHide('${hk}')">Looks right — hide it</button>
     ${canApprove()?`<button class="secondary" style="width:100%;margin-top:6px;color:var(--bad)" onclick="closeSheetDom();edDeleteAsk('${ek}')">🗑 Delete it — it was a mistake</button>`:''}
     <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Close</button>`);
@@ -6702,11 +6702,15 @@ async function submitManual(){
    Same fields as the clock-out review. An employee's edit to an already-approved entry
    sends it back to 'pending' for admin re-approval; every save stamps Last Edited By/At. */
 let edState=null, edJobResults=[];
-function openEditEntry(k){
+function openEditEntry(k, todayK){
   const ref=dereg(k); if(!ref) return; const e=ref.e;
+  /* v118 - opened from a Needs-you "Fix this entry" row (Paul, 9 Nov: "the changes in the needs
+     you section should automatically be saved, not go back to Requests"). An approver's fix from
+     there is approved as it is saved and the row leaves Today at the tap. */
+  const fromToday = (todayK && canApprove()) ? (dereg(todayK)||{}) : null;
   edState={ e, employeeEmail:ref.employeeEmail,
     jobSite:e['Customer/Job Site']||'', poNumber:e['PO#']||'', company:e.Company||'',
-    jobEdited:false, items:[] };
+    jobEdited:false, items:[], fromToday };
   loadMaterials();
   jpLoad(edState.poNumber, edState.jobSite||edState.company, true);   // v76 - this job's own PO parts
   custHydrateSync_();   // v75
@@ -6721,7 +6725,7 @@ function openEditEntry(k){
   const inD=inDT.slice(0,10), inT=inDT.slice(11,16);
   const outD=outDT.slice(0,10), outT=outDT.slice(11,16);
   const brkMin=Math.round((Number(e['Break Hrs'])||0)*60);
-  const reflagNote = e.Status==='approved' && S.me.role!=='admin';
+  const reflagNote = e.Status==='approved' && S.me.role!=='admin' && !fromToday;
   sheet(`<h2>Edit entry</h2>
     ${reflagNote?'<p class="small muted">This entry was already approved — saving changes sends it back to an admin for re-approval.</p>':''}
     <div class="card" style="margin:10px 0">
@@ -6872,13 +6876,32 @@ async function submitEdit(){
   if (st.jobEdited){ p.jobSite=st.jobSite; p.poNumber=st.poNumber; p.company=st.company; }
   const mats=st.items.slice();
   edState=null; closeSheet();
+  /* v118 - a fix from Needs you leaves the list at the tap; it comes back if the office says no. */
+  const ft=st.fromToday, snapT=(ft&&S.today)?JSON.parse(JSON.stringify(S.today)):null;
+  if (ft && S.today && Array.isArray(S.today.items)){
+    S.today.items=S.today.items.filter(i=>!(i.kind==='fix' && i.entry && i.entry.EntryID===e.EntryID));
+    DB.setCache('today', S.today); render();
+  }
   try{
     const r=await apiMutate('editEntry', p);
     if (mats.length) apiMutate('logMaterials',{ entryId:e.EntryID,
       jobSite:(p.jobSite!==undefined?p.jobSite:e['Customer/Job Site'])||st.company||'',
       poNumber:(p.poNumber!==undefined?p.poNumber:e['PO#'])||'', items:mats });
-    toast(r&&r.reflagged ? 'Saved — sent back for approval' : (r&&r.queued ? 'Saved (will sync)' : 'Saved'));
-  }catch(err){ toast(err.message); }
+    if (ft && r && (r.reflagged || r.queued || e.Status==='pending')){
+      // Approve it straight away (queued behind the edit when there is no signal, so it lands
+      // after it). The office still logs who approved it and the before-and-after.
+      toast(r.queued ? 'Saved and approved (will sync)' : 'Saved and approved');
+      officeDo_('approveEntry', {employeeEmail:st.employeeEmail, entryId:e.EntryID},
+        ()=>{ toast('Saved, but the approval did not go through - it is on the Requests tab.', 6000); if(canApprove()) loadApprovals(); },
+        ()=>{ if (isOffice()) loadToday(true); if (canApprove()) loadApprovals(); });
+    } else {
+      toast(r&&r.reflagged ? 'Saved — sent back for approval' : (r&&r.queued ? 'Saved (will sync)' : 'Saved'));
+      if (ft && isOffice()) loadToday(true);
+    }
+  }catch(err){
+    toast(err.message);
+    if (snapT){ S.today=snapT; DB.setCache('today', snapT); render(); }
+  }
   refresh(true);
   if (canApprove()) loadApprovals();               // v56 — an edited pending entry shows its new hours
 }
