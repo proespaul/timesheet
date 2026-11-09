@@ -9651,7 +9651,9 @@ function bwRender(){
   const b=bwState; if(!b) return;
   const f=b.f, keepPo=String(b.q.po||'').trim();
   const crew=(S.employees||[]).filter(e=>e.active);
-  const dup=keepPo?[]:openPOs('').filter(c=>{ const n=sjNorm(c.name); return n && (n===sjNorm(f.customer)||n===sjNorm(f.company)); });
+  // v117 - a near-miss counts too ("Kate Morison" vs "Kate Morrison"): the whole name, 2 letters or fewer apart
+  const near=(a,b)=>!!a&&!!b&&(a===b||(Math.min(a.length,b.length)>=5&&levJs(a,b)<=2));
+  const dup=keepPo?[]:openPOs('').filter(c=>{ const n=sjNorm(c.name); return near(n,sjNorm(f.customer))||near(n,sjNorm(f.company)); });
   const inp=(id,label,v,type,ph)=>`<label>${label}</label><input id="${id}" type="${type||'text'}" value="${esc(v||'')}"${ph?` placeholder="${esc(ph)}"`:''}>`;
   sheet(`<h2>Book ${esc(f.customer||'the job')}</h2>
     ${b.day?`<div class="banner sync">📅 For <b>${esc(amDayLabel(b.day))}</b></div>`:''}
@@ -9708,7 +9710,13 @@ async function bwBook(start, hours, bump){
   ['customer','company','phone','email','address','scope'].forEach(k=>{
     if(String(f[k]||'').trim()!==String(x[k]==null?'':x[k]).trim()){ ch[k]=f[k]; any=true; } });
   if(any){ await api('requestUpdate',ch,{timeout:120000}); Object.keys(ch).forEach(k=>{ if(k!=='id') x[k]=ch[k]; }); }
-  // 2. book it as a job: the office takes the next PO number and fills the PO Log row
+  // 2. a price-sent customer: record their yes on the estimate first, exactly as the email's Yes
+  //    button does (v117), so the quote shows answered. Once only - a retry after a clash skips it.
+  if(b.src==='sent' && !b.marked){
+    await api('estimateMark',{id:x.id, answer:'yes'},{timeout:60000});
+    b.marked=true;
+  }
+  // 3. book it as a job: the office takes the next PO number and fills the PO Log row
   const pl={id:x.id, start, hours, assign:b.assign, notify:b.notify, notifyCustomer:b.notifyCustomer,
             crew:b.assign.length||x.crew||1, bump:!!bump};
   let r;
@@ -9721,7 +9729,7 @@ async function bwBook(start, hours, bump){
     throw e;
   }
   const po=String((r&&r.po)||'').trim();
-  // 3. the short job name, typed here by a person, into a blank Project Name only
+  // 4. the short job name, typed here by a person, into a blank Project Name only
   if(po && !keepPo && f.jobName){
     try{ await api('poLogUpdate',{po, fields:{'Project Name':f.jobName}, onlyBlank:true},{timeout:60000}); }
     catch(e){ notes.push('job name not saved: '+e.message); }
