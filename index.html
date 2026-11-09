@@ -3645,10 +3645,13 @@ function schedView(){
       <button class="${mode==='day'?'on':''}" onclick="schedToggle('day')">Day</button>
       <button class="${mode==='list'?'on':''}" onclick="schedToggle('list')">List</button>
     </div>
-    ${canApprove()?`<div class="row" style="margin-bottom:10px">
-      <button class="secondary grow" onclick="openAddManual('job')">⚡ Schedule a job</button>
-      <button class="secondary grow" onclick="openAddManual('call')">📞 Schedule a call</button>
-    </div>`:''}`;
+    ${canApprove()?(()=>{ // v114 - in the Day view these book on the day you are looking at
+      const dd=(mode==='day' && schAnchor()>=localDateStr(new Date()))?schAnchor():'';
+      const on=dd?' · '+schDate(dd).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'}):'';
+      return `<div class="row" style="margin-bottom:10px">
+      <button class="secondary grow" onclick="openAddManual('job',false,'${dd}')">⚡ Schedule a job${esc(on)}</button>
+      <button class="secondary grow" onclick="openAddManual('call',false,'${dd}')">📞 Schedule a call${esc(on)}</button>
+    </div>`; })():''}`;
   if(mode==='month') return head + schedMonthHtml() + (d?timeOffSection():'');
   if(mode==='year') return head + schYearHtml();
   if(mode==='week') return head + schWeekHtml() + (d?timeOffSection():'');
@@ -4341,6 +4344,10 @@ function openSchedDay(day){
         <div class="small" style="margin-top:2px">${ev.assigned.map(a=>`<span class="chip" style="padding:3px 10px;font-size:.78rem">${esc(a.name)}</span>`).join(' ')||(data.canAssign?'<span style="color:var(--pending)">⚠ nobody assigned</span>':'')}</div>
       </div>`; }).join('')
       : `<p class="muted small">${data.canAssign?'Nothing on the calendar this day.':'Nothing scheduled for you this day.'}</p>`}
+    ${(canApprove() && day>=localDateStr(new Date()))?`<div class="row" style="margin-top:10px">
+      <button class="grow" onclick="openAddManual('job',false,'${day}')">⚡ Add a job this day</button>
+      <button class="secondary grow" onclick="openAddManual('call',false,'${day}')">📞 Add a call</button>
+    </div>`:''}
     <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
 }
 /* Time off: crew request + track; admins approve/deny right here. */
@@ -9510,16 +9517,24 @@ let amState=null;
  * and never re-minted (requestSchedule_ already re-dates the existing PO Log row instead of
  * taking the next number). A customer who is genuinely new is the last option on the list.
  * A phone CALL skips all of this — nothing is sold yet, so there is no job to attach it to. */
-function openAddManual(kind, fresh){
+/* v114 - A JOB FROM THE DAY YOU TAPPED (Paul, 8 Nov: "when I click on a calendar day, I would
+ * like to have an option to schedule/add a job"). The day's sheet on the month calendar, and the
+ * buttons at the top of the Day view, pass that day in; the form says which day it is and the
+ * time picker opens straight on it. Everywhere else the day is cleared, so nothing carries over. */
+let amDay='';
+function amDayLabel(d){ return d?schDate(d).toLocaleDateString([],{weekday:'long',month:'short',day:'numeric'}):''; }
+function openAddManual(kind, fresh, day){
+  if (!fresh) amDay = day || '';                    // "New customer" from the pick list keeps the day
   if (kind !== 'call' && !fresh) return openScheduleJobPick();
   amState={ kind:kind==='call'?'call':'job', emergency:kind!=='call', po:'', customer:'', phone:'', email:'',
-            address:'', scope:'', company:'', hours:kind==='call'?0.5:2, notifyCustomer:true };
+            address:'', scope:'', company:'', hours:kind==='call'?0.5:2, notifyCustomer:true, day:amDay };
   addManualRender();
 }
 let sjResults=[];
 function openScheduleJobPick(){
   custHydrateSync_();                               // the saved list, before the first paint
   sheet(`<h2>⚡ Schedule a job</h2>
+    ${amDay?`<div class="banner sync">📅 For <b>${esc(amDayLabel(amDay))}</b></div>`:''}
     <p class="small muted" style="margin-top:-4px">Jobs in progress — pick the one this work belongs to and it keeps its job number.</p>
     <input id="sjSearch" placeholder="Search the jobs in progress…" autocomplete="off" oninput="sjFilter(this.value)">
     <div id="sjList" style="max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:0 12px;margin-top:6px">${sjListHtml('')}</div>
@@ -9540,7 +9555,7 @@ function sjFilter(q){ const el=document.getElementById('sjList'); if(el) el.inne
 async function sjPick(i){
   const c=sjResults[i]; if(!c) return;
   amState={ kind:'job', emergency:false, po:c.po, customer:c.name, project:c.project||'',
-            phone:'', email:'', address:'', scope:'', company:'', hours:2, notifyCustomer:true };
+            phone:'', email:'', address:'', scope:'', company:'', hours:2, notifyCustomer:true, day:amDay };
   addManualRender();
   if (!S.online) return;
   try{
@@ -9569,6 +9584,7 @@ function addManualRender(){
   const a=amState; if(!a) return;
   const isCall=a.kind==='call';
   sheet(`<h2>${isCall?'📞 Schedule a phone call':'⚡ Schedule a job'}</h2>
+    ${a.day?`<div class="banner sync">📅 For <b>${esc(amDayLabel(a.day))}</b></div>`:''}
     ${a.po?`<div class="banner sync">On <b>${esc(a.po)}</b>${a.project?' · '+esc(a.project):''} — it keeps this job number.</div>`:''}
     <p class="small muted" style="margin-top:-4px">${isCall
       ? 'Blocks the call on the calendar and files it on the Estimate tab. No job number is used — nothing is sold yet.'
@@ -9597,7 +9613,7 @@ function addManualRender(){
       <button class="ghost grow" onclick="closeSheet()">Cancel</button>
       <button class="secondary grow" onclick="amLater(this)">Save — no time yet</button>
     </div>
-    <button class="grow" style="width:100%;margin-top:8px" onclick="amPickTime()">📅 Pick a time ›</button>`);
+    <button class="grow" style="width:100%;margin-top:8px" onclick="amPickTime()">📅 ${a.day?'Pick a time on '+esc(schDate(a.day).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})):'Pick a time'} ›</button>`);
 }
 function amPickTime(){
   amSave(); const a=amState; if(!a) return;
@@ -9605,7 +9621,7 @@ function amPickTime(){
   dayPickOpen({
     title:(a.kind==='call'?'When is the call? — ':'When is the job? — ')+a.customer,
     sub:[a.scope,a.address].filter(Boolean).join(' · '),
-    hours:a.hours, date:todayStr(), back:'addManualRender()',
+    hours:a.hours, date:a.day||todayStr(), back:'addManualRender()',
     onConfirm:async(start,hours,bump)=>{
       const r=await api('requestAddManual',{ kind:a.kind, po:a.po||'', customer:a.customer, phone:a.phone,
         email:a.email, address:a.address, scope:a.scope, company:a.company, hours:hours,
@@ -9618,6 +9634,7 @@ function amPickTime(){
         +(back?' · '+back+' job(s) now need a new time':'');
     }
   });
+  if(a.day) dpOpenDay(a.day);                       // v114 - straight to the day that was tapped
 }
 async function amLater(btn){
   amSave(); const a=amState; if(!a) return;
