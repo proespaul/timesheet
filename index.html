@@ -2655,6 +2655,7 @@ function todayView(){
       ${rows.map(r=>`<div class="ni" onclick="${r.on}"><span class="ndot ${r.c}"></span><div class="tx"><div class="k ${r.c}">${esc(r.k)}</div><div class="t">${esc(r.t)}</div><div class="s">${esc(r.s)}</div></div><span class="go">›</span></div>`).join('')
         || '<p class="small muted" style="margin:10px 0 2px">Nothing needs you right now. ✓</p>'}
       ${hidden}
+      ${canApprove()?`<div class="small" style="margin-top:8px"><a href="#" style="color:var(--accent2)" onclick="openChangeLog();return false">🕘 Changes made</a></div>`:''}
     </div>${todayBidsCard()}${todayFollowCard()}</div>
     <div class="dt-only">${todayClockCard()}${todayOnGo()}</div></div>${todayMoneyCard()}${errs}`;
 }
@@ -3089,8 +3090,98 @@ function hcDayHtml(g,d){
       <div><div class="small" style="font-weight:800">Hour sheet · ${d.sheet.toFixed(2)} h</div>${shR}</div></div>
     <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
       ${addK?`<button class="secondary" style="padding:9px 12px" onclick="hcAddTime('${addK}')">➕ Add the missing time</button>`:''}
+      ${d.app>0&&canApprove()?`<button class="secondary" style="padding:9px 12px" onclick="hcEditDay('${reg({email:g.email, date:d.date})}')">✏️ Edit</button>`:''}
       <button class="ghost" style="padding:9px 4px" onclick="todayHide('${hk}')">Looks right — hide this day</button>
     </div></div>`;
+}
+/* v119 - EDIT A DAY FROM THE HOURS CHECK (Charles, 9 Nov: there was no Edit button, only Add the
+   missing time and Looks right). Lists that person's app entries for the day; Edit opens the
+   ordinary Edit entry sheet, and - like Fix this entry - an approver's fix is approved as it is
+   saved, then the hours check rebuilds. */
+async function hcEditDay(k){
+  const r=dereg(k); if(!r) return;
+  if(!S.online) return toast('You need signal.');
+  closeSheetDom();
+  sheet(`<h2>${esc(empName(r.email))} · ${esc(tdDay(r.date))}</h2>
+    <p class="small muted" style="margin-top:-4px">The app's entries for that day. Tap Edit to change the times, break or job. Saving it here approves it.</p>
+    <div id="hcEdBody"><p class="center"><span class="spin"></span></p></div>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  try{
+    const res=await api('listEntries',{email:r.email});
+    const day=e=>String(e.Date||'').slice(0,10)===r.date || (e.ClockIn && localDateStr(new Date(e.ClockIn))===r.date);
+    const list=(res.entries||[]).filter(e=>day(e) && e.Status!=='deleted' && e.Status!=='rejected')
+      .sort((a,b)=>new Date(a.ClockIn)-new Date(b.ClockIn));
+    const tk=reg({hc:true});
+    const html=list.map(e=>{ const ek=reg({e, employeeEmail:r.email});
+      return `<div class="list-item"><div class="row between" style="gap:8px;align-items:center">
+        <div style="min-width:0"><b>${esc(e['Customer/Job Site']||e.Company||'—')}</b>${e['PO#']?` <span class="small muted">${esc(e['PO#'])}</span>`:''}
+          <div class="small muted">${esc(fmtTime(e.ClockIn))}–${e.ClockOut?esc(fmtTime(e.ClockOut)):'…'} · ${(Number(e.Hours)||0).toFixed(2)} h${Number(e['Break Hrs'])?' · break '+Math.round(Number(e['Break Hrs'])*60)+' min':''}${e.Status==='pending'?' · pending':''}</div>
+          ${e.Notes?`<div class="small muted">${esc(e.Notes)}</div>`:''}</div>
+        <button class="secondary" style="flex:none;padding:9px 12px" onclick="closeSheetDom();openEditEntry('${ek}','${tk}')">✏️ Edit</button>
+      </div></div>`; }).join('') || '<p class="small muted">No app entries that day. Use Add the missing time instead.</p>';
+    const b=document.getElementById('hcEdBody'); if(b) b.innerHTML=html;
+  }catch(e){ const b=document.getElementById('hcEdBody'); if(b) b.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+}
+/* v119 - CHANGES MADE (Charles, 9 Nov: "I would like to see / have access to all the changes that
+   have been made. This will allow us to correct changes if need be."). Every edit, time added by
+   hand, forgotten clock-out fixed, approval, rejection, deletion and Today item put aside - who,
+   whose hours, when, and what it was before and after - read from the office's Activity log,
+   newest first. Each one opens the entry to correct it; an approval, rejection or delete can be
+   undone from What we have decided lately. */
+const CL_KIND={ editEntry:'Edited', addManualEntry:'Time added by hand', fixForgotClockout:'Forgotten clock-out fixed',
+  approved:'Approved', rejected:'Rejected', deleted:'Deleted', todayHide:'Put aside on Today' };
+async function openChangeLog(){
+  sheet(`<h2>🕘 Changes made</h2>
+    <p class="small muted" style="margin-top:-4px">Every change to anyone's hours, newest first: who made it, when, and what it was before. Tap Open to correct one.</p>
+    <select id="clWho" onchange="clPaint()" style="margin-bottom:6px"><option value="">Everyone</option></select>
+    <div id="clBody"><p class="center"><span class="spin"></span></p></div>
+    ${canApprove()?`<button class="ghost" style="width:100%;margin-top:6px" onclick="closeSheetDom();openApvLog()">↩︎ Undo an approval, rejection or delete</button>`:''}
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+  try{
+    if(!(S.employees||[]).length){ try{ const e=await api('listEmployees',{}); S.employees=e.employees||[]; }catch(_){} }
+    const r=await api('activityLog',{limit:5000});
+    S.chLog=(r.log||[]).filter(l=>CL_KIND[l.action]).sort((a,b)=>new Date(b.time)-new Date(a.time));
+    const who=[...new Set(S.chLog.map(l=>lc(l.target)).filter(x=>x.includes('@')))];
+    const sel=document.getElementById('clWho');
+    if(sel) sel.innerHTML='<option value="">Everyone</option>'+who.map(w=>`<option value="${esc(w)}">${esc(empName(w))}</option>`).join('');
+    clPaint();
+  }catch(e){ const b=document.getElementById('clBody'); if(b) b.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
+}
+function clPaint(){
+  const b=document.getElementById('clBody'); if(!b) return;
+  const w=lc(val('clWho'));
+  const list=(S.chLog||[]).filter(l=>!w||lc(l.target)===w).slice(0,200);
+  if(!list.length){ b.innerHTML='<p class="small muted">No changes recorded.</p>'; return; }
+  b.innerHTML=list.map(l=>{
+    const i=S.chLog.indexOf(l);
+    const parts=String(l.detail||'').replace(/^admin-edit\s*—\s*/,'').replace(/re-flagged for approval\s*—\s*/,'').split(/;\s+/).filter(Boolean);
+    const lines=parts.map(p=>{ const m=p.match(/^([^:]+):\s*(.*?)\s*→\s*(.*)$/);
+      return m ? `<div class="row between small" style="gap:10px;padding:1px 0;align-items:baseline"><span class="muted" style="flex:0 0 auto">${esc(m[1])}</span>
+          <span style="text-align:right"><span class="muted" style="text-decoration:line-through">${esc(m[2])}</span> → <b>${esc(m[3])}</b></span></div>`
+        : `<div class="small muted">${esc(p)}</div>`; }).join('');
+    const person=String(l.target||'').includes('@') ? empName(l.target) : (l.target||'');
+    const canOpen=String(l.target||'').includes('@') && l.action!=='todayHide';
+    return `<div class="list-item">
+      <div class="row between" style="gap:8px"><div><b>${esc(CL_KIND[l.action])}</b>${person?` · ${esc(person)}`:''}</div>
+        <span class="small muted" style="white-space:nowrap">${esc(fmtDay(l.time))} ${esc(fmtTime(l.time))}</span></div>
+      <div class="small muted">by ${esc(empName(l.actor))}</div>
+      ${lines}
+      ${canOpen?`<button class="secondary" style="width:100%;margin-top:6px;padding:8px" onclick="clOpen(${i},this)">${l.action==='deleted'?'↩︎ Bring it back':'✏️ Open this entry'}</button>`:''}
+    </div>`; }).join('');
+}
+async function clOpen(i, btn){
+  const l=(S.chLog||[])[i]; if(!l) return;
+  if(l.action==='deleted'){ closeSheetDom(); openApvLog(); return; }
+  if(!S.online) return toast('You need signal.');
+  const id=l.entryId||l.EntryID||l.entry||'', email=l.target;
+  if(btn){ btn.disabled=true; btn.textContent='Opening…'; }
+  try{
+    const res=await api('listEntries',{email});
+    const e=id && (res.entries||[]).find(x=>x.EntryID===id);
+    closeSheetDom();
+    if(e){ openEditEntry(reg({e, employeeEmail:email}), canApprove()?reg({hc:true}):undefined); }
+    else { toast(id?'That entry is no longer there - here are all of their entries.':'Here are their entries - find that day.', 5000); viewEmployee(email); }
+  }catch(e){ toast(e.message); if(btn){ btn.disabled=false; btn.textContent='✏️ Open this entry'; } }
 }
 /* Add time for that person on that day, with the gap pre-filled. Saving it rebuilds Today. */
 function hcAddTime(k){
@@ -8895,6 +8986,7 @@ function approvalsHtml(){
     <div class="card">
       ${hrs?`<h3 style="margin-top:0">Hours</h3>${hrs}`:''}
       ${canApprove()?`<button class="ghost" style="width:100%;margin-top:2px;font-size:.88rem" onclick="openApvLog()">↩︎ What we have decided lately</button>`:''}
+      ${canApprove()?`<button class="ghost" style="width:100%;margin-top:0;font-size:.88rem" onclick="openChangeLog()">🕘 Changes made</button>`:''}
       ${off?`<h3>Time off</h3>${off}`:''}
       ${alw?`<h3>Allowances</h3>${alw}`:''}
       ${prt?`<h3>New parts</h3>${prt}`:''}
