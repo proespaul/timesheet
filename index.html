@@ -183,6 +183,7 @@
   .cal .day.blank{background:transparent; border:none; cursor:default}
   .cal .day.today{border:2px solid var(--accent2); font-weight:800}
   .cal .day.hol{background:#fef9c3; border-color:#fde68a}
+  .cal .day .holn{font-size:.58rem; font-weight:700; color:#92400e; text-align:center; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}   /* v124 - the holiday's name */
   .cal .dots{display:flex; gap:2px; margin-top:2px; height:5px}
   .cal .dot{width:5px; height:5px; border-radius:50%; background:var(--accent)}
   .cal .dot.warn{background:var(--warn)}
@@ -3457,6 +3458,21 @@ function jobsView(){
       <div id="jobsList">${jobsRowsHtml() || (S.jobsLoading?'<p class="muted small">Loading…</p>':'<p class="muted small">Open this tab while online to load.</p>')}</div>
     </div>`;
 }
+/* v124 - REOPEN A JOB CLOSED BY MISTAKE (Paul, 9 Nov). Puts the PO Log row back to In progress,
+   so it shows in every job picker again (Clock in, Switch to, Schedule a job) under its own number. */
+async function jobReopen(k, btn){
+  const j=dereg(k); if(!j||!j.po) return;
+  if(!S.online) return toast('You need signal to reopen a job.');
+  if(btn){ btn.disabled=true; btn.textContent='Reopening…'; }
+  try{
+    const r=await api('jobSetStatus',{ po:j.po, status:'In progress' });
+    j.status='In progress';
+    (S.customers||[]).forEach(c=>{ if(String(c.po).toUpperCase()===String(j.po).toUpperCase()) c.status='In progress'; });
+    closeSheet(); render();
+    toast(j.po+' is back In progress'+(r&&r.was?' (was '+r.was+')':'')+'.', 6000);
+    loadCustomers(true); loadJobs();
+  }catch(e){ toast(e.message, 8000); if(btn){ btn.disabled=false; btn.textContent='↩ Reopen this job — back to In progress'; } }
+}
 function jobsFilter(v){ S.jobsQuery=v; const el=document.getElementById('jobsList'); if(el) el.innerHTML=jobsRowsHtml(); }
 async function loadJobs(){
   if (S.jobsLoading) return;
@@ -3479,6 +3495,7 @@ function openJobDetail(k){
     </div>`).join('')||'<p class="muted small">No breakdown available.</p>'}
     ${S.me&&S.me.role==='admin'?`
       <div class="small muted" style="margin-top:12px">Invoicing — two steps</div>
+      ${j.po && /closed|invoiced|cancel/i.test(j.status||'') ? `<button class="secondary" style="width:100%;margin:6px 0 4px;border-color:#f59e0b;color:#92400e" onclick="jobReopen('${pk}',this)">↩ Reopen this job — back to In progress</button>`:''}
       <button style="width:100%;margin-top:4px" onclick="openInvoiceList('${pk}')">🧾 Build Initial Draft</button>
       <button class="secondary" style="width:100%;margin-top:6px" onclick="reqInvoice('${pk}','final',this)">✅ Build Final Draft</button>
       <p class="small muted" style="margin:6px 0 0">Initial: you confirm the quantity of each part first, then Claude bills that list at cost and adds the hours. Final rolls them up and applies the markup. Neither is ever sent to the customer.</p>`:''}
@@ -4488,7 +4505,7 @@ function schedMonthHtml(){
         >${L&&L.count>1?`<span class="bn">${L.lane+1}</span>`:''}${schedChip(ev)}</div>`;
     }).join('');
     cells+=`<div class="day${k===tstr?' today':''}${holByDay[k]?' hol':''}" data-drop="1" data-day="${k}" onclick="openSchedDay('${k}')">
-      <span class="dn">${offByDay[k]?'🏖 ':''}${dn}</span>
+      <span class="dn">${offByDay[k]?'🏖 ':''}${dn}</span>${holByDay[k]?`<div class="holn" title="${esc(holByDay[k])}">${esc(holByDay[k])}</div>`:''}
       <div class="evs">${show}${evs.length>2?`<div class="more">+${evs.length-2}</div>`:''}</div></div>`;
   }
   const label=new Date(y,m-1,1).toLocaleDateString([],{month:'long',year:'numeric'});
@@ -9873,7 +9890,8 @@ function openScheduleJobPick(){
     <p class="small muted" style="margin-top:-4px">Customers waiting for a day or a price come first: booking one gives them their PO number. Then the jobs in progress, which keep theirs.</p>
     <input id="sjSearch" placeholder="Search customers and jobs…" autocomplete="off" oninput="sjFilter(this.value)">
     <div id="sjList" style="max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:0 12px;margin-top:6px">${sjListHtml('')}</div>
-    <button class="secondary" style="width:100%;margin-top:10px" onclick="openAddManual('job',true,amDay)">➕ New customer — not on the list</button>
+    <button class="secondary" style="width:100%;margin-top:10px" onclick="openExistingCust()">👤 Existing customer — new job, new PO</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="openAddManual('job',true,amDay)">➕ New customer — not on the list</button>
     <button class="ghost" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
   loadCustomers(true);                              // and refresh them all behind the screen;
   loadRequests(); if(canApprove()) loadEstimates(); // each one redraws this list when it lands
@@ -9916,6 +9934,51 @@ function sjListHtml(q){
   else if (!list.length) html+=`<p class="small muted">${q?'No job in progress matches — add the customer below.':'No jobs are in progress. Add the customer below.'}</p>`;
   else html+=list.map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="sjPick(${i})">${poRowHtml(c)}</div>`).join('');
   return html;
+}
+/* v124 - A NEW JOB FOR A CUSTOMER WE ALREADY HAVE (Paul, 9 Nov). Every customer on the PO Log,
+   closed jobs included, once each under their latest job. Picking one fills the booking form with
+   who they are - name, company, phone, email - off that job's PO Log row (Code.gs v102,
+   customerFromPo); the site address and what the job is are left for this job. Booking it takes the
+   next PO number and writes a new PO Log row, the same as a new customer. */
+let ecList=[];
+function ecPoNum_(po){ const m=/(\d+)\s*$/.exec(String(po||'')); return m?Number(m[1]):0; }
+function ecCustomers_(){
+  const by={};
+  (S.customers||[]).forEach(c=>{ const k=sjNorm(c.name); if(!k||!c.po) return;
+    const b=by[k]; if(!b) by[k]={name:c.name, po:c.po, project:c.project||'', n:1};
+    else { b.n++; if(ecPoNum_(c.po)>ecPoNum_(b.po)){ b.po=c.po; b.project=c.project||''; } } });
+  return Object.values(by).sort((a,b)=>a.name.localeCompare(b.name));
+}
+function ecListHtml(q){
+  const n=sjNorm(q); ecList=ecCustomers_().filter(c=>!n||sjNorm(c.name+' '+c.po+' '+c.project).includes(n));
+  if(!ecList.length) return `<p class="small muted" style="margin:12px 0">${(S.customers||[]).length?'Nobody by that name on the PO Log.':'Loading customers…'}</p>`;
+  return ecList.slice(0,80).map((c,i)=>`<div class="list-item" style="cursor:pointer" onclick="ecPick(${i})">
+      <b>${esc(c.name)}</b><div class="small muted">Last job ${esc(c.po)}${c.project?' · '+esc(c.project):''}${c.n>1?' · '+c.n+' jobs':''}</div></div>`).join('');
+}
+function openExistingCust(){
+  sheet(`<h2>👤 Existing customer</h2>
+    ${amDay?`<div class="banner sync">📅 For <b>${esc(amDayLabel(amDay))}</b></div>`:''}
+    <p class="small muted" style="margin-top:-4px">Pick who it is. Their name, phone and email fill in; you add the site address and the job. It gets a new PO number when it is booked.</p>
+    <input id="ecSearch" placeholder="Search customers…" autocomplete="off" oninput="document.getElementById('ecList').innerHTML=ecListHtml(this.value)">
+    <div id="ecList" style="max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:0 12px;margin-top:6px">${ecListHtml('')}</div>
+    <button class="ghost" style="width:100%;margin-top:8px" onclick="openScheduleJobPick()">‹ Back</button>`);
+  loadCustomers(true).then(()=>{ const el=document.getElementById('ecList'), q=document.getElementById('ecSearch'); if(el) el.innerHTML=ecListHtml(q?q.value:''); });
+}
+async function ecPick(i){
+  const c=ecList[i]; if(!c) return;
+  const day=amDay;
+  openAddManual('job', true, day);
+  Object.assign(amState, { customer:c.name, company:'', fromPo:c.po });
+  try{
+    const r=await api('customerFromPo',{ po:c.po });
+    if(!amState) return;
+    Object.assign(amState, { customer:r.contact||c.name, company:r.company||'', phone:r.phone||'', email:r.email||'' });
+  }catch(e){
+    if(amState) toast(/unknown action|not recognised|no such action/i.test(e.message||'')
+      ? 'Name filled in. Phone and email fill in once the office script is updated - type them for now.'
+      : e.message, 7000);
+  }
+  if(amState){ amState.address=''; amState.scope=''; amState.po=''; addManualRender(); }
 }
 function sjFilter(q){ const el=document.getElementById('sjList'); if(el) el.innerHTML=sjListHtml(q||''); }
 function sjRepaint_(){ if(document.getElementById('sjList')) sjFilter(val('sjSearch')); }
@@ -10081,6 +10144,7 @@ function addManualRender(){
   sheet(`<h2>${em==='lead'?'➕ Add a customer for a price':em==='visit'?'📅 Book a visit to look':isCall?'📞 Schedule a phone call':'⚡ Schedule a job'}</h2>
     ${a.day?`<div class="banner sync">📅 For <b>${esc(amDayLabel(a.day))}</b></div>`:''}
     ${a.po?`<div class="banner sync">On <b>${esc(a.po)}</b>${a.project?' · '+esc(a.project):''} — it keeps this job number.</div>`:''}
+    ${a.fromPo&&!a.po?`<div class="banner sync">👤 Same customer as <b>${esc(a.fromPo)}</b> — this job gets a new PO number of its own. Add the site address and the job below.</div>`:''}
     <p class="small muted" style="margin-top:-4px">${em==='lead'
       ? 'Goes under New — waiting for a price on the Estimates tab. No job number until they say yes.'
       : em==='visit'
