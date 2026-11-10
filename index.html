@@ -3491,10 +3491,12 @@ async function jobReopen(k, btn){
   try{
     const r=await api('jobSetStatus',{ po:j.po, status:'In progress' });
     j.status='In progress';
+    (S._stFix=S._stFix||{})[String(j.po).toUpperCase()]={ status:'In progress', until:Date.now()+180000 };   // v126
+    if(S.jobsData) DB.setCache('jobsData', S.jobsData);
     (S.customers||[]).forEach(c=>{ if(String(c.po).toUpperCase()===String(j.po).toUpperCase()) c.status='In progress'; });
     closeSheet(); render();
     toast(j.po+' is back In progress'+(r&&r.was?' (was '+r.was+')':'')+'.', 6000);
-    loadCustomers(true); loadJobs();
+    loadCustomers(true);
   }catch(e){ toast(e.message, 8000); if(btn){ btn.disabled=false; btn.textContent='↩ Reopen this job — back to In progress'; } }
 }
 function jobsFilter(v){ S.jobsQuery=v; const el=document.getElementById('jobsList'); if(el) el.innerHTML=jobsRowsHtml(); }
@@ -3502,7 +3504,10 @@ async function loadJobs(){
   if (S.jobsLoading) return;
   if (!S.jobsData){ const c=await DB.getCache('jobsData'); if(c){ S.jobsData=c; if(S.tab==='jobs') render(); } }
   S.jobsLoading=true; if(S.tab==='jobs') render();
-  try{ const r=await apiBg('jobCosts',{}); S.jobsData=r; DB.setCache('jobsData',r); }
+  try{ const r=await apiBg('jobCosts',{});
+    // v126 - the office keeps this answer for two minutes; a job reopened inside that window must not flip back to Closed
+    (r.jobs||[]).forEach(j=>{ const f=S._stFix&&S._stFix[String(j.po||'').toUpperCase()]; if(f&&f.until>Date.now()) j.status=f.status; });
+    S.jobsData=r; DB.setCache('jobsData',r); }
   catch(e){ if(!S.jobsData) toast(e.message); }
   S.jobsLoading=false; if(S.tab==='jobs') render();
 }
@@ -4607,8 +4612,10 @@ function timeOffSection(){
 let tpS=null;
 function tpOpen(inp){
   const v=String(inp.value||'08:00').split(':'); const h=Math.min(23,Number(v[0])||0), m=Number(v[1])||0;
-  const step=(Number(inp.getAttribute('step'))||60)>=900?15:5;
-  tpS={inp, h, m:(Math.round(m/step)*step)%60, step, mode:'h'};
+  // v126 - the minutes already in the box are kept as they are (5:24 stays 5:24: these are pay
+  // times). A tap on the dial lands on the nearest five; dragging the hand goes minute by minute.
+  const step=(Number(inp.getAttribute('step'))||60)>=900?15:1;
+  tpS={inp, h, m:Math.min(59,Math.max(0,Math.round(m))), step, mode:'h'};
   let b=document.getElementById('tpBack'); if(!b){ b=document.createElement('div'); b.id='tpBack'; document.body.appendChild(b); }
   b.onclick=e=>{ if(e.target===b) tpClose(false); };
   tpPaint();
@@ -4639,14 +4646,14 @@ function tpPaint(){
       <button class="ghost" style="width:auto" onclick="tpClose(false)">Cancel</button>
       <button style="width:auto;padding:8px 22px" onclick="tpClose(true)">OK</button></div></div>`;
   const dial=document.getElementById('tpDial');
-  const at=e=>{ const r=dial.getBoundingClientRect(); const x=e.clientX-r.left-C, y=e.clientY-r.top-C;
+  const at=(e,fine)=>{ const r=dial.getBoundingClientRect(); const x=e.clientX-r.left-C, y=e.clientY-r.top-C;
     let deg=Math.atan2(y,x)*180/Math.PI+90; if(deg<0) deg+=360;
     if(tpS.mode==='h'){ let i=Math.round(deg/30)%12; const h12n=i||12; tpS.h=(h12n%12)+(tpS.h>=12?12:0); }
-    else { tpS.m=(Math.round(deg/6/tpS.step)*tpS.step)%60; } };
-  let down=false;
-  dial.onpointerdown=e=>{ down=true; try{dial.setPointerCapture(e.pointerId);}catch(_){} at(e); tpPaintKeep(); };
-  dial.onpointermove=e=>{ if(down){ at(e); tpPaintKeep(); } };
-  dial.onpointerup=e=>{ if(!down) return; down=false; at(e); if(tpS.mode==='h') tpS.mode='m'; tpPaint(); };
+    else { const st=tpS.step===15?15:(fine?1:5); tpS.m=(Math.round(deg/6/st)*st)%60; } };
+  let down=false, moved=false, sx=0, sy=0;
+  dial.onpointerdown=e=>{ down=true; moved=false; sx=e.clientX; sy=e.clientY; try{dial.setPointerCapture(e.pointerId);}catch(_){} at(e,false); tpPaintKeep(); };
+  dial.onpointermove=e=>{ if(!down) return; if(Math.abs(e.clientX-sx)+Math.abs(e.clientY-sy)>8) moved=true; at(e,moved); tpPaintKeep(); };
+  dial.onpointerup=e=>{ if(!down) return; down=false; at(e,moved); if(tpS.mode==='h') tpS.mode='m'; tpPaint(); };
 }
 function tpPaintKeep(){ // repaint the hand without losing the pointer capture: only the svg and labels change
   const s=tpS, dial=document.getElementById('tpDial'); if(!s||!dial) return;
@@ -4678,7 +4685,14 @@ async function taSubmit(btn){
   if(!s) return toast('Pick the first day.'); if(e<s) return toast('Last day is before the first day.');
   btn.disabled=true; btn.textContent='Saving…';
   try{ const r=await api('timeOffRequest',{forEmail:val('taWho'), approved:true, startDate:s, endDate:e, reason:val('taReason')});
-    closeSheet(); toast(r&&r.approved?'Time off is on the calendar ✓':'Sent as a request - the office script needs its update to file it as approved.', 7000); schedRefreshAll();
+    if(!(r&&r.approved)){
+      // v126 - an office script from before this feature files it as the ADMIN'S OWN pending request,
+      // whoever was picked. Take that back and say so, rather than leave the wrong person asking for leave.
+      try{ if(r&&r.id) await api('timeOffCancel',{reqId:r.id}); }catch(_){}
+      btn.disabled=false; btn.textContent='Put it on the calendar';
+      return toast('Not added yet: the office script needs its update first (the Deploy click). Nothing was saved.', 9000);
+    }
+    closeSheet(); toast('Time off is on the calendar ✓', 6000); schedRefreshAll();
   }catch(err){ toast(err.message,8000); btn.disabled=false; btn.textContent='Put it on the calendar'; }
 }
 function openTimeOff(){
@@ -8252,8 +8266,16 @@ function jpPaint_(){
   // v123 - the office's answer arrives a few seconds after the list opens. Repainting regardless
   // replaced the box somebody was typing in, and the half-typed number went with it.
   const a = document.activeElement, typing = a && /^mdq_/.test(a.id||'');
-  if (changed || !typing) mdPaint_();
+  // v126 - and when something DID change, the repaint waits until the box is left: a rebuilt box
+  // comes back with the cursor at the front, so the next digit typed would land before the others.
+  if (typing){ if (changed) S._mdRepaint = true; return; }
+  mdPaint_();
 }
+document.addEventListener('focusout', e=>{
+  if (!S._mdRepaint || !e.target || !/^mdq_/.test(e.target.id||'')) return;
+  setTimeout(()=>{ const a=document.activeElement; if (a && /^mdq_/.test(a.id||'')) return;   // moved to the next box: wait again
+    S._mdRepaint=false; mdPaint_(); }, 300);
+}, true);
 /* ======================= ONE MATERIALS LIST, EVERYWHERE (v86) ===============================
  * Paul's sketch, 29 Oct. The job's parts are not a catalogue to shop from - they are the lines
  * of the invoice, already there, and all anybody does is correct the number or bin the row.
@@ -9787,7 +9809,7 @@ function dpMonthRender(){
      tab's own copy of the month, fetched here if it is not on the phone yet. */
   const sm=(S.schedMonths||{})[d.month], evDay={};
   if(sm&&Array.isArray(sm.events)) sm.events.forEach(ev=>{ const k=localDateStr(new Date(ev.start)); (evDay[k]=evDay[k]||[]).push(ev); });
-  else if(!d._smAsked){ d._smAsked=1; Promise.resolve(loadSchedMonth(d.month)).then(()=>{ if(dpState&&dpState.view==='month') dayPickRender(); }).catch(()=>{}); }
+  else if(!(d._smAsked=d._smAsked||{})[d.month]){ d._smAsked[d.month]=1; Promise.resolve(loadSchedMonth(d.month)).then(()=>{ if(dpState&&dpState.view==='month') dayPickRender(); }).catch(()=>{}); }
   const names=(x,sel)=>{ const evs=(evDay[x.date]||[]).slice().sort((a,b)=>new Date(a.start)-new Date(b.start));
     const ln=evs.slice(0,2).map(ev=>`<span style="display:block;width:100%;font-size:.6rem;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 3px;text-align:left;color:${sel?'#fff':'var(--navy)'}">${ev.allDay?'':esc(schedClock(ev))+' '}${esc(schedName(ev))}</span>`).join('');
     return ln+(evs.length>2?`<span style="font-size:.6rem;color:${sel?'#fff':'var(--muted)'}">+${evs.length-2}</span>`:'')
@@ -9954,7 +9976,7 @@ async function dayPickGo(btn){
   if(isNaN(start)) return toast('That time did not read properly.');
   btn.disabled=true; btn.textContent='Booking…';
   try{
-    if(d.onPick){ const f=d.onPick; dpState=null; f(start.toISOString(), Number(d.hours)||1); return; }   // v125 - pick only; the form books it
+    if(d.onPick){ const f=d.onPick, b=!!d.bump; dpState=null; f(start.toISOString(), Number(d.hours)||1, b); return; }   // v125 - pick only; the form books it
     const msg=await d.onConfirm(start.toISOString(), Number(d.hours)||1, !!d.bump);
     dpState=null; closeSheet(); toast(msg||'Booked ✓',8000); loadRequests();
     if(S.tab==='sched') schedRefreshAll();          // v116 - the new booking shows on the calendar
@@ -10090,16 +10112,22 @@ async function ecPick(i){
   const day=amDay;
   openAddManual('job', true, day);
   Object.assign(amState, { customer:c.name, company:'', fromPo:c.po });
+  addManualRender();                                 // v126 - the name and the banner show at once
+  const mine=amState;
   try{
-    const r=await api('customerFromPo',{ po:c.po });
-    if(!amState) return;
-    Object.assign(amState, { customer:r.contact||c.name, company:r.company||'', phone:r.phone||'', email:r.email||'' });
+    const r=await apiBg('customerFromPo',{ po:c.po });
+    // v126 - the boxes are filled where they stand, and only the empty ones: no redraw, so an
+    // address being typed while the office answers is not wiped and the cursor stays put.
+    if(amState!==mine || !document.getElementById('amCust')) return;
+    const set=(id,v)=>{ const el=document.getElementById(id); if(el && !String(el.value||'').trim() && v) el.value=v; };
+    const cu=document.getElementById('amCust'); if(cu && cu.value.trim()===c.name && r.contact) cu.value=r.contact;
+    set('amCo', r.company); set('amPhone', r.phone); set('amEmail', r.email);
+    amSave();
   }catch(e){
-    if(amState) toast(/unknown action|not recognised|no such action/i.test(e.message||'')
+    if(amState===mine) toast(/unknown action|not recognised|no such action/i.test(e.message||'')
       ? 'Name filled in. Phone and email fill in once the office script is updated - type them for now.'
       : e.message, 7000);
   }
-  if(amState){ amState.address=''; amState.scope=''; amState.po=''; addManualRender(); }
 }
 function sjFilter(q){ const el=document.getElementById('sjList'); if(el) el.innerHTML=sjListHtml(q||''); }
 function sjRepaint_(){ if(document.getElementById('sjList')) sjFilter(val('sjSearch')); }
@@ -10354,9 +10382,10 @@ function openReqSchedule(i, src){
   dayPickOpen({ title:(src==='estLead'?'When is the visit? — ':'When is the job? — ')+(q.customer||''),
     sub:[q.scope,q.address].filter(Boolean).join(' · '), hours:src==='estLead'?0.5:(q.hours||1),
     date:localDateStr(sug), back:'',
-    onPick:(start,hours)=>openReqScheduleForm(i, src, start, hours) });
+    onPick:(start,hours,bump)=>openReqScheduleForm(i, src, start, hours, bump) });
 }
-function openReqScheduleForm(i, src, pickStart, pickHours){
+function openReqScheduleForm(i, src, pickStart, pickHours, pickBump){
+  S._rqBump=!!pickBump;   // v126 - ticked in the picker; dropped again if the day or time is changed here
   // v99 - opened from Requests it books the JOB; from the Estimates tab it books a visit to look
   // first, which goes on the calendar under their name with no job number until they say yes.
   const q = src==='estLead' ? ((S.estData&&S.estData.leads)||[])[i] : (S.requests||[])[i]; if(!q) return;
@@ -10385,6 +10414,7 @@ function openReqScheduleForm(i, src, pickStart, pickHours){
     <label>Open times <span class="muted">(tap one — or set your own below)</span></label>
     <div id="rqOpen" class="row" style="flex-wrap:wrap;gap:6px"><span class="small muted">Reading the calendar…</span></div>
     <p class="small" id="rqSlotNote" style="margin:6px 0 0"></p>
+    ${pickBump?`<div class="banner ot" id="rqBumpNote" style="text-align:left">This takes a slot that already has a job in it. That job goes back to Requests to be given a new time.</div>`:''}
     <div class="row"><div class="grow"><label>Date</label><input id="rqDate" type="date" value="${d}" onchange="reqSlotsLoad(true)"></div>
       <div class="grow"><label>Start</label><input id="rqTime" type="time" value="${t}" onchange="reqSlotsLoad(true)"></div></div>
     <label>Who's going?</label>
@@ -10413,8 +10443,10 @@ function reqSlotMinutes(){
   const appt=(val('rqType')||'ESTIMATE')==='APPOINTMENT';
   return appt ? Math.round((Number(val('rqHours'))||1)*60) : (Number(val('rqCallMin'))||30);
 }
+function rqBumpOff_(){ S._rqBump=false; const n=document.getElementById('rqBumpNote'); if(n) n.remove(); }
 async function reqSlotsLoad(autoMove){
   const box=document.getElementById('rqOpen'), note=document.getElementById('rqSlotNote'); if(!box) return;
+  if(autoMove!==false) rqBumpOff_();                 // the day, time or length was changed in the form
   const appt=(val('rqType')||'ESTIMATE')==='APPOINTMENT', mins=reqSlotMinutes();
   if(appt && mins>540){ box.innerHTML='<span class="small muted">Longer than one working day — pick the first day by hand.</span>'; if(note) note.textContent=''; return; }
   const date=val('rqDate'), time=val('rqTime'); const at=(date&&time)?new Date(date+'T'+time):null;
@@ -10443,6 +10475,7 @@ function reqPickSlot(k, quiet){
   const di=document.getElementById('rqDate'), ti=document.getElementById('rqTime');
   if(di) di.value=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
   if(ti) ti.value=`${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  rqBumpOff_();
   reqMarkSlot(d);
   if(!quiet){ const note=document.getElementById('rqSlotNote'); if(note){ note.style.color='var(--good)'; note.textContent='✓ '+fmtDay(x.start)+' '+fmtTime(x.start)+'–'+fmtTime(x.end)+' is open.'; } }
 }
@@ -10526,7 +10559,7 @@ async function reqSchedule(i,btn){
     // Calendar event + crew email + PO workbook write + customer email in one call — well past
     // the 30 s default, and an abort here looks like a failure on a booking that actually ran.
     const callMinutes=Number(val('rqCallMin'))||30;
-    const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify, type, notifyCustomer, callMinutes, crew:assign.length||q.crew||1},{timeout:120000});
+    const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify, type, notifyCustomer, callMinutes, crew:assign.length||q.crew||1, bump:!!S._rqBump},{timeout:120000});
     S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
     // v23: approving also writes the PO Log workbook — an APPOINTMENT burns the next PO number,
     // an ESTIMATE files a row on the Estimate tab. Say which, because the PO number is the one
@@ -10569,7 +10602,7 @@ function openReqBook(i){
     <label>Who's going?</label>
     <div>${crew.map(e=>`<div class="perm"><input type="checkbox" id="bk_${esc(e.email)}"><label for="bk_${esc(e.email)}" style="margin:0">${esc(e.name||e.email)}</label></div>`).join('')||'<p class="small muted">No active crew.</p>'}</div>
     <div class="perm"><input type="checkbox" id="bkNotify"><label for="bkNotify" style="margin:0">Email the crew their assignment</label></div>
-    <div class="perm"><input type="checkbox" id="bkNotifyCust" checked><label for="bkNotifyCust" style="margin:0">Email the customer to confirm the time${q.email?'':' (no email on file)'}</label></div>
+    <div class="perm"><input type="checkbox" id="bkNotifyCust"><label for="bkNotifyCust" style="margin:0">Email the customer to confirm the time${q.email?'':' (no email on file)'}</label></div>
     <p class="small muted">Gets the next PO number and a PO Log row (In progress). The estimate call stays on the calendar where it was.</p>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="closeSheetDom();render()">Back</button>
