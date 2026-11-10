@@ -6209,6 +6209,7 @@ function startClockOutReview(){
     company: S.openEntry.Company||'',
     breakMin: brkMin, autoBreakMin: brkMin, openBreakAt,
     notes: '', items: mdDraftLoad_(S.openEntry['PO#']||'', S.openEntry['Customer/Job Site']||S.openEntry.Company||''),
+    draftPo: S.openEntry['PO#']||'', draftSite: S.openEntry['Customer/Job Site']||S.openEntry.Company||'',   // v123 - the draft this review came from
     media: [], gps: null,
     rv: { on:false, hours:0, res:null, picked:null, notify:false },  // v34 return visit
   };
@@ -6699,6 +6700,7 @@ async function coCommit_(){
   }
   // v86 - the day's list has left the phone; the next day on this job starts from its POs again.
   mdDraftClear_(c.poNumber||'', c.jobSite||c.company||'');
+  if (c.draftPo!=null) mdDraftClear_(c.draftPo, c.draftSite);   // v123 - and the one it started from, if the job was changed at clock-out
   S._muDraft = null;
   saveBootCache();
   // v34 — the return visit, only now that the office has the clock-out (the server will not
@@ -7841,15 +7843,17 @@ async function docConfirmSend(kind){
   const ext=(pend.r.extract&&pend.r.extract.items&&pend.r.extract.items.length)?pend.r.extract:null;   // no usable extraction → the server reads the photo again
   const p=Object.assign({}, pend.p, {kind, confirmed:true, extract:ext});
   if(d&&d.value) p.dateOverride=d.value;
-  docScanWait(kind);
-  if(!S.online){                                   // keep the answers with the photo; send later
-    if(pend.qid){ await docQueueUpdate(pend.qid, {kind, confirmed:true, extract:ext, dateOverride:p.dateOverride||'', needsConfirm:false, server:null}); }
-    else await docQueue(p);
-    const st=document.getElementById('dsStatus');
-    if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ No signal — your answer is saved on the phone and will be sent when you\'re back online.</span>';
-    return;
-  }
-  await docScanCall(p, pend.qid);
+  /* v123 - RECORDED AT THE TAP. Paul, 9 Nov, on "Reading the receipt…": "it should just record and
+     let us move on even if it's still waiting to send to the office." Saying OK to a parked scan
+     used to hold him on that sheet and the hourglass for the whole round trip. The answer goes
+     onto the phone's queue with the photo, the sheet closes, and the queue files it behind
+     whatever he does next - the same road a fresh scan has taken since v86. He hears about it
+     again only if the office still needs something. */
+  if(pend.qid) await docQueueUpdate(pend.qid, {kind, confirmed:true, extract:ext, dateOverride:p.dateOverride||'', needsConfirm:false, server:null});
+  else await docQueue(p, null, true);
+  docFinish();
+  toast(S.online ? 'Saved ✓ - it files itself in the background' : 'Saved on the phone - it files itself when you have signal', 4000);
+  flushScans();                                    // deliberately NOT awaited
 }
 async function docConfirmCancel(){
   const pend=S._docPending; S._docPending=null;
@@ -7931,7 +7935,7 @@ function docQueueTrim(q){
   }
   return q;
 }
-async function docQueue(p, extra){
+async function docQueue(p, extra, quiet){
   try{
     const q=await docQueueAll();
     q.push(Object.assign({qid:'q'+Date.now()+Math.random().toString(36).slice(2,6), kind:p.kind, dataBase64:p.dataBase64, mimeType:p.mimeType,
@@ -7939,7 +7943,7 @@ async function docQueue(p, extra){
       needsConfirm:false, server:null}, extra||{}));
     await DB.setCache('pendingScans', docQueueTrim(q));
     docQueueCount(q);
-    if(!(extra&&extra.needsConfirm)){
+    if(!(extra&&extra.needsConfirm) && !quiet){
       const st=document.getElementById('dsStatus');
       if(st) st.innerHTML='<span style="color:var(--warn);font-weight:700">⚠ No signal — the photo is saved on the phone and will be read and filed automatically once you\'re back online.</span>';
       else toast('Saved on the phone — it will file itself when you have signal');
@@ -8007,7 +8011,9 @@ async function openQueuedScan(){
   docConfirm({kind:it.kind, dataBase64:it.dataBase64, mimeType:it.mimeType, jobSite:it.jobSite, poNumber:it.poNumber}, it.server, it.qid);
 }
 async function flushScans(){
-  if(!S.online||S._fsBusy) return; S._fsBusy=true;
+  if(!S.online) return;
+  if(S._fsBusy){ S._fsAgain=true; return; }   // v123 - asked for mid-pass (an answer just given): go round once more after
+  S._fsBusy=true; S._fsAgain=false;
   let did=0;
   try{
     const snapshot=await docQueueAll();
@@ -8039,7 +8045,8 @@ async function flushScans(){
   S._fsBusy=false;
   // One pass works off the snapshot it started with, so photos taken WHILE it ran are not in it.
   // Only go round again if this pass actually got somewhere, or a dead connection would spin.
-  if (did && S.online){
+  const again=S._fsAgain; S._fsAgain=false;
+  if ((did || again) && S.online){
     try{ if ((await docQueueAll()).some(x=>!x.needsConfirm)) setTimeout(flushScans, 150); }catch(e){}
   }
 }
@@ -8115,8 +8122,12 @@ function jpCtx_(mode){
   return null;
 }
 function jpPaint_(){
-  ['co','mn','ed','mu'].forEach(m=>{ if (document.getElementById('md_'+m)) mdSeed_(m); });
-  mdPaint_();
+  let changed = false;
+  ['co','mn','ed','mu'].forEach(m=>{ if (document.getElementById('md_'+m)) changed = mdSeed_(m) || changed; });
+  // v123 - the office's answer arrives a few seconds after the list opens. Repainting regardless
+  // replaced the box somebody was typing in, and the half-typed number went with it.
+  const a = document.activeElement, typing = a && /^mdq_/.test(a.id||'');
+  if (changed || !typing) mdPaint_();
 }
 /* ======================= ONE MATERIALS LIST, EVERYWHERE (v86) ===============================
  * Paul's sketch, 29 Oct. The job's parts are not a catalogue to shop from - they are the lines
@@ -8136,6 +8147,38 @@ function jpPaint_(){
 const FT_PER_M = 3.28084;
 function mdR2(n){ return Math.round((Number(n)||0)*100)/100; }
 function mdLen_(u){ return /^(m|metre|meter|metres|meters|ft|feet|foot|')$/i.test(String(u||'').trim()); }
+/* v123 - IS IT A LENGTH? Paul, 9 Nov: "connectors are counted as lengths and conduits counted as
+   pieces rather than lengths." The unit came only from the price list, and the price list gave
+   every part filed under WIRE metres by default - so "1\" TECK CONN" (filed there for the word
+   teck) showed four connectors as 13 ft, and a number typed into that box was divided by 3.28 on
+   its way to the invoice. Conduit went the other way: EECOL and Bartle & Gibson bill PVC and EMT
+   by the foot (20 at $2.76 is 20 ft, two sticks) but the rows said "ea". The price list is fixed;
+   this is the net under it, so a new part filed the same way cannot do it again.
+   A unit of feet is trusted outright - it is only ever set when the supplier said "per ft". Metres
+   are not trusted on a fitting, because metres were the WIRE default. */
+var MD_PIECE_ = /\bconn\b|connector|locknut|bushing|fitting|coupling|elbow|nipple|adapt(er|or)|strap|clamp|staple|\blug\b|end ?cap|splice|\bclips?\b|wire ?nut|marrette|\blever\b|knife|plier|lubricant|\bbody\b|\bhub\b|bracket|bender|auger|\bbit\b/i;
+var MD_CONDUIT_ = /conduit|\bemt\b|liquid.?tight/i;
+function mdLenOf_(u, name){
+  const unit = String(u||'').trim(), n = String(name||'');
+  if (/^(ft|feet|foot|')$/i.test(unit)) return true;
+  if (MD_PIECE_.test(n)) return false;
+  if (mdLen_(unit)) return true;
+  return (!unit || /^ea(ch)?$/i.test(unit)) && MD_CONDUIT_.test(n);
+}
+/* A list already on the phone carries the unit it was seeded with. When the office's unit for the
+   part is different now, relabel the row. The number is the supplier's count either way and stays
+   - except a figure typed into a "ft" box on a part that was never a length: that went in divided
+   by 3.28, so it is put back to what was typed. */
+function mdRelabel_(it, x){
+  const nu = String(x.unit||''), isLen = mdLenOf_(nu, (x.name||'')+' '+(x.desc||'')), wasLen = !!it.show;
+  if (String(it.unit||'') === nu && wasLen === isLen) return false;
+  if (wasLen && !isLen && it.show==='ft' && mdIsM_(it.unit)){
+    const q = Number(it.qty)||0, typed = q*FT_PER_M, r = Math.round(typed);
+    if (Math.abs(q-Math.round(q)) > 0.001 && Math.abs(typed-r) < 0.05) it.qty = r;
+  }
+  it.unit = nu; it.show = isLen ? (it.show || 'ft') : '';
+  return true;
+}
 /* Supplier descriptions arrive shouting - "LEVITON TAMPER RESISTANT DECORA DUPLEX RECEPTACLE
    WHITE 15A" - which on a phone is four lines of capitals under every row. Anything that is a
    word of letters only is put back into lower case; anything carrying a digit or a slash is a
@@ -8180,27 +8223,36 @@ function jpSame_(it, x){
   return a === String(x.desc||'').trim().toLowerCase() || a === String(x.name||'').trim().toLowerCase();
 }
 function mdSeed_(mode){
-  const ctx = jpCtx_(mode); if (!ctx || !ctx.items) return;
-  const c = jpCached_(ctx.po, ctx.site); if (!c) return;
+  const ctx = jpCtx_(mode); if (!ctx || !ctx.items) return false;
+  const c = jpCached_(ctx.po, ctx.site); if (!c) return false;
+  const gone = mdTodayMode_(mode) ? mdGoneLoad_(ctx.po, ctx.site) : [];
+  let changed = false;
   (c.list||[]).forEach(x=>{
+    const have = ctx.items.find(y=>jpSame_(y,x));
+    if (have){ if (mdRelabel_(have, x)) changed = true; return; }
     if (!(Number(x.left) > 0)) return;
-    if (ctx.items.some(y=>jpSame_(y,x))) return;
+    // v123 - binned today stays binned. It used to come straight back the next time the list
+    // was opened, because it was still outstanding on the PO - Paul: "it doesn't seem to save
+    // my changes when I go on it later again".
+    if (gone.some(g=>jpSame_(g,x))) return;
     ctx.items.push({ name:(x.name||x.desc||''), desc:((x.name && x.name!==x.desc) ? x.desc : ''),
       sku:x.sku||'', unit:x.unit||'', qty:Number(x.left)||0,
-      show: mdLen_(x.unit) ? 'ft' : '', matched:true, fromPo:true,
+      show: mdLenOf_(x.unit, (x.name||'')+' '+(x.desc||'')) ? 'ft' : '', matched:true, fromPo:true,
       fromDoc:'PO '+(ctx.po||ctx.site), bought:x.bought });
+    changed = true;
   });
-  mdKeep_(mode);
+  if (changed) mdKeep_(mode);
+  return changed;
 }
 function mdRowHtml(mode, it, i){
   const unit = it.show
     ? `<button class="u" onclick="mdUnit('${mode}',${i})" title="Tap for ${it.show==='ft'?'metres':'feet'}">${esc(it.show)}</button>`
-    : `<div class="ea">${esc(mdUnitLabel_(it.unit))}</div>`;
+    : `<div class="ea">${esc(mdUnitLabel_(mdLen_(it.unit) ? '' : it.unit))}</div>`;   // v123 - a fitting still filed in metres reads "each"
   return `<div class="mrow">
       <div class="nm"><b>${esc(mdNice_(it.name)||'(no name)')}</b>${it.matched?'':' <span class="pill pending">new</span>'}
         ${it.desc?`<div class="d">${esc(mdNice_(it.desc))}</div>`:''}</div>
       <input class="q" id="mdq_${mode}_${i}" type="number" step="any" min="0" inputmode="decimal"
-             value="${esc(mdShowQty_(it))}" onchange="mdQty('${mode}',${i},this.value)">
+             value="${esc(mdShowQty_(it))}" oninput="mdQty('${mode}',${i},this.value)" onchange="mdQty('${mode}',${i},this.value)">
       ${unit}
       <button class="x" onclick="mdDel('${mode}',${i})" aria-label="Remove this part">&#128465;</button>
     </div>`;
@@ -8266,7 +8318,7 @@ function mdPick(mode, i){
   const same = ctx.items.find(y=>jpSame_(y,{sku:m.sku, desc:m.name}));
   if (same) { toast('Already on the list.'); }
   else ctx.items.push({ name:m.name, desc:'', sku:m.sku||'', unit:m.unit||'', qty:1,
-                        show: mdLen_(m.unit)?'ft':'', matched:true, fromPo:false });
+                        show: mdLenOf_(m.unit, m.name)?'ft':'', matched:true, fromPo:false });
   mdKeep_(mode); mdAddClose();
 }
 /* Charles, 29 Oct: a part the inventory has never heard of goes on the job ANYWAY. It is on the
@@ -8289,7 +8341,10 @@ function mdUnit(mode, i){
 }
 function mdDel(mode, i){
   const ctx=jpCtx_(mode); if(!ctx||!ctx.items) return;
-  ctx.items.splice(i,1); mdKeep_(mode); mdPaint_();
+  const it = ctx.items[i];
+  ctx.items.splice(i,1);
+  if (it && mdTodayMode_(mode)) mdGoneAdd_(ctx.po, ctx.site, it);
+  mdKeep_(mode); mdPaint_();
 }
 /* The Materials-used screen has no sheet to submit, so its list lives on the phone until the
    day is clocked out - which is where the clock-out review picks it up. */
@@ -8301,15 +8356,36 @@ function mdDraftLoad_(po, site){
 function mdDraftSave_(po, site, items){
   try{ localStorage.setItem(mdDraftKey_(po,site), JSON.stringify(items||[])); }catch(e){}
 }
-function mdDraftClear_(po, site){ try{ localStorage.removeItem(mdDraftKey_(po,site)); }catch(e){} }
+function mdDraftClear_(po, site){ try{ localStorage.removeItem(mdDraftKey_(po,site)); localStorage.removeItem(mdGoneKey_(po,site)); }catch(e){} }
+/* v123 - the parts binned today, so the job's PO does not put them back. Kept beside the draft
+   and cleared with it at clock-out: tomorrow on the same job starts from what is still left. */
+function mdGoneKey_(po, site){ return 'pcwMatGone:' + jpKey_(po, site); }
+function mdGoneLoad_(po, site){
+  try{ const v=JSON.parse(localStorage.getItem(mdGoneKey_(po,site))||'[]'); return Array.isArray(v)?v:[]; }
+  catch(e){ return []; }
+}
+function mdGoneAdd_(po, site, it){
+  try{ const g=mdGoneLoad_(po, site); g.push({ sku:it.sku||'', name:it.name||'', desc:it.desc||'' });
+       localStorage.setItem(mdGoneKey_(po,site), JSON.stringify(g.slice(-200))); }catch(e){}
+}
+/* The two screens that are today's list for the job on the clock: Materials used, and the
+   review at clock-out (unless the job was changed there). */
+function mdTodayMode_(mode){
+  return mode==='mu' || (mode==='co' && !!coState && !coState.jobEdited);
+}
 function mdKeep_(mode){
   if (mode==='mu'){ const c=jpCtx_('mu'); if(c) mdDraftSave_(c.po, c.site, c.items); }
+  // v123 - changes made on the clock-out review are kept too. Backing out of the review used to
+  // lose them, and the next look at the list showed the old numbers.
+  else if (mode==='co' && mdTodayMode_('co')) mdDraftSave_(coState.poNumber||'', coState.jobSite||coState.company||'', coState.items);
 }
 function mdPaint_(){
+  const a = document.activeElement, keep = (a && /^mdq_/.test(a.id||'')) ? a.id : '';
   ['co','mn','ed','mu'].forEach(m=>{
     const el = document.getElementById('md_'+m);
     if (el) el.innerHTML = mdListHtml(m);
   });
+  if (keep){ const b = document.getElementById(keep); if (b){ try{ b.focus(); const L=String(b.value).length; b.setSelectionRange && b.type!=='number' && b.setSelectionRange(L,L); }catch(e){} } }
 }
 
 /* Materials used: the job's own PO parts first (v76), then the whole company inventory - Paul
