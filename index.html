@@ -5307,7 +5307,7 @@ function openVisitMove(key){
     <input id="vmHours" type="number" step="0.25" min="0.25" value="${info.hours||2}">
     <div class="row"><div class="grow"><label>New date</label><input id="vmDate" type="date" value="${esc(moveToDate(`${cur.getFullYear()}-${pad(cur.getMonth()+1)}-${pad(cur.getDate())}`))}"></div>
       <div class="grow"><label>New start</label><input id="vmTime" type="time" value="${pad(cur.getHours())}:${pad(cur.getMinutes())}"></div></div>
-    <div class="perm"><input type="checkbox" id="vmNotify" checked><label for="vmNotify" style="margin:0">Email the customer the new time</label></div>
+    <div class="perm"><input type="checkbox" id="vmNotify"><label for="vmNotify" style="margin:0">Email the customer the new time</label></div>
     <div class="perm"><input type="checkbox" id="vmBump"><label for="vmBump" style="margin:0">Let it take a slot that already has a job in it</label></div>
     <p class="small muted">${info.po?esc(info.po)+' keeps its start date':'The calendar only'} — this moves the visit, not the job.</p>
     <div class="row" style="margin-top:14px">
@@ -5345,7 +5345,7 @@ function openVisitCancel(key){
     ${info.scope?`<div class="banner" style="background:var(--panel2)">${esc(info.scope)}</div>`:''}
     <label>Why? (optional — goes to the customer and the log)</label>
     <input id="vcReason" type="text" placeholder="e.g. waiting on a part">
-    ${info.email?`<div class="perm"><input type="checkbox" id="vcCust" checked><label for="vcCust" style="margin:0">Email the customer</label></div>`:'<p class="small muted">No email on file — the customer will not be told automatically.</p>'}
+    ${info.email?`<div class="perm"><input type="checkbox" id="vcCust"><label for="vcCust" style="margin:0">Email the customer</label></div>`:'<p class="small muted">No email on file — the customer will not be told automatically.</p>'}
     <p class="small muted">${info.po?('This does <b>not</b> cancel '+esc(info.po)+'. The job stays open and still gets invoiced under the same number — only this trip is called off.'):'Removes it from the calendar.'}</p>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="closeSheet()">Keep it</button>
@@ -10111,7 +10111,8 @@ async function ecPick(i){
   const c=ecList[i]; if(!c) return;
   const day=amDay;
   openAddManual('job', true, day);
-  Object.assign(amState, { customer:c.name, company:'', fromPo:c.po });
+  const L={C:'Commercial',R:'Residential',I:'Industrial',M:'Mix'}[String(c.po||'').trim().charAt(0).toUpperCase()]||'';
+  Object.assign(amState, { customer:c.name, company:'', fromPo:c.po, poType:L });   // v127 - the new number keeps their letter
   addManualRender();                                 // v126 - the name and the banner show at once
   const mine=amState;
   try{
@@ -10293,7 +10294,7 @@ function addManualRender(){
   sheet(`<h2>${em==='lead'?'➕ Add a customer for a price':em==='visit'?'📅 Book a visit to look':isCall?'📞 Schedule a phone call':'⚡ Schedule a job'}</h2>
     ${a.day?`<div class="banner sync">📅 For <b>${esc(amDayLabel(a.day))}</b></div>`:''}
     ${a.po?`<div class="banner sync">On <b>${esc(a.po)}</b>${a.project?' · '+esc(a.project):''} — it keeps this job number.</div>`:''}
-    ${a.fromPo&&!a.po?`<div class="banner sync">👤 Same customer as <b>${esc(a.fromPo)}</b> — this job gets a new PO number of its own. Add the site address and the job below.</div>`:''}
+    ${a.fromPo&&!a.po?`<div class="banner sync">👤 Same customer as <b>${esc(a.fromPo)}</b> — this job gets a new PO number of its own${a.poType?', starting with '+esc(String(a.fromPo).charAt(0).toUpperCase())+' like theirs':''}. Add the site address and the job below.</div>`:''}
     <p class="small muted" style="margin-top:-4px">${em==='lead'
       ? 'Goes under New — waiting for a price on the Estimates tab. No job number until they say yes.'
       : em==='visit'
@@ -10348,7 +10349,7 @@ function amPickTime(){
       const r=await api('requestAddManual',{ kind:a.kind, po:a.po||'', customer:a.customer, phone:a.phone,
         email:a.email, address:a.address, scope:a.scope, company:a.company, hours:hours,
         start:start, bump:!!bump, emergency:!!a.emergency,
-        notifyCustomer:a.notifyCustomer!==false },{timeout:120000});
+        notifyCustomer:a.notifyCustomer!==false, poType:a.poType||'', fromPo:a.fromPo||'' },{timeout:120000});
       amState=null;
       if(a.kind==='call') loadEstimates();          // v115 - the visit shows under Visit booked
       const back=(r&&r.bumped&&r.bumped.length)||0;
@@ -10365,7 +10366,7 @@ async function amLater(btn){
   btn.disabled=true; btn.textContent='Saving…';
   try{
     await api('requestAddManual',{ kind:a.kind, po:a.po||'', customer:a.customer, phone:a.phone, email:a.email,
-      address:a.address, scope:a.scope, company:a.company, hours:a.hours, emergency:!!a.emergency });
+      address:a.address, scope:a.scope, company:a.company, hours:a.hours, emergency:!!a.emergency, poType:a.poType||'', fromPo:a.fromPo||'' });
     amState=null; closeSheet();
     if(a.kind==='call'){ toast(a.customer+' added — Estimates tab, under New — waiting for a price.',7000); loadEstimates(); }
     else { toast('Job saved — it is waiting at the top of Requests.',7000); loadRequests(); }
@@ -10756,7 +10757,7 @@ function openReqMove(i,k){
     <input id="mvHours" type="number" step="0.25" min="0.25" value="${q.bookedHours||q.hours||1}">
     <div class="row"><div class="grow"><label>New date</label><input id="mvDate" type="date" value="${esc(moveToDate(d))}"></div>
       <div class="grow"><label>New start</label><input id="mvTime" type="time" value="${t}"></div></div>
-    <div class="perm"><input type="checkbox" id="mvNotify" ${isEst?'':'checked'}><label for="mvNotify" style="margin:0">Email the customer the new time</label></div>
+    <div class="perm"><input type="checkbox" id="mvNotify"><label for="mvNotify" style="margin:0">Email the customer the new time</label></div>
     <div class="perm"><input type="checkbox" id="mvBump"><label for="mvBump" style="margin:0">Let it take a slot that already has a job in it</label></div>
     <p class="small muted">${isEst
       ? 'Moves the estimate call on the calendar. No PO number is involved — nothing is booked yet.'
@@ -10805,8 +10806,8 @@ function openReqCancel(i){
     ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
     <label>Note for the customer (optional — also goes to the crew and the log)</label>
     <input id="cxReason" type="text" placeholder="e.g. Paul is sick today — we'll call you to rebook">
-    ${crew?`<div class="perm"><input type="checkbox" id="cxCrew" checked><label for="cxCrew" style="margin:0">Tell the ${crew} assigned so they don't drive out</label></div>`:''}
-    ${q.email?`<div class="perm"><input type="checkbox" id="cxCust" checked><label for="cxCust" style="margin:0">Email the customer that it's cancelled</label></div>`:'<p class="small muted">No email on file — the customer will not be told automatically.</p>'}
+    ${crew?`<div class="perm"><input type="checkbox" id="cxCrew"><label for="cxCrew" style="margin:0">Tell the ${crew} assigned so they don't drive out</label></div>`:''}
+    ${q.email?`<div class="perm"><input type="checkbox" id="cxCust"><label for="cxCust" style="margin:0">Email the customer that it's cancelled</label></div>`:'<p class="small muted">No email on file — the customer will not be told automatically.</p>'}
     <p class="small muted">Takes it off the calendar and marks ${q.po?esc(q.po)+' Cancelled':'the job Cancelled'} on the PO Log. The PO number is kept, not reused.</p>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="closeSheetDom();render()">Keep it</button>
