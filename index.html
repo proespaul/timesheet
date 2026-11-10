@@ -183,6 +183,26 @@
   .cal .day.blank{background:transparent; border:none; cursor:default}
   .cal .day.today{border:2px solid var(--accent2); font-weight:800}
   .cal .day.hol{background:#fef9c3; border-color:#fde68a}
+  /* v125 - on a desktop a request reads left, its buttons stack on the right (Paul, 9 Nov) */
+  @media (min-width:900px){
+    .rqc{display:grid; grid-template-columns:minmax(0,1fr) 250px; gap:0 20px; align-items:start}
+    .rqc .rq-a{display:flex; flex-direction:column; gap:6px}
+    .rqc .rq-a .row{flex-direction:column; align-items:stretch; gap:6px; margin-top:0 !important}
+    .rqc .rq-a button, .rqc .rq-a .btn{width:100%; margin:0 !important}
+  }
+  /* v125 - the clock face */
+  #tpBack{position:fixed; inset:0; background:rgba(15,23,42,.45); z-index:9999; display:flex; align-items:center; justify-content:center}
+  #tpCard{background:var(--card,#fff); border-radius:24px; padding:18px 18px 12px; width:300px; box-shadow:0 20px 50px rgba(0,0,0,.3)}
+  #tpCard .tpTop{display:flex; align-items:center; justify-content:center; gap:10px; margin-bottom:14px}
+  #tpCard .tpN{font-size:2.6rem; font-weight:700; padding:2px 10px; border-radius:12px; background:var(--panel2); color:var(--navy); cursor:pointer; line-height:1.2}
+  #tpCard .tpN.on{background:#dbeafe; color:#1d4ed8}
+  #tpCard .tpAp{display:flex; flex-direction:column; gap:4px}
+  #tpCard .tpAp button{padding:4px 10px; font-size:.85rem; width:auto; background:var(--panel2); color:var(--navy); border:1px solid var(--line)}
+  #tpCard .tpAp button.on{background:#dbeafe; color:#1d4ed8; border-color:#93c5fd}
+  #tpDial{position:relative; width:256px; height:256px; margin:0 auto; border-radius:50%; background:var(--panel2); touch-action:none; user-select:none}
+  #tpDial .tpL{position:absolute; width:36px; height:36px; margin:-18px 0 0 -18px; display:flex; align-items:center; justify-content:center; font-size:.95rem; color:var(--navy); pointer-events:none; z-index:2}
+  #tpDial .tpL.on{color:#fff; font-weight:700}
+  #tpDial svg{position:absolute; inset:0; pointer-events:none}
   .cal .day .holn{font-size:.58rem; font-weight:700; color:#92400e; text-align:center; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}   /* v124 - the holiday's name */
   .cal .dots{display:flex; gap:2px; margin-top:2px; height:5px}
   .cal .dot{width:5px; height:5px; border-radius:50%; background:var(--accent)}
@@ -3439,10 +3459,14 @@ function jobsRowsHtml(){
   list=list.filter(j=>j.po || !coSet.has(String(j.name||'').trim().toLowerCase()));
   const archToggle = arch.length
     ? `<button class="ghost" style="width:100%;margin-top:6px" onclick="S.jobsShowArch=!S.jobsShowArch;jobsFilter(S.jobsQuery||'')">${S.jobsShowArch?'▾ Hide':'▸ Show'} ${arch.length} archived job${arch.length===1?'':'s'} (invoiced/closed)</button>` : '';
+  // v125 - open jobs first, newest number first; then closed and invoiced ones, most recently
+  // worked first (Paul, 9 Nov: "organized by the time it was closed, not this random list").
+  const shut=j=>/closed|invoiced|cancel/i.test(j.status||''), pn=j=>{ const m=/(\d+)\s*$/.exec(j.po||''); return m?Number(m[1]):0; };
+  list=list.slice().sort((a,b)=> (shut(a)-shut(b)) || (shut(a) ? String(b.last||'').localeCompare(String(a.last||'')) || pn(b)-pn(a) : pn(b)-pn(a)));
   let h=list.map(j=>{ const k=reg(j); return `<div class="list-item row between" style="cursor:pointer" onclick="openJobDetail('${k}')">
       <div style="min-width:0"><b>${esc(j.name||j.po||'—')}</b>
         <div class="small muted">${[j.po?('PO '+esc(j.po)):'', j.project?esc(j.project):''].filter(Boolean).join(' · ')}</div>
-        ${j.status?`<div class="small muted">${esc(j.status)}</div>`:''}</div>
+        ${j.status?`<div class="small muted">${esc(j.status)}${j.last&&/closed|invoiced/i.test(j.status)?' · last worked '+esc(sjShortDay(j.last+'T12:00')):''}</div>`:''}</div>
       <div style="text-align:right"><b>${j.hours.toFixed(2)} hrs</b>
         ${j.pending?`<div class="small" style="color:var(--pending)">+ ${j.pending.toFixed(2)} pending</div>`:''}
         <div class="small muted">≈ $${j.cost.toFixed(2)} labour</div></div>
@@ -4554,7 +4578,8 @@ function timeOffSection(){
   if(d.canAssign){
     const pending=list.filter(t=>t.status==='pending');
     const off=list.filter(t=>t.status==='approved');
-    return `<div class="card"><h3>Time off</h3>
+    return `<div class="card"><div class="row between"><h3 style="margin:0">Time off</h3>
+        <button class="secondary" style="width:auto;padding:6px 14px" onclick="openTimeOffAdmin()">＋ Add time off</button></div>
       ${pending.length? pending.map(t=>{ const k=reg(t); return `<div class="list-item">
           <div class="row between"><div><b>${esc(t.name)}</b> · ${esc(t.start)}${t.end!==t.start?(' → '+esc(t.end)):''}
             ${t.reason?`<div class="small muted">${esc(t.reason)}</div>`:''}</div>${pill(t.status)}</div>
@@ -4572,6 +4597,89 @@ function timeOffSection(){
       </div>`; }).join('') : '<p class="muted small">No requests yet.</p>'}
     <button class="secondary" style="width:100%;margin-top:8px" onclick="openTimeOff()">🏖 Request time off</button>
   </div>`;
+}
+/* v125 - TIME OFF PUT ON THE CALENDAR BY HAND (Paul, 9 Nov). For anyone on the team, already
+   approved, nobody emailed (Code.gs v102). It shows on the calendar as a day off. */
+/* v125 - A CLOCK FACE FOR EVERY TIME BOX (Paul, 9 Nov: "the clock version rather than scrolling
+   through the numbers, Google Pixel style"). Tapping any time box opens a dial: tap or drag to the
+   hour, then the minute (5-minute steps, 15 where the box asks for quarters), AM or PM, OK. The box
+   gets the value and its own change handler runs, so every screen keeps working as it did. */
+let tpS=null;
+function tpOpen(inp){
+  const v=String(inp.value||'08:00').split(':'); const h=Math.min(23,Number(v[0])||0), m=Number(v[1])||0;
+  const step=(Number(inp.getAttribute('step'))||60)>=900?15:5;
+  tpS={inp, h, m:(Math.round(m/step)*step)%60, step, mode:'h'};
+  let b=document.getElementById('tpBack'); if(!b){ b=document.createElement('div'); b.id='tpBack'; document.body.appendChild(b); }
+  b.onclick=e=>{ if(e.target===b) tpClose(false); };
+  tpPaint();
+}
+function tpClose(ok){
+  const b=document.getElementById('tpBack'), s=tpS; tpS=null; if(b) b.remove();
+  if(ok&&s&&s.inp){ const v=String(s.h).padStart(2,'0')+':'+String(s.m).padStart(2,'0');
+    s.inp.value=v; s.inp.dispatchEvent(new Event('input',{bubbles:true})); s.inp.dispatchEvent(new Event('change',{bubbles:true})); }
+}
+function tpPaint(){
+  const s=tpS, b=document.getElementById('tpBack'); if(!s||!b) return;
+  const pm=s.h>=12, h12=(s.h%12)||12, R=100, C=128;
+  const labels=s.mode==='h' ? [12,1,2,3,4,5,6,7,8,9,10,11] : [0,5,10,15,20,25,30,35,40,45,50,55];
+  const selIdx = s.mode==='h' ? (h12%12) : Math.round(s.m/5)%12;
+  const ang=a=>(a*30-90)*Math.PI/180;
+  const handA = s.mode==='h' ? ang(h12%12) : (s.m*6-90)*Math.PI/180;
+  const hx=C+R*Math.cos(handA), hy=C+R*Math.sin(handA);
+  b.innerHTML=`<div id="tpCard" onclick="event.stopPropagation()">
+    <div class="tpTop"><span class="tpN ${s.mode==='h'?'on':''}" onclick="tpS.mode='h';tpPaint()">${String(h12).padStart(2,'0')}</span>
+      <b style="font-size:2.4rem;color:var(--navy)">:</b>
+      <span class="tpN ${s.mode==='m'?'on':''}" onclick="tpS.mode='m';tpPaint()">${String(s.m).padStart(2,'0')}</span>
+      <span class="tpAp"><button class="${pm?'':'on'}" onclick="tpAmPm(false)">AM</button><button class="${pm?'on':''}" onclick="tpAmPm(true)">PM</button></span></div>
+    <div id="tpDial">
+      <svg width="256" height="256"><circle cx="${C}" cy="${C}" r="4" fill="#1d4ed8"/><line x1="${C}" y1="${C}" x2="${hx}" y2="${hy}" stroke="#1d4ed8" stroke-width="2"/><circle cx="${hx}" cy="${hy}" r="20" fill="#1d4ed8"/></svg>
+      ${labels.map((n,i)=>{ const a=ang(i); return `<div class="tpL ${(s.mode==='h'?i===selIdx:(n===s.m))?'on':''}" style="left:${C+R*Math.cos(a)}px;top:${C+R*Math.sin(a)}px">${s.mode==='h'?n:String(n).padStart(2,'0')}</div>`; }).join('')}
+    </div>
+    <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px">
+      <button class="ghost" style="width:auto" onclick="tpClose(false)">Cancel</button>
+      <button style="width:auto;padding:8px 22px" onclick="tpClose(true)">OK</button></div></div>`;
+  const dial=document.getElementById('tpDial');
+  const at=e=>{ const r=dial.getBoundingClientRect(); const x=e.clientX-r.left-C, y=e.clientY-r.top-C;
+    let deg=Math.atan2(y,x)*180/Math.PI+90; if(deg<0) deg+=360;
+    if(tpS.mode==='h'){ let i=Math.round(deg/30)%12; const h12n=i||12; tpS.h=(h12n%12)+(tpS.h>=12?12:0); }
+    else { tpS.m=(Math.round(deg/6/tpS.step)*tpS.step)%60; } };
+  let down=false;
+  dial.onpointerdown=e=>{ down=true; try{dial.setPointerCapture(e.pointerId);}catch(_){} at(e); tpPaintKeep(); };
+  dial.onpointermove=e=>{ if(down){ at(e); tpPaintKeep(); } };
+  dial.onpointerup=e=>{ if(!down) return; down=false; at(e); if(tpS.mode==='h') tpS.mode='m'; tpPaint(); };
+}
+function tpPaintKeep(){ // repaint the hand without losing the pointer capture: only the svg and labels change
+  const s=tpS, dial=document.getElementById('tpDial'); if(!s||!dial) return;
+  const C=128,R=100, h12=(s.h%12)||12;
+  const a=(s.mode==='h' ? (h12%12)*30-90 : s.m*6-90)*Math.PI/180, hx=C+R*Math.cos(a), hy=C+R*Math.sin(a);
+  const svg=dial.querySelector('svg'); if(svg) svg.innerHTML=`<circle cx="${C}" cy="${C}" r="4" fill="#1d4ed8"/><line x1="${C}" y1="${C}" x2="${hx}" y2="${hy}" stroke="#1d4ed8" stroke-width="2"/><circle cx="${hx}" cy="${hy}" r="20" fill="#1d4ed8"/>`;
+  dial.querySelectorAll('.tpL').forEach((el,i)=>{ el.classList.toggle('on', s.mode==='h' ? i===(h12%12) : i*5===s.m); });
+  const ns=document.querySelectorAll('#tpCard .tpN'); if(ns[0]) ns[0].textContent=String(h12).padStart(2,'0'); if(ns[1]) ns[1].textContent=String(s.m).padStart(2,'0');
+}
+function tpAmPm(pm){ if(!tpS) return; if(pm&&tpS.h<12) tpS.h+=12; if(!pm&&tpS.h>=12) tpS.h-=12; tpPaint(); }
+function tpIsTime_(t){ return t&&t.tagName==='INPUT'&&t.type==='time'&&!t.disabled&&!t.readOnly; }
+document.addEventListener('mousedown', e=>{ if(tpIsTime_(e.target)) e.preventDefault(); }, true);
+document.addEventListener('click', e=>{ if(tpIsTime_(e.target)){ e.preventDefault(); try{e.target.blur();}catch(_){} tpOpen(e.target); } }, true);
+document.addEventListener('keydown', e=>{ if(tpS&&e.key==='Escape') tpClose(false); if(tpS&&e.key==='Enter') tpClose(true); });
+function openTimeOffAdmin(){
+  const t=todayStr(), crew=(S.employees||[]).filter(e=>e.active);
+  sheet(`<h2>🏖 Add time off</h2>
+    <p class="small muted" style="margin-top:-4px">Goes on the calendar already approved. Nobody is emailed.</p>
+    <label>Who</label><select id="taWho">${crew.map(e=>`<option value="${esc(e.email)}" ${S.me&&e.email===S.me.email?'selected':''}>${esc(e.name||e.email)}</option>`).join('')}</select>
+    <div class="row"><div class="grow"><label>First day off</label><input id="taStart" type="date" value="${t}"></div>
+      <div class="grow"><label>Last day off</label><input id="taEnd" type="date" value="${t}"></div></div>
+    <label>Reason (optional)</label><input id="taReason" placeholder="e.g. holidays, appointment">
+    <button style="width:100%;margin-top:12px" onclick="taSubmit(this)">Put it on the calendar</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel</button>`);
+}
+async function taSubmit(btn){
+  if(!S.online) return toast('You need signal.');
+  const s=val('taStart'), e=val('taEnd')||s;
+  if(!s) return toast('Pick the first day.'); if(e<s) return toast('Last day is before the first day.');
+  btn.disabled=true; btn.textContent='Saving…';
+  try{ const r=await api('timeOffRequest',{forEmail:val('taWho'), approved:true, startDate:s, endDate:e, reason:val('taReason')});
+    closeSheet(); toast(r&&r.approved?'Time off is on the calendar ✓':'Sent as a request - the office script needs its update to file it as approved.', 7000); schedRefreshAll();
+  }catch(err){ toast(err.message,8000); btn.disabled=false; btn.textContent='Put it on the calendar'; }
 }
 function openTimeOff(){
   const t=todayStr();
@@ -8817,7 +8925,7 @@ async function neoDecide(i,action,btn){
 function requestsView(){
   const list=(S.requests||[]).map((q,i)=>{
     const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
-    return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'req',${i})">
+    return `<div class="list-item rqc" style="cursor:pointer" onclick="reqCardTap(event,'req',${i})"><div class="rq-d">
       <div class="row between">
         <div><b>${esc(q.customer||'—')}</b>${q.po?` <span class="small muted">${esc(q.po)}</span>`:''}</div>
         <span class="small" style="color:var(--accent2)">Details ›</span>
@@ -8825,13 +8933,13 @@ function requestsView(){
       ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
       <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> estimated${price?` · ${price} provisional`:''}</div>
-      ${reqPhotoStrip(q)}
+      ${reqPhotoStrip(q)}</div><div class="rq-a">
       ${enquiryBtn(q)}
       ${ballParkBtn(q)}
       <div class="row" style="margin-top:6px">
         <button class="grow" onclick="openReqSchedule(${i})">📅 Schedule it</button>
         <button class="ghost" onclick="reqDismiss(${i})">Dismiss</button>
-      </div>
+      </div></div>
     </div>`; }).join('');
   /* v46 — estimate calls that have been held but never became a job. When the customer says yes,
      this is where it turns into a PO instead of being retyped as a fresh lead. */
@@ -8839,7 +8947,7 @@ function requestsView(){
     const price=q.priceHigh?`$${Math.round(q.priceLow)}–$${Math.round(q.priceHigh)}`:'';
     const when=q.start?new Date(q.start):null;
     const called=when&&!isNaN(when)?when.toLocaleDateString(undefined,{month:'short',day:'numeric'}):'';
-    return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'est',${i})">
+    return `<div class="list-item rqc" style="cursor:pointer" onclick="reqCardTap(event,'est',${i})"><div class="rq-d">
       <div class="row between">
         <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> <span class="pill pending">QUOTED</span></div>
         <span class="small muted">${called?('called '+esc(called)):''} <span style="color:var(--accent2)">›</span></span>
@@ -8847,7 +8955,7 @@ function requestsView(){
       ${q.scope?`<div class="small" style="margin-top:2px">${esc(q.scope)}</div>`:''}
       <div class="small muted" style="margin-top:2px">${esc(q.address||'')}${q.phone?' · '+esc(q.phone):''}</div>
       <div class="small" style="margin-top:3px"><b>${q.hours} hr</b> job${price?` · ${price} quoted`:''}</div>
-      ${reqPhotoStrip(q)}
+      ${reqPhotoStrip(q)}</div><div class="rq-a">
       ${enquiryBtn(q)}
       ${ballParkBtn(q)}
       <div class="row" style="margin-top:6px">
@@ -8857,7 +8965,7 @@ function requestsView(){
       <div class="row" style="margin-top:6px">
         <button class="secondary grow" onclick="openReqMove(${i},'est')">📅 Move the call</button>
         <button class="secondary grow" onclick="openReqEdit('est',${i})">✏️ Change the details</button>
-      </div>
+      </div></div>
     </div>`; }).join('');
   /* v46 — booked jobs and where the customer stands on the time. Amber = waiting on them,
      green = confirmed, red = they want it moved. Same colours as the calendar event. */
@@ -8868,20 +8976,20 @@ function requestsView(){
     const c=CONF[q.confirm]||CONF.none;
     const when=q.start?new Date(q.start):null;
     const w=when&&!isNaN(when)?when.toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
-    return `<div class="list-item" style="cursor:pointer" onclick="reqCardTap(event,'bk',${i})">
+    return `<div class="list-item rqc" style="cursor:pointer" onclick="reqCardTap(event,'bk',${i})"><div class="rq-d">
       <div class="row between">
         <div><b>${q.entryNo?esc(q.entryNo)+' ':''}${esc(q.customer||'—')}</b> ${q.po?`<span class="small muted">${esc(q.po)}</span>`:''}</div>
         <span class="pill ${c[2]}">${c[0]} ${esc(c[1])}</span> <span class="small" style="color:var(--accent2)">›</span>
       </div>
       <div class="small" style="margin-top:2px"><b>${esc(w)}</b>${(q.bookedHours||q.hours)?` · ${q.bookedHours||q.hours} hr`:''}</div>
       ${reqPhotoStrip(q)}
-      ${q.scope?`<div class="small muted" style="margin-top:2px">${esc(q.scope)}</div>`:''}
+      ${q.scope?`<div class="small muted" style="margin-top:2px">${esc(q.scope)}</div>`:''}</div><div class="rq-a">
       ${enquiryBtn(q)}
       <div class="row" style="margin-top:6px">
         <button class="grow secondary" onclick="openReqMove(${i})">📅 Move it</button>
         ${q.confirm==='waiting'?`<button class="ghost" onclick="reqRenotify(${i})">Ask again</button>`:(!q.confirm||q.confirm==='none')?`<button class="ghost" onclick="reqRenotify(${i})">📧 Email customer</button>`:''}
         <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>
-      </div>
+      </div></div>
     </div>`; }).join('');
   return `${approvalsHtml()}${neoCardHtml()}${collateralCardHtml()}${callsCardHtml()}<h2>📨 Requests</h2>
     <p class="small muted" style="margin-top:-4px">Jobs waiting to go on the calendar. Nothing is booked until you say so. Requests for an estimate are on the Estimates tab.</p>
@@ -9637,7 +9745,7 @@ function dayPickOpen(o){
   const date=o.date||todayStr();
   dpState={ view:'month', month:dpMonthOf(date), date:date,
             hours:Math.max(0.25,Number(o.hours)||1),
-            title:o.title||'Pick a time', sub:o.sub||'', back:o.back||'', onConfirm:o.onConfirm,
+            title:o.title||'Pick a time', sub:o.sub||'', back:o.back||'', onConfirm:o.onConfirm||o.onPick, onPick:o.onPick||null,
             mdata:null, mloading:true, merr:'',
             data:null, err:'', loading:false, time:'', bump:false };
   // v115 - opened from a day on the calendar: go straight to that day and skip the month fetch
@@ -9673,6 +9781,17 @@ function dpMonthRender(){
   const label=new Date(p[0],p[1]-1,1).toLocaleDateString([], {month:'long', year:'numeric'});
   const today=(md&&md.today)||todayStr();
   const blanks=days.length?days[0].dow:0;
+  /* v125 - the month shows WHAT is booked, as on the Schedule tab (Paul, 9 Nov: "show the calendar
+     with the existing schedule ... so that I could actually click on a day I see fit"): the first
+     two jobs on each day by time and name, then +N, and the holiday's name. Read from the Schedule
+     tab's own copy of the month, fetched here if it is not on the phone yet. */
+  const sm=(S.schedMonths||{})[d.month], evDay={};
+  if(sm&&Array.isArray(sm.events)) sm.events.forEach(ev=>{ const k=localDateStr(new Date(ev.start)); (evDay[k]=evDay[k]||[]).push(ev); });
+  else if(!d._smAsked){ d._smAsked=1; Promise.resolve(loadSchedMonth(d.month)).then(()=>{ if(dpState&&dpState.view==='month') dayPickRender(); }).catch(()=>{}); }
+  const names=(x,sel)=>{ const evs=(evDay[x.date]||[]).slice().sort((a,b)=>new Date(a.start)-new Date(b.start));
+    const ln=evs.slice(0,2).map(ev=>`<span style="display:block;width:100%;font-size:.6rem;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 3px;text-align:left;color:${sel?'#fff':'var(--navy)'}">${ev.allDay?'':esc(schedClock(ev))+' '}${esc(schedName(ev))}</span>`).join('');
+    return ln+(evs.length>2?`<span style="font-size:.6rem;color:${sel?'#fff':'var(--muted)'}">+${evs.length-2}</span>`:'')
+      +(x.holiday?`<span style="display:block;width:100%;font-size:.58rem;font-weight:700;color:${sel?'#fff':'#92400e'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 3px">${esc(x.holiday)}</span>`:''); };
   const cell=(x)=>{
     const sel=x.date===d.date, isToday=x.date===today, past=x.date<today, off=x.holiday||x.leave;
     const bg = sel?'var(--accent2)' : off?'#f6ecd8' : x.weekend?'var(--panel2)' : 'var(--panel)';
@@ -9682,9 +9801,10 @@ function dpMonthRender(){
       aria-label="${esc(x.date+(x.jobs?(' — '+x.jobs+' job'+(x.jobs===1?'':'s')):' — nothing booked')+(off?(' — '+(x.holiday||x.leave)):''))}"
       style="padding:5px 0 3px;border:${isToday&&!sel?'2px':'1px'} solid ${isToday&&!sel?'var(--accent)':'var(--line)'};
              border-radius:10px;background:${bg};color:${fg};display:flex;flex-direction:column;
-             align-items:center;justify-content:flex-start;gap:3px;min-height:48px;font:inherit;cursor:pointer">
+             align-items:center;justify-content:flex-start;gap:3px;min-height:${sm?'64px':'48px'};min-width:0;overflow:hidden;font:inherit;cursor:pointer">
       <span style="font-size:0.95rem;font-weight:${isToday?'800':'600'};line-height:1">${x.day}</span>
-      <span style="height:7px;display:flex;gap:2px;align-items:center;justify-content:center">
+      ${sm?names(x,sel):''}
+      <span style="height:7px;display:${sm?'none':'flex'};gap:2px;align-items:center;justify-content:center">
         ${x.jobs?('<i style="width:5px;height:5px;border-radius:50%;background:'+dot+';display:block"></i>').repeat(Math.min(x.jobs,3)):''}
         ${x.jobs>3?`<i style="font-size:0.62rem;font-style:normal;line-height:1;color:${dot}">+</i>`:''}
         ${(!x.jobs&&x.other)?`<i style="width:4px;height:4px;border-radius:50%;background:${sel?'#fff':'var(--muted)'};display:block"></i>`:''}
@@ -9811,7 +9931,7 @@ function dpDayRender(){
     <div id="dpVerdict">${dpVerdictHtml(jobs,other)}</div>
     <div class="row" style="margin-top:12px">
       <button class="secondary grow" onclick="dpBackToMonth()">‹ Back</button>
-      <button class="grow" id="dpGo" ${(d.time&&(!jobs.length||d.bump))?'':'disabled'} onclick="dayPickGo(this)">${(jobs.length&&d.bump)?('Book it and move '+(jobs.length===1?'that job':'those jobs')):'Book it'}</button>
+      <button class="grow" id="dpGo" ${(d.time&&(!jobs.length||d.bump))?'':'disabled'} onclick="dayPickGo(this)">${d.onPick?'Use this time ›':(jobs.length&&d.bump)?('Book it and move '+(jobs.length===1?'that job':'those jobs')):'Book it'}</button>
     </div>`);
 }
 /* Tap an event on the day — the same thing Google Calendar gives you. */
@@ -9834,6 +9954,7 @@ async function dayPickGo(btn){
   if(isNaN(start)) return toast('That time did not read properly.');
   btn.disabled=true; btn.textContent='Booking…';
   try{
+    if(d.onPick){ const f=d.onPick; dpState=null; f(start.toISOString(), Number(d.hours)||1); return; }   // v125 - pick only; the form books it
     const msg=await d.onConfirm(start.toISOString(), Number(d.hours)||1, !!d.bump);
     dpState=null; closeSheet(); toast(msg||'Booked ✓',8000); loadRequests();
     if(S.tab==='sched') schedRefreshAll();          // v116 - the new booking shows on the calendar
@@ -9862,8 +9983,8 @@ function amDayLabel(d){ return d?schDate(d).toLocaleDateString([],{weekday:'long
 function openAddManual(kind, fresh, day, estMode){
   amDay = day || '';                                // v115 - always passed in, never left over from last time
   if (kind !== 'call' && !fresh) return openScheduleJobPick();
-  amState={ kind:kind==='call'?'call':'job', emergency:kind!=='call', po:'', customer:'', phone:'', email:'',
-            address:'', scope:'', company:'', hours:kind==='call'?0.5:2, notifyCustomer:true, day:amDay,
+  amState={ kind:kind==='call'?'call':'job', emergency:false, po:'', customer:'', phone:'', email:'',
+            address:'', scope:'', company:'', hours:kind==='call'?0.5:2, notifyCustomer:false, day:amDay,
             estMode:kind==='call'?(estMode||''):'' };
   addManualRender();
 }
@@ -9998,7 +10119,7 @@ function sjPickWaiting(i){
     f:{ customer:String(x.customer||'').trim(), company:String(x.company||'').trim(), phone:String(x.phone||'').trim(),
         email:String(x.email||'').trim(), address:String(x.address||'').trim(), scope:String(x.scope||'').trim(),
         jobName:keepPo?'':jn, hours:Number(x.bookedHours||x.hours)||2 },
-    assign:[], notify:true, notifyCustomer:!!String(x.email||'').trim() };
+    assign:[], notify:false, notifyCustomer:false };
   bwRender();
   if(!(S.employees||[]).length && S.online)
     apiBg('listEmployees').then(r=>{ S.employees=(r&&r.employees)||[]; if(bwState&&document.getElementById('bwCustomer')){ bwSave(); bwRender(); } }).catch(()=>{});
@@ -10112,7 +10233,7 @@ async function bwBook(start, hours, bump){
 async function sjPick(i){
   const c=sjResults[i]; if(!c) return;
   amState={ kind:'job', emergency:false, po:c.po, customer:c.name, project:c.project||'',
-            phone:'', email:'', address:'', scope:'', company:'', hours:2, notifyCustomer:true, day:amDay };
+            phone:'', email:'', address:'', scope:'', company:'', hours:2, notifyCustomer:false, day:amDay };
   addManualRender();
   if (!S.online) return;
   try{
@@ -10223,12 +10344,24 @@ async function amLater(btn){
   }catch(e){ toast(e.message,9000); btn.disabled=false; btn.textContent='Save — no time yet'; }
 }
 
+/* v125 - SCHEDULE IT OPENS THE CALENDAR (Paul, 9 Nov: "it should show the calendar with the
+   existing schedule ... so that I could actually click on a day I see fit"). The month with what is
+   already booked comes first, the same picker Schedule a job uses; the day and time picked there
+   fill the booking form (crew, emails), which still checks the slot before anything is sent. */
 function openReqSchedule(i, src){
+  const q = src==='estLead' ? ((S.estData&&S.estData.leads)||[])[i] : (S.requests||[])[i]; if(!q) return;
+  const sug=q.suggested&&!isNaN(new Date(q.suggested))?new Date(q.suggested):new Date(Date.now()+86400000);
+  dayPickOpen({ title:(src==='estLead'?'When is the visit? — ':'When is the job? — ')+(q.customer||''),
+    sub:[q.scope,q.address].filter(Boolean).join(' · '), hours:src==='estLead'?0.5:(q.hours||1),
+    date:localDateStr(sug), back:'',
+    onPick:(start,hours)=>openReqScheduleForm(i, src, start, hours) });
+}
+function openReqScheduleForm(i, src, pickStart, pickHours){
   // v99 - opened from Requests it books the JOB; from the Estimates tab it books a visit to look
   // first, which goes on the calendar under their name with no job number until they say yes.
   const q = src==='estLead' ? ((S.estData&&S.estData.leads)||[])[i] : (S.requests||[])[i]; if(!q) return;
   S._rqQ=q;
-  const sug=q.suggested&&!isNaN(new Date(q.suggested))?new Date(q.suggested):new Date(Date.now()+86400000);
+  const sug=pickStart?new Date(pickStart):(q.suggested&&!isNaN(new Date(q.suggested))?new Date(q.suggested):new Date(Date.now()+86400000));
   const pad=n=>String(n).padStart(2,'0');
   const d=`${sug.getFullYear()}-${pad(sug.getMonth()+1)}-${pad(sug.getDate())}`;
   const t=`${pad(sug.getHours()||9)}:${pad(sug.getMinutes())}`;
@@ -10248,7 +10381,7 @@ function openReqSchedule(i, src){
       <input type="hidden" id="rqCallMin" value="30">
     </div>
     <label>How long is the job? (hours — the AI guessed ${q.hours} with ${(q.crew||1)>1?((q.crew||1)+' people'):'you on your own'})</label>
-    <input id="rqHours" type="number" step="0.25" min="0.25" value="${q.hours||1}" oninput="reqSlotsSoon()">
+    <input id="rqHours" type="number" step="0.25" min="0.25" value="${(isAppt&&pickHours)||q.hours||1}" oninput="reqSlotsSoon()">
     <label>Open times <span class="muted">(tap one — or set your own below)</span></label>
     <div id="rqOpen" class="row" style="flex-wrap:wrap;gap:6px"><span class="small muted">Reading the calendar…</span></div>
     <p class="small" id="rqSlotNote" style="margin:6px 0 0"></p>
@@ -10256,13 +10389,13 @@ function openReqSchedule(i, src){
       <div class="grow"><label>Start</label><input id="rqTime" type="time" value="${t}" onchange="reqSlotsLoad(true)"></div></div>
     <label>Who's going?</label>
     <div>${crew.map(e=>`<div class="perm"><input type="checkbox" id="rq_${esc(e.email)}"><label for="rq_${esc(e.email)}" style="margin:0">${esc(e.name||e.email)}</label></div>`).join('')||'<p class="small muted">No active crew.</p>'}</div>
-    <div class="perm"><input type="checkbox" id="rqNotify" checked><label for="rqNotify" style="margin:0">Email the crew their assignment</label></div>
-    <div class="perm" id="rqCustRow" style="${isAppt?'':'display:none'}"><input type="checkbox" id="rqNotifyCust" checked><label for="rqNotifyCust" style="margin:0">Email the customer to confirm the time${q.email?'':' (no email on file)'}</label></div>
+    <div class="perm"><input type="checkbox" id="rqNotify"><label for="rqNotify" style="margin:0">Email the crew their assignment</label></div>
+    <div class="perm" id="rqCustRow" style="${isAppt?'':'display:none'}"><input type="checkbox" id="rqNotifyCust"><label for="rqNotifyCust" style="margin:0">Email the customer to confirm the time${q.email?'':' (no email on file)'}</label></div>
     <div class="row" style="margin-top:14px">
-      <button class="secondary grow" onclick="closeSheetDom();render()">Back</button>
+      <button class="secondary grow" onclick="openReqSchedule(${i}${src?`,'${src}'`:''})">‹ Calendar</button>
       <button class="grow" id="rqGo" onclick="reqSchedule(${i},this)">📅 Put it on the calendar</button>
     </div>`);
-  reqSlotsLoad(true);
+  reqSlotsLoad(!pickStart);   // v125 - a time picked on the calendar is not moved, only checked
 }
 /* v52 — OPEN TIMES. Reads Paul's calendar for real gaps that fit what is being booked: an
    estimate call of the chosen length (15 min – 2 h, no travel padding, never split by lunch) or
@@ -10435,7 +10568,7 @@ function openReqBook(i){
       <div class="grow"><label>Start</label><input id="bkTime" type="time" value="08:30"></div></div>
     <label>Who's going?</label>
     <div>${crew.map(e=>`<div class="perm"><input type="checkbox" id="bk_${esc(e.email)}"><label for="bk_${esc(e.email)}" style="margin:0">${esc(e.name||e.email)}</label></div>`).join('')||'<p class="small muted">No active crew.</p>'}</div>
-    <div class="perm"><input type="checkbox" id="bkNotify" checked><label for="bkNotify" style="margin:0">Email the crew their assignment</label></div>
+    <div class="perm"><input type="checkbox" id="bkNotify"><label for="bkNotify" style="margin:0">Email the crew their assignment</label></div>
     <div class="perm"><input type="checkbox" id="bkNotifyCust" checked><label for="bkNotifyCust" style="margin:0">Email the customer to confirm the time${q.email?'':' (no email on file)'}</label></div>
     <p class="small muted">Gets the next PO number and a PO Log row (In progress). The estimate call stays on the calendar where it was.</p>
     <div class="row" style="margin-top:14px">
