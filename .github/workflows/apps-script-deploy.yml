@@ -1,0 +1,74 @@
+# Pushes apps-script/ to the Apps Script project and moves the existing
+# web app deployment onto the new version, so the /exec URL never changes.
+# Stays switched off until .github/apps-script-deployment-id holds the
+# deployment ID.
+name: Deploy backend to Apps Script
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'apps-script/**'
+      - '.clasp.json'
+      - '.claspignore'
+      - '.github/apps-script-deployment-id'
+      - '.github/workflows/apps-script-deploy.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apps-script
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is deploying switched on?
+        id: gate
+        run: |
+          F=.github/apps-script-deployment-id
+          if [ -s "$F" ]; then
+            echo "id=$(tr -d ' \r\n' < "$F")" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Deploy is off — $F is empty, nothing was sent to Apps Script."
+          fi
+
+      - if: steps.gate.outputs.id != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check the code parses
+        if: steps.gate.outputs.id != ''
+        run: |
+          for f in apps-script/*.gs; do cp "$f" /tmp/check.js && node --check /tmp/check.js || { echo "::error::$f has a syntax error"; exit 1; }; done
+          jq empty apps-script/appsscript.json
+
+      - name: Sign in to Apps Script
+        if: steps.gate.outputs.id != ''
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: |
+          if [ -z "$CLASPRC_JSON" ]; then echo "::error::The CLASPRC_JSON secret is missing"; exit 1; fi
+          printf '%s' "$CLASPRC_JSON" > ~/.clasprc.json
+          chmod 600 ~/.clasprc.json
+
+      - name: Push the code
+        if: steps.gate.outputs.id != ''
+        run: |
+          npx -y @google/clasp@3.4.1 show-file-status
+          npx -y @google/clasp@3.4.1 push -f
+
+      - name: Point the web app at the new version
+        if: steps.gate.outputs.id != ''
+        env:
+          DEPLOYMENT_ID: ${{ steps.gate.outputs.id }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          DESC="$(printf '%s' "${GITHUB_SHA::7} ${COMMIT_MSG:-manual deploy}" | head -n1 | cut -c1-90)"
+          npx -y @google/clasp@3.4.1 redeploy "$DEPLOYMENT_ID" -d "$DESC"

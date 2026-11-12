@@ -1,0 +1,101 @@
+# Copies the code that is live in Apps Script right now onto the
+# `live-snapshot` branch, with the list of deployments and versions.
+# Read-only on the Apps Script side: it never changes anything there.
+#
+# This repo is public, so before anything is saved the pulled code is
+# scanned for passwords and API keys. If anything looks like one, the run
+# stops, nothing is published, and the log shows only the file, the line
+# number and the kind of match (never the value).
+name: Apps Script snapshot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/snapshot-request']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apps-script
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Sign in to Apps Script
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: |
+          if [ -z "$CLASPRC_JSON" ]; then echo "::error::The CLASPRC_JSON secret is missing"; exit 1; fi
+          printf '%s' "$CLASPRC_JSON" > ~/.clasprc.json
+          chmod 600 ~/.clasprc.json
+
+      - name: Pull the live code
+        run: |
+          SCRIPT_ID=$(jq -r .scriptId .clasp.json)
+          mkdir -p /tmp/live && cd /tmp/live
+          printf '{"scriptId":"%s","rootDir":"."}\n' "$SCRIPT_ID" > .clasp.json
+          npx -y @google/clasp@3.4.1 show-authorized-user > AUTHORIZED_USER.txt 2>&1 || true
+          npx -y @google/clasp@3.4.1 pull > /dev/null
+          npx -y @google/clasp@3.4.1 list-deployments > DEPLOYMENTS.txt 2>&1
+          DEPLOYED=$(grep -o '@[0-9]\+' DEPLOYMENTS.txt | tr -d @ | sort -n | tail -1)
+          if [ -n "$DEPLOYED" ]; then
+            mkdir -p deployed && cd deployed
+            printf '{"scriptId":"%s","rootDir":"."}\n' "$SCRIPT_ID" > .clasp.json
+            npx -y @google/clasp@3.4.1 pull --versionNumber "$DEPLOYED" > /dev/null
+            rm -f .clasp.json && echo "$DEPLOYED" > VERSION.txt && cd ..
+          fi
+          npx -y @google/clasp@3.4.1 list-versions > VERSIONS.txt 2>&1 || true
+          date -u +%Y-%m-%dT%H:%M:%SZ > TAKEN_AT.txt
+          rm -f .clasp.json
+          find . -type f | sort | while read -r f; do echo "$f $(wc -l < "$f") lines"; done
+
+      - name: Scan for passwords and API keys
+        run: |
+          cd /tmp/live
+          found=0
+          scan() { # $1 = kind, $2 = regex, $3 = extra grep flag (optional)
+            while IFS= read -r hit; do
+              f=${hit%%:*}; rest=${hit#*:}; n=${rest%%:*}
+              echo "::warning::$f line $n looks like $1"
+              found=1
+            done < <(grep -rnIE ${3:-} --exclude=DEPLOYMENTS.txt --exclude=VERSIONS.txt --exclude=AUTHORIZED_USER.txt -e "$2" . || true)
+          }
+          scan "a private key"            '-----BEGIN [A-Z ]*PRIVATE KEY'
+          scan "an Anthropic/OpenAI key"  'sk-(ant-)?[A-Za-z0-9_-]{20,}'
+          scan "a Google API key"         'AIza[0-9A-Za-z_-]{35}'
+          scan "a Google OAuth token"     'ya29\.[0-9A-Za-z_-]{20,}|1//0[0-9A-Za-z_-]{20,}'
+          scan "a GitHub token"           '(ghp|gho|ghu|ghs|github_pat)_[A-Za-z0-9_]{20,}'
+          scan "an AWS key"               'AKIA[0-9A-Z]{16}'
+          scan "a Slack token"            'xox[abprs]-[A-Za-z0-9-]{10,}'
+          scan "a Retell key"             'key_[A-Za-z0-9]{20,}'
+          scan "a Twilio key"             'SK[0-9a-f]{32}'
+          scan "a Stripe key"             '(sk|rk)_(live|test)_[A-Za-z0-9]{10,}'
+          scan "a bearer token"           '[Bb]earer [A-Za-z0-9._~+/-]{20,}'
+          scan "a hard-coded secret"      '(api_?key|apikey|secret|token|passw(or)?d|client_secret|auth_?key)[A-Za-z0-9_]*["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"'[:space:]]{12,}["'"'"']' -i
+          if [ "$found" = 1 ]; then
+            echo "::error::Possible keys found. Nothing was published. Check the lines above in the Apps Script editor."
+            exit 1
+          fi
+          echo "No keys found."
+
+      - name: Save to the live-snapshot branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd /tmp/live
+          git init -q -b live-snapshot
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "Live Apps Script snapshot $(cat TAKEN_AT.txt)"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" live-snapshot
