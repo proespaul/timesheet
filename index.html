@@ -2606,6 +2606,14 @@ function hcNotWork_(r){
       const off=nw.reduce((n,x)=>n+(Number(x.h)||0),0);
       d.sheetRows=rows.map(x=>nw.includes(x)?Object.assign({},x,{notWork:true}):x);
       d.sheet=Math.max(0,(Number(d.sheet)||0)-off);
+      // v129 - the stat line comes off the sheet's side, so the app's stat entry (posted by itself,
+      // Source 'stat') comes off the app's side too; otherwise a stat day labelled on the sheet always
+      // showed the app's holiday hours against nothing.
+      const as=(d.appRows||[]).filter(x=>x.src==='stat');
+      if(as.length){
+        d.appRows=d.appRows.map(x=>as.includes(x)?Object.assign({},x,{notWork:true}):x);
+        d.app=Math.max(0,(Number(d.app)||0)-as.reduce((n,x)=>n+(Number(x.h)||0),0));
+      }
       return Math.abs((Number(d.app)||0)-d.sheet) > 0.5;
     });
   });
