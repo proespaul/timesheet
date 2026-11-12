@@ -57,6 +57,17 @@ jobs:
           npx -y @google/clasp@3.4.1 list-versions > VERSIONS.txt 2>&1 || true
           date -u +%Y-%m-%dT%H:%M:%SZ > TAKEN_AT.txt
           rm -f .clasp.json
+          # The deployed copy itself is never published: only which lines differ.
+          {
+            echo "Editor code compared with deployed version $(cat deployed/VERSION.txt 2>/dev/null)"
+            for f in $(ls deployed 2>/dev/null | grep -v VERSION.txt); do
+              if cmp -s "$f" "deployed/$f"; then echo "$f: identical"
+              else echo "$f: differs at"; diff -U0 "deployed/$f" "$f" | grep '^@@' || true; fi
+            done
+            for f in *.js *.gs *.html appsscript.json; do [ -e "$f" ] && [ ! -e "deployed/$f" ] && echo "$f: not in the deployed version"; done
+          } > COMPARE_TO_DEPLOYED.txt 2>/dev/null || true
+          cat COMPARE_TO_DEPLOYED.txt
+          rm -rf deployed
           find . -type f | sort | while read -r f; do echo "$f $(wc -l < "$f") lines"; done
 
       - name: Scan for passwords and API keys
@@ -68,7 +79,7 @@ jobs:
               f=${hit%%:*}; rest=${hit#*:}; n=${rest%%:*}
               echo "::warning::$f line $n looks like $1"
               found=1
-            done < <(grep -rnIE ${3:-} --exclude=DEPLOYMENTS.txt --exclude=VERSIONS.txt --exclude=AUTHORIZED_USER.txt -e "$2" . || true)
+            done < <(grep -rnIE ${3:-} --exclude=DEPLOYMENTS.txt --exclude=VERSIONS.txt --exclude=AUTHORIZED_USER.txt --exclude=COMPARE_TO_DEPLOYED.txt -e "$2" . || true)
           }
           scan "a private key"            '-----BEGIN [A-Z ]*PRIVATE KEY'
           scan "an Anthropic/OpenAI key"  'sk-(ant-)?[A-Za-z0-9_-]{20,}'
