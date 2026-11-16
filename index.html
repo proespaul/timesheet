@@ -3329,7 +3329,10 @@ function openTodayOpen(k){
   sheet(`<h2>${esc(it.name)} is still clocked in</h2>
     <p>Since <b>${esc(tdDay(it.since))}, ${esc(fmtTime(it.since))}</b>${it.site?` on <b>${esc(it.site)}</b>`:''}: ${Math.round(it.hours)} hours ago.</p>
     <p class="small muted">Either the clock-out is still waiting on ${f}'s phone, or it was forgotten. The app emails ${f} and the admins at 24 hours. When ${f} opens the app, a red banner asks for the time they stopped, and the fix comes to you to approve.</p>
-    <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">OK</button>`);
+    ${canApprove()&&it.entry?`<button style="width:100%;margin-top:8px" onclick="closeSheetDom();openEditEntry('${reg({e:it.entry, employeeEmail:it.email})}','${reg({key:it.key, fp:it.fp})}')">✏️ Set the clock-out time</button>
+      <p class="small muted" style="margin:4px 0 0">Type when ${f} actually stopped (or the hours worked). It is saved and approved at once.</p>`
+      :(canApprove()?`<p class="small" style="color:var(--needs-ink)">Tap Refresh on Today to get the fix button for this one.</p>`:'')}
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">${canApprove()&&it.entry?'Close':'OK'}</button>`);
 }
 /* v100 - an entry somebody has to correct (a forgotten clock-out, a break nobody ended). The fix is
    the ordinary Edit entry sheet, so it goes back for approval with its before-and-after. */
@@ -7131,6 +7134,9 @@ function openEditEntry(k, todayK){
     </div>
     ${canApprove()?`<button class="ghost" style="width:100%;margin-top:10px;color:var(--bad)" onclick="edDeleteAsk('${k}')">🗑 Delete this entry — it was a mistake</button>`:''}`);
   edState.mode='out';
+  if(fromToday && !e.ClockOut){   // v130 - an entry still open: say what to type, and pre-fill the reason
+    const r=document.getElementById('eReason'); if(r&&!r.value) r.value='forgot to clock out';
+  }
   edCalc();
 }
 /* v109 - TYPE THE HOURS, NOT THE CLOCK-OUT. Paul, 7 Nov: "I would like to be able to manually put
@@ -7223,6 +7229,7 @@ async function submitEdit(){
   const di=iv?new Date(iv):null, dout=ov?new Date(ov):null;
   if(!di||isNaN(di)){ toast('Pick the day and the time they clocked in.'); return; }
   if(ov&&(!dout||isNaN(dout))){ toast('Pick the day and time they clocked out.'); return; }
+  if(!dout && st.fromToday && !e.ClockOut){ toast('Type when they stopped (the Clocked out boxes), or the hours worked.', 6000); return; }
   if(dout&&!(dout>di)){ toast('The clock-out is before the clock-in — check the days.'); return; }
   if(dout&&(dout-di)>16*3600000&&!st.longOk){
     st.longOk=true;
@@ -7240,7 +7247,7 @@ async function submitEdit(){
   /* v118 - a fix from Needs you leaves the list at the tap; it comes back if the office says no. */
   const ft=st.fromToday, snapT=(ft&&S.today)?JSON.parse(JSON.stringify(S.today)):null;
   if (ft && S.today && Array.isArray(S.today.items)){
-    S.today.items=S.today.items.filter(i=>!(i.kind==='fix' && i.entry && i.entry.EntryID===e.EntryID));
+    S.today.items=S.today.items.filter(i=>!((i.kind==='fix'||i.kind==='open') && i.entry && i.entry.EntryID===e.EntryID));
     DB.setCache('today', S.today); render();
   }
   try{
@@ -7248,7 +7255,7 @@ async function submitEdit(){
     if (mats.length) apiMutate('logMaterials',{ entryId:e.EntryID,
       jobSite:(p.jobSite!==undefined?p.jobSite:e['Customer/Job Site'])||st.company||'',
       poNumber:(p.poNumber!==undefined?p.poNumber:e['PO#'])||'', items:mats });
-    if (ft && r && (r.reflagged || r.queued || e.Status==='pending')){
+    if (ft && r && (r.reflagged || r.queued || e.Status==='pending' || !e.ClockOut)){
       // Approve it straight away (queued behind the edit when there is no signal, so it lands
       // after it). The office still logs who approved it and the before-and-after.
       toast(r.queued ? 'Saved and approved (will sync)' : 'Saved and approved');
