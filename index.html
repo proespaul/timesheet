@@ -2014,12 +2014,24 @@ async function refresh(silent){
 /* Lay the punches still waiting in the queue over a fresh server snapshot, oldest first, so a
    clock-out that has not reached the office yet still shows as clocked out (with the banner
    saying it is waiting), and a queued clock-in still shows its running clock. */
+/* v134 - hours for a shift the phone closed but the office has not heard about yet. `running`:
+   true counts a break still running at that moment (a job switch does), false leaves it out (a
+   clock-out fix does, like the office). */
+function ovHours_(e, outISO, running){
+  let ms=0; try{ for (const b of (JSON.parse((e&&e['Breaks JSON'])||'[]')||[])){
+    if (b.e) ms += Math.max(0, new Date(b.e)-new Date(b.s)); else if (running) ms += Math.max(0, new Date(outISO)-new Date(b.s)); } }catch(_){}
+  const gross = Math.max(0, Math.round(((new Date(outISO)-new Date(e.ClockIn))/3600000)*100)/100) || 0;
+  const brk = Math.min(Math.round((ms/3600000)*100)/100 || 0, gross);
+  return { Hours: Math.max(0, Math.round((gross-brk)*100)/100), 'Gross Hours': gross, 'Break Hrs': brk };
+}
 function overlayQueued_(items){
   (items||[]).slice().sort((a,b)=>a.ts-b.ts).forEach(it=>{
     const p=it.payload||{};
     if (it.action==='clockIn' || it.action==='switchJobSite'){
-      if (it.action==='switchJobSite' && S.openEntry && !S.openEntry._pending)
-        upsertLocalEntry({ ...S.openEntry, ClockOut:p.at||new Date(it.ts).toISOString(), Source:'paused' });
+      if (it.action==='switchJobSite' && S.openEntry && !S.openEntry._pending){
+        const at=p.at||new Date(it.ts).toISOString();     // v134 - with its hours (audit: same gap as the clock-out)
+        upsertLocalEntry({ ...S.openEntry, ClockOut:at, ...ovHours_(S.openEntry, at, true), Source:'paused' });
+      }
       const id = it.tempId || ('tmp_'+it.ts);
       S.openEntry = { EntryID: tempIdMap[id]||id, ClockIn: p.at||new Date(it.ts).toISOString(), Company:p.company||'',
         'Customer/Job Site':p.jobSite||'', 'PO#':p.poNumber||'', Status:'approved', Source:'live', _local:true, _pending:true };
@@ -2043,7 +2055,8 @@ function overlayQueued_(items){
       // it" sheet) straight back on screen, which is what Paul saw on 16 Oct.
       const id = tempIdMap[p.entryId]||p.entryId;
       if (S.openEntry.EntryID===id || S.openEntry.EntryID===p.entryId){
-        upsertLocalEntry({ ...S.openEntry, ClockOut:p.outISO||new Date(it.ts).toISOString(), Status:'pending', Source:'live', _pending:true });
+        const fo=p.outISO||new Date(it.ts).toISOString();   // v134 - with its hours
+        upsertLocalEntry({ ...S.openEntry, ClockOut:fo, ...ovHours_(S.openEntry, fo, false), Status:'pending', Source:'live', _pending:true });
         S.openEntry=null;
       }
     }
