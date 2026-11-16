@@ -1648,8 +1648,53 @@ async function flushQueue(){
   try {
     const items = (await DB.all()).sort((a,b)=>a.ts-b.ts);
     const idMap = {}; // tempId -> real EntryID
+    const waitingN = items.filter(x=>PUNCH.test(x.action) && !inflightQids.has(x.qid)).length;
+    if (waitingN>=2){ S._sendingN = waitingN; toast(`Sending ${waitingN} saved punches to the office — keep the app open for a moment.`, 8000); }
     let punchAhead = false; // v107 - an earlier punch is still travelling: later punches wait their turn
+    /* v131 - EVERYTHING WAITING, IN ONE CALL (Paul, 16 Nov). Two or more punches waiting go to the
+       office as one request (punchBatch, Code.gs v106) instead of one 10-20 s call each, so a
+       phone that only sees wifi for a minute still empties itself. The office runs them in tap
+       order and stops at the first one it refuses; that one, and anything this cannot take, falls
+       through to the one-at-a-time loop below, which knows what to do with every kind of no. */
+    const done = new Set();
+    for (let round=0; round<6; round++){
+      const batch=[], made={};
+      for (const it of items){
+        if (done.has(it.qid)) continue;
+        if (!PUNCH.test(it.action) || inflightQids.has(it.qid)) break;      // tap order: never jump over one
+        const p = { ...it.payload, queuedAt: it.ts };
+        if (p.entryId && (idMap[p.entryId] || tempIdMap[p.entryId])) p.entryId = idMap[p.entryId] || tempIdMap[p.entryId];
+        if (typeof p.entryId==='string' && p.entryId.indexOf('tmp_')===0 && !made[p.entryId]) break;   // its clock-in is not in this batch
+        if (it.tempId) made[it.tempId]=1;
+        batch.push({ qid: it.qid, action: it.action, payload: p, tempId: it.tempId||'' });
+        if (batch.length>=12) break;
+      }
+      if (batch.length<2) break;
+      let res=null;
+      try { res = await api('punchBatch', { items: batch }, { bg:true, timeout: 150000 }); }
+      catch(e){
+        if (retryable_(e)){ for (const b of batch){ const it=items.find(x=>x.qid===b.qid); if (it) await requeue_(it, { lastError: e.message, lastTry: Date.now(), tries: (it.tries||0)+1 }); }
+          return processed; }                     // no answer: everything stays, the next flush tries again
+        break;                                    // an office without punchBatch: one at a time, as before
+      }
+      let okN=0;
+      for (const r of ((res&&res.results)||[])){
+        if (!r || !r.ok) break;
+        const it=items.find(x=>x.qid===r.qid); if (!it) continue;
+        const data=r.data;
+        if (it.tempId && data && data.entry && data.entry.EntryID){
+          idMap[it.tempId] = data.entry.EntryID; rememberId_(it.tempId, data.entry.EntryID);
+          if (S.openEntry && S.openEntry.EntryID===it.tempId) S.openEntry = data.entry;
+          const ix=(S.entries||[]).findIndex(x=>x.EntryID===it.tempId);
+          if (ix>=0) S.entries[ix] = data.entry;
+        }
+        await DB.del(it.qid); done.add(it.qid); processed++; okN++;
+      }
+      queueCount_();
+      if (okN<batch.length) break;                // a refusal, or the office ran out of time: the loop below takes over
+    }
     for (const it of items){
+      if (done.has(it.qid)) continue;
       if (inflightQids.has(it.qid)){ if (PUNCH.test(it.action)) punchAhead = true; continue; } // apiMutate is delivering this one right now
       if (punchAhead && PUNCH.test(it.action)) continue;      // never overtake it - tap order is the office's order
       const p = { ...it.payload };
@@ -1734,6 +1779,9 @@ async function flushQueue(){
   } catch(e){}
   // The old unconditional refresh here fired a full 4-6s bootstrap every 60s (the periodic
   // sync timer) even with an empty queue — a constant background drag for zero new data.
+  if (S._sendingN){ const n=S._sendingN; S._sendingN=0;
+    try { const still=(await DB.all()).filter(it=>PUNCH.test(it.action)).length;
+      toast(still ? `${still} of ${n} punches are still on this phone — keep the app open on wifi, they send by themselves.` : `All ${n} punches are at the office ✓`, 7000); } catch(e){} }
   if (processed){ saveBootCache(); await refresh(true); }
   return processed;
 }
