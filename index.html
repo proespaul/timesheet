@@ -1552,7 +1552,7 @@ async function apiMutate(action, payload, optimistic){
   // only changes its label. That is how a Clock Out tap became a Clock In tap eleven seconds
   // later on 2026-09-10.
   if (tracked){ mutsInFlight++; if (BTN_PUNCH.test(action)){ btnBusyN++; _punchTapAt = Date.now();
-      setTimeout(()=>{ if ((S.tab==='clock'||S.tab==='today') && !S._sheet) render(); }, PUNCH_HOLD + 30); }   // v107 - the hold ends on time (v108: Today's button too)
+      setTimeout(()=>{ if (S.tab==='clock'||S.tab==='today') render(); }, PUNCH_HOLD + 30); }   // v107 - the hold ends on time (v108: Today's button too). v133 - even under the Clocked out card: it skipped itself while any card was open, so the button behind the card stayed "Working…" until the office answered (Paul, 16 Nov). Sheets live outside #app, so this render does not touch the card.
     if (S.tab==='clock' && !S._sheet) render(); }
   const qid = 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
   const item = { qid, action, payload, ts: Date.now(), tempId: optimistic && optimistic.tempId };
@@ -2026,7 +2026,15 @@ function overlayQueued_(items){
     } else if (it.action==='clockOut' && S.openEntry){
       const id = tempIdMap[p.entryId]||p.entryId;
       if (S.openEntry.EntryID===id || S.openEntry.EntryID===p.entryId){
-        upsertLocalEntry({ ...S.openEntry, ClockOut:p.at||new Date(it.ts).toISOString(), Source: p.paused?'paused':'live', _pending:true });
+        /* v133 - the hours too, not only the time. The office's copy comes back with no clock-out and no
+           hours; this put the clock-out time back but left Hours empty, so a shift closed with no signal
+           counted 0 on My hours until the clock-out reached the office (Elijah, Eastman, 16 Nov). Same
+           sum the clock-out card uses: clock-in to clock-out, less the break typed at clock-out. */
+        const out = p.at||new Date(it.ts).toISOString(), inn = p.clockInAt||S.openEntry.ClockIn;
+        const gross = Math.max(0, Math.round(((new Date(out)-new Date(inn))/3600000)*100)/100) || 0;
+        const brk = Math.min(Math.round(((Number(p.breakMin)||0)/60)*100)/100, gross);
+        upsertLocalEntry({ ...S.openEntry, ClockIn: inn, ClockOut: out, Hours: Math.max(0, Math.round((gross-brk)*100)/100),
+          'Gross Hours': gross, 'Break Hrs': brk, Source: p.paused?'paused':'live', _pending:true });
         S.openEntry=null;
       }
     } else if (it.action==='fixForgotClockout' && S.openEntry){
