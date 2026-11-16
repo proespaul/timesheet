@@ -1649,14 +1649,17 @@ async function flushQueue(){
     const items = (await DB.all()).sort((a,b)=>a.ts-b.ts);
     const idMap = {}; // tempId -> real EntryID
     const waitingN = items.filter(x=>PUNCH.test(x.action) && !inflightQids.has(x.qid)).length;
-    if (waitingN>=2){ S._sendingN = waitingN; toast(`Sending ${waitingN} saved punches to the office — keep the app open for a moment.`, 8000); }
+    const oldest = items.reduce((m,x)=>PUNCH.test(x.action)?Math.min(m,x.ts):m, Date.now());
+    if (waitingN>=2 && Date.now()-oldest > 120000 && Date.now()-(S._sendingAt||0) > 600000){   // audit: not on an ordinary job switch, not every minute
+      S._sendingN = waitingN; S._sendingAt = Date.now();
+      toast(`Sending ${waitingN} saved punches to the office — keep the app open for a moment.`, 8000); }
     let punchAhead = false; // v107 - an earlier punch is still travelling: later punches wait their turn
     /* v131 - EVERYTHING WAITING, IN ONE CALL (Paul, 16 Nov). Two or more punches waiting go to the
        office as one request (punchBatch, Code.gs v106) instead of one 10-20 s call each, so a
        phone that only sees wifi for a minute still empties itself. The office runs them in tap
        order and stops at the first one it refuses; that one, and anything this cannot take, falls
        through to the one-at-a-time loop below, which knows what to do with every kind of no. */
-    const done = new Set();
+    const done = new Set(); let halt = false;
     for (let round=0; round<6; round++){
       const batch=[], made={};
       for (const it of items){
@@ -1674,7 +1677,7 @@ async function flushQueue(){
       try { res = await api('punchBatch', { items: batch }, { bg:true, timeout: 150000 }); }
       catch(e){
         if (retryable_(e)){ for (const b of batch){ const it=items.find(x=>x.qid===b.qid); if (it) await requeue_(it, { lastError: e.message, lastTry: Date.now(), tries: (it.tries||0)+1 }); }
-          return processed; }                     // no answer: everything stays, the next flush tries again
+          halt = true; break; }                   // no answer: everything stays, the next flush tries again
         break;                                    // an office without punchBatch: one at a time, as before
       }
       let okN=0;
@@ -1694,6 +1697,7 @@ async function flushQueue(){
       if (okN<batch.length) break;                // a refusal, or the office ran out of time: the loop below takes over
     }
     for (const it of items){
+      if (halt) break;                            // v131 audit - the office did not answer the batch: stop here, keep everything
       if (done.has(it.qid)) continue;
       if (inflightQids.has(it.qid)){ if (PUNCH.test(it.action)) punchAhead = true; continue; } // apiMutate is delivering this one right now
       if (punchAhead && PUNCH.test(it.action)) continue;      // never overtake it - tap order is the office's order
@@ -1752,6 +1756,10 @@ async function flushQueue(){
         // Write-ahead replay of a punch that already landed before the app was killed —
         // the duplicate is expected, drop it quietly.
         if (/Already clocked out|already have an open entry|Already on break|Not on break/i.test(e.message)){
+          // v131 audit - "Already clocked out" with a DIFFERENT time (the same time is answered as a
+          // duplicate, not refused) means the office closed this entry by hand first. Say so.
+          if (it.action==='clockOut' && /Already clocked out/i.test(e.message) && (Date.now()-it.ts) > 600000)
+            await syncLogAdd_({ ts: Date.now(), what: describePunch_(it), why: 'the office had already closed this entry with a time typed by hand - check that the entry shows the right clock-out' });
           await DB.del(it.qid); processed++; continue;
         }
         // v108 - same for an office tap (approve, decide, confirm...) sent again after a lost
@@ -3378,7 +3386,7 @@ function openTodayOpen(k){
     <p>Since <b>${esc(tdDay(it.since))}, ${esc(fmtTime(it.since))}</b>${it.site?` on <b>${esc(it.site)}</b>`:''}: ${Math.round(it.hours)} hours ago.</p>
     <p class="small muted">Either the clock-out is still waiting on ${f}'s phone, or it was forgotten. The app emails ${f} and the admins at 24 hours. When ${f} opens the app, a red banner asks for the time they stopped, and the fix comes to you to approve.</p>
     ${canApprove()&&it.entry?`<button style="width:100%;margin-top:8px" onclick="closeSheetDom();openEditEntry('${reg({e:it.entry, employeeEmail:it.email})}','${reg({key:it.key, fp:it.fp})}')">✏️ Set the clock-out time</button>
-      <p class="small muted" style="margin:4px 0 0">Type when ${f} actually stopped (or the hours worked). It is saved and approved at once.</p>`
+      <p class="small muted" style="margin:4px 0 0">Type when ${f} actually stopped (or the hours worked). It is saved and approved at once. If ${f}'s phone is still holding the real clock-out, ask them to open the app on wifi first: once you set a time here, yours is the one that is kept.</p>`
       :(canApprove()?`<p class="small" style="color:var(--needs-ink)">Tap Refresh on Today to get the fix button for this one.</p>`:'')}
     <button class="secondary" style="width:100%;margin-top:8px" onclick="closeSheet()">${canApprove()&&it.entry?'Close':'OK'}</button>`);
 }
