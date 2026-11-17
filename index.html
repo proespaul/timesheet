@@ -2609,6 +2609,7 @@ function go(tab, nav){
      you stay on the tab; it goes back to the month on the next visit. Set BEFORE the first paint,
      or the tab would flash the list it was left on. */
   if(tab==='sched' && S.tab!=='sched') S.schedView='month';
+  if(tab==='jobs' && S.tab!=='jobs' && nav!=='arch') S.jobsShowArch=false;   // v135 - archived jobs stay hidden unless asked for on this visit
   S.tab=tab; render();
   if (tab==='admin' && S.online){ loadPending(); loadObStatus(); loadAllowAdmin(); } // fetched on demand, not at boot
   if (tab==='hours' && S.online){
@@ -2761,7 +2762,7 @@ function todayTiles(){
       ip.n==null?"Can't read the PO Log":(ip.newest?`Newest: ${esc(ip.newest.po)} ${esc(ip.newest.name)}${ip.newest.start?' · '+esc(tdShort(ip.newest.start)):''}`:'None right now'), `go('jobs')`)}
     ${tile((hr.n||unread)?'needs':'', "Hours that don't match", hrNum, hrSub, firstFlag?`openHoursCheck('${reg({email:firstFlag.email})}')`:'')}
     ${tile('', 'Invoiced, not paid', inv.n==null?'?':inv.n,
-      inv.n==null?"Can't read the PO Log":(inv.oldest?`Oldest: ${esc(inv.oldest.po)} ${esc(inv.oldest.name)}${inv.oldest.end?' · '+esc(tdShort(inv.oldest.end)):''}`:'Nothing waiting'), `S.jobsShowArch=true;go('jobs')`)}
+      inv.n==null?"Can't read the PO Log":(inv.oldest?`Oldest: ${esc(inv.oldest.po)} ${esc(inv.oldest.name)}${inv.oldest.end?' · '+esc(tdShort(inv.oldest.end)):''}`:'Nothing waiting'), `S.jobsShowArch=true;go('jobs','arch')`)}
     ${crewT}
   </div>`;
 }
@@ -3223,8 +3224,8 @@ function todayPipe(){
       ${st('', '1 · New leads', (S.pendingRequests||0)+(S.pendingEstimates||0), 'Jobs and estimates waiting', "go('requests')")}
       ${st('on', '2 · In progress', q(t.inProgress&&t.inProgress.n), 'On site or booked', "go('jobs')")}
       ${st('bill', '3 · Ready to bill?', items.filter(i=>i.kind==='bill'||i.kind==='draft').length, 'Hours, no invoice', "document.querySelector('.needs-list').scrollIntoView({behavior:'smooth'})")}
-      ${st('', '4 · Invoiced', q(t.invoiced&&t.invoiced.n), 'Waiting on payment', "S.jobsShowArch=true;go('jobs')")}
-      ${st('', '5 · Paid &amp; closed', q(t.closed), 'Done', "S.jobsShowArch=true;go('jobs')")}
+      ${st('', '4 · Invoiced', q(t.invoiced&&t.invoiced.n), 'Waiting on payment', "S.jobsShowArch=true;go('jobs','arch')")}
+      ${st('', '5 · Paid &amp; closed', q(t.closed), 'Done', "S.jobsShowArch=true;go('jobs','arch')")}
     </div></div>`;
 }
 function todayOnGo(){
@@ -6180,7 +6181,7 @@ function openJobPicker(isSwitch){
    A job whose status has been left blank is still reachable — the customer search underneath the
    list does not filter on status — so nobody is stuck, and the fix is one tap in the dropdown. */
 function poOpen(status){ return /in.?progress/i.test(String(status||'').trim()); }
-function poArchived(status){ return /(done|closed|invoice)/i.test(String(status||'')); } // Jobs-tab archive bucket
+function poArchived(status){ return /(done|closed|invoice|cancel|paid|complete)/i.test(String(status||'')); } // Jobs-tab archive bucket (v135: + cancelled/paid/complete)
 function openPOs(q){
   q=(q||'').trim().toLowerCase();
   return (S.customers||[]).filter(c=>c.po && poOpen(c.status))
