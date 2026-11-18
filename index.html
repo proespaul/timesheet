@@ -2687,12 +2687,12 @@ function hcNotWork_(r){
       // v129 - the stat line comes off the sheet's side, so the app's stat entry (posted by itself,
       // Source 'stat') comes off the app's side too; otherwise a stat day labelled on the sheet always
       // showed the app's holiday hours against nothing.
-      const as=(d.appRows||[]).filter(x=>x.src==='stat');
+      const as=(d.appRows||[]).filter(x=>x.src==='stat'&&!x.notWork);   // v136 - the office may have taken it off already
       if(as.length){
         d.appRows=d.appRows.map(x=>as.includes(x)?Object.assign({},x,{notWork:true}):x);
         d.app=Math.max(0,(Number(d.app)||0)-as.reduce((n,x)=>n+(Number(x.h)||0),0));
       }
-      return Math.abs((Number(d.app)||0)-d.sheet) > 0.5;
+      return Math.abs((Number(d.app)||0)-d.sheet) > 0.5 || !!d.stat || d.kind==='paynote';
     });
   });
   tdRecount(r);
@@ -3272,27 +3272,52 @@ function hoursCheckHtml(g){
   const intro = g.error
     ? `<p style="color:var(--needs-ink)">${esc(g.error)}</p><p class="small muted">Nothing is compared until it can be opened again, so this is not zero hours. Check the sheet is still shared with admin@proes.ca.</p>`
     : `<p class="small muted" style="margin-top:-4px">The app against ${first}'s hour sheet, ${esc(tdShort(g.from))} to ${esc(tdShort(g.to))}. Charles keeps the sheet and the app only reads it. A day is listed when the two are more than half an hour apart.</p>`;
-  const days=(g.days||[]).map(d=>hcDayHtml(g,d)).join('');
+  const days=(g.days||[]).map(d=>hcDayHtml(g,d)).join('') + hcPayHtml(g);
   const unread=(g.unreadable||[]).length ? `<p class="small" style="color:var(--needs-ink)">Dates on the sheet the app can't read: ${g.unreadable.map(u=>`“${esc(u.text)}” (${esc(u.tab)} tab, row ${u.row})`).join(', ')}. Those lines were left out rather than guessed.</p>` : '';
   return `<h2>Hours check · ${esc(g.name)}</h2>${intro}${days || (g.error?'':'<p class="small muted">Every day matches. ✓</p>')}${unread}
     <p class="small muted" style="margin:8px 0 0">Time added from here updates this list by itself. Any other fix shows after Refresh.</p>
     <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`;
 }
+const HC_PAYK={stat:'Stat pay', reimb:'Reimbursement', vac:'Vacation pay'};
+/* v136 - what the sheet's pay panel says for each month read: hours pay, stat, reimbursement,
+   vacation pay and the gross under them, each cell with its note. Read only. */
+function hcPayHtml(g){
+  const f=n=>'$'+Number(n||0).toFixed(2);
+  return (g.pay||[]).filter(p=>p.gross!=null||(p.items||[]).length).map(p=>{
+    const t=p.totals||{};
+    const parts=[t.pay!=null?'Hours '+f(t.pay):'', t.stat!=null?'Stat '+f(t.stat):'', t.reimb!=null?'Reimbursement '+f(t.reimb):'', t.vac!=null?'Vacation '+f(t.vac):''].filter(Boolean).join(' · ');
+    const sum=(Number(t.pay)||0)+(Number(t.stat)||0)+(Number(t.reimb)||0)+(Number(t.vac)||0);
+    const off=p.gross!=null && Math.abs(sum-p.gross)>0.05;
+    const its=(p.items||[]).map(i=>`<div class="hcrow"><b>${esc(HC_PAYK[i.kind]||'')} · ${esc(i.cell)}</b><span>${f(i.amount)}${i.note?' · '+esc(i.note):' · no note'}</span></div>`).join('');
+    return `<div class="list-item"><b>${esc(p.tab)} on the sheet</b>
+      <div class="small muted">${parts}</div>
+      ${p.gross!=null?`<div class="small"><b>Gross ${f(p.gross)}</b> (${esc(p.grossCell)})${off?` <span style="color:var(--needs-ink)">— the parts add up to ${f(sum)}</span>`:''}</div>`:''}
+      ${its}</div>`; }).join('');
+}
 function hcDayHtml(g,d){
   const hk=reg({key:d.key, fp:d.fp});
+  // v136 - a value in the hour sheet's pay panel with no note explaining it (Paul, 18 Nov)
+  if(d.kind==='paynote'){ const p=d.pay||{};
+    return `<div class="list-item">
+      <div class="row between" style="gap:8px"><b>${esc(HC_PAYK[p.kind]||'Pay')} · ${esc(p.tab||'')} ${esc(p.cell||'')}</b><span class="pill" style="background:var(--needs-bg);color:var(--needs-ink);text-transform:none;letter-spacing:0">No note</span></div>
+      <p class="small" style="margin:6px 0 0">$${Number(p.amount||0).toFixed(2)} in ${esc(p.cell||'')} has no note saying what it's for. On the sheet, right-click the cell → <b>Insert note</b> and write the day and the reason${p.kind==='stat'?' (for example “Nov 11 Remembrance Day”)':''}. A Comment can't be read by the app, only a Note.</p>
+      <div class="row" style="gap:6px;margin-top:6px"><button class="ghost" style="padding:9px 4px" onclick="todayHide('${hk}')">Looks right — hide this</button></div></div>`; }
   const diff=d.app-d.sheet;
-  const why = d.kind==='job' ? 'Same hours, different job' : d.app===0 ? 'On the sheet, not in the app'
+  const sp=d.stat;
+  const why = d.kind==='stat' ? (sp.app===0 ? 'Stat pay on the sheet, not in the app' : `Stat pay: app $${sp.app.toFixed(2)}, sheet $${sp.sheet.toFixed(2)}`)
+    : d.kind==='job' ? 'Same hours, different job' : d.app===0 ? 'On the sheet, not in the app'
     : d.sheet===0 ? 'In the app, not on the sheet' : (diff>0 ? `App ${diff.toFixed(2)} h more` : `App ${(-diff).toFixed(2)} h less`);
   // Each line: what it was (the job, as the PO Log names it), then when and how long.
-  const appR=(d.appRows||[]).map(r=>`<div class="hcrow"><b>${esc(r.label)}</b><span>${r.in?esc(fmtTime(r.in))+'–'+(r.out?esc(fmtTime(r.out)):'…')+' · ':''}${Number(r.h).toFixed(2)} h${r.st==='pending'?' · pending':''}</span></div>`).join('') || '<div class="hcrow"><span>Nothing</span></div>';
-  const shR=(d.sheetRows||[]).map(r=>`<div class="hcrow"${r.notWork?' style="opacity:.55"':''}><b>${esc(r.label||'Hours')}</b>${r.task?`<span>${esc(r.task)}</span>`:''}${(r.note||r.notes)?`<span>${esc(r.note||r.notes)}</span>`:''}<span>${r.start?esc(r.start)+(r.end?'–'+esc(r.end):'')+' · ':''}${Number(r.h).toFixed(2)} h${r.notWork?' · not time worked':''}</span></div>`).join('') || '<div class="hcrow"><span>Nothing</span></div>';
+  const appR=(d.appRows||[]).map(r=>`<div class="hcrow"${r.notWork?' style="opacity:.55"':''}><b>${esc(r.label)}</b><span>${r.in?esc(fmtTime(r.in))+'–'+(r.out?esc(fmtTime(r.out)):'…')+' · ':''}${Number(r.h).toFixed(2)} h${r.amt!=null?' · $'+Number(r.amt).toFixed(2):''}${r.st==='pending'?' · pending':''}${r.notWork?' · compared as stat pay':''}</span></div>`).join('') || '<div class="hcrow"><span>Nothing</span></div>';
+  const shR=(d.sheetRows||[]).map(r=>`<div class="hcrow"${r.notWork?' style="opacity:.55"':''}><b>${esc(r.label||'Hours')}</b>${r.task?`<span>${esc(r.task)}</span>`:''}${(r.note||r.notes)?`<span>${esc(r.note||r.notes)}</span>`:''}<span>${r.start?esc(r.start)+(r.end?'–'+esc(r.end):'')+' · ':''}${r.stat?'':Number(r.h).toFixed(2)+' h'}${r.notWork&&!r.stat?' · not time worked':''}</span></div>`).join('') || '<div class="hcrow"><span>Nothing</span></div>';
+  const statNote = sp ? `<p class="small" style="margin:6px 0 0">${sp.app===0 ? `The sheet pays $${sp.sheet.toFixed(2)} stat (${esc(sp.cells)}) and the app has no holiday entry that day.` : `The app's holiday entry is ${sp.appHours.toFixed(2)} h = $${sp.app.toFixed(2)}; the sheet's ${esc(sp.cells)} says $${sp.sheet.toFixed(2)}. One of them needs changing so payroll gets one number.`}</p>` : '';
   const missing=d.sheet-d.app;
   const one=(d.app===0 && (d.sheetRows||[]).length===1) ? d.sheetRows[0] : null;
-  const addK = missing>0.5 ? reg({email:g.email, date:d.date, hours:Math.round(missing*4)/4, start: one?tdTime24(one.start):''}) : '';
+  const addK = missing>0.5 && d.kind!=='stat' ? reg({email:g.email, date:d.date, hours:Math.round(missing*4)/4, start: one?tdTime24(one.start):''}) : '';
   return `<div class="list-item">
     <div class="row between" style="gap:8px"><b>${esc(tdDay(d.date))}</b><span class="pill" style="background:var(--needs-bg);color:var(--needs-ink);text-transform:none;letter-spacing:0">${esc(why)}</span></div>
     <div class="hccols"><div><div class="small" style="font-weight:800">App · ${d.app.toFixed(2)} h</div>${appR}</div>
-      <div><div class="small" style="font-weight:800">Hour sheet · ${d.sheet.toFixed(2)} h</div>${shR}</div></div>
+      <div><div class="small" style="font-weight:800">Hour sheet · ${d.sheet.toFixed(2)} h</div>${shR}</div></div>${statNote}
     <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
       ${addK?`<button class="secondary" style="padding:9px 12px" onclick="hcAddTime('${addK}')">➕ Add the missing time</button>`:''}
       ${d.app>0&&canApprove()?`<button class="secondary" style="padding:9px 12px" onclick="hcEditDay('${reg({email:g.email, date:d.date})}')">✏️ Edit</button>`:''}
