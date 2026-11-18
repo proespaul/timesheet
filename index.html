@@ -3274,7 +3274,9 @@ function hoursCheckHtml(g){
     : `<p class="small muted" style="margin-top:-4px">The app against ${first}'s hour sheet, ${esc(tdShort(g.from))} to ${esc(tdShort(g.to))}. Charles keeps the sheet and the app only reads it. A day is listed when the two are more than half an hour apart.</p>`;
   const days=(g.days||[]).map(d=>hcDayHtml(g,d)).join('') + hcPayHtml(g);
   const unread=(g.unreadable||[]).length ? `<p class="small" style="color:var(--needs-ink)">Dates on the sheet the app can't read: ${g.unreadable.map(u=>`“${esc(u.text)}” (${esc(u.tab)} tab, row ${u.row})`).join(', ')}. Those lines were left out rather than guessed.</p>` : '';
-  return `<h2>Hours check · ${esc(g.name)}</h2>${intro}${days || (g.error?'':'<p class="small muted">Every day matches. ✓</p>')}${unread}
+  const nd=(g.days||[]).length;
+  const all = nd>1 ? `<button class="ghost" style="width:100%;margin:2px 0 6px" onclick="hcHideAll('${reg({email:g.email})}')">Looks right — hide all ${nd}</button>` : '';
+  return `<h2>Hours check · ${esc(g.name)}</h2>${intro}${all}${days || (g.error?'':'<p class="small muted">Every day matches. ✓</p>')}${unread}
     <p class="small muted" style="margin:8px 0 0">Time added from here updates this list by itself. Any other fix shows after Refresh.</p>
     <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`;
 }
@@ -3558,6 +3560,25 @@ async function todayHide(k){
   try{ await api('todayHide', fp?{key, fp}:{key, days:it.days||14}, {bg:true});
        toast(fp?'Hidden. It comes back by itself if either number changes.':'Hidden for two weeks.'); }
   catch(e){ toast("Couldn't put it aside: "+e.message, 6000); loadToday(); }
+}
+/* v137 - one tap for a person's whole list (Paul, 18 Nov: Elijah's list was too long to hide one
+   by one). Each day is put aside on its own, exactly as its own button would: it comes back by
+   itself if either number for that day changes. */
+async function hcHideAll(k){
+  const r=dereg(k); const d=S.today; if(!r||!d) return;
+  const g=(d.hours||[]).find(x=>x.email===r.email); if(!g) return;
+  const list=(g.days||[]).map(x=>({key:x.key, fp:x.fp, label:g.name+' · hours on '+x.date}));
+  if(!list.length) return;
+  d.hours=(d.hours||[]).map(x=>x.email===r.email?Object.assign({}, x, {days:[]}):x);
+  (d.hidden=d.hidden||[]).push(...list.map(x=>({key:x.key, label:x.label})));
+  tdRecount(d); DB.setCache('today', d);
+  const g2=(d.hours||[]).find(x=>x.email===r.email);
+  if(S._sheet && g2){ const p=S._sheet.querySelector('.panel'); if(p) p.innerHTML=hoursCheckHtml(g2); }
+  render();
+  let bad=0;
+  for(const x of list){ try{ await api('todayHide', {key:x.key, fp:x.fp}, {bg:true}); }catch(e){ bad++; } }
+  toast(bad ? `${list.length-bad} of ${list.length} hidden. Tap Refresh and try again for the rest.` : `All ${list.length} hidden. Each comes back by itself if its numbers change.`, 6000);
+  if(bad) loadToday();
 }
 async function todayUnhide(k){
   const h=dereg(k); if(!h) return;
