@@ -3867,7 +3867,7 @@ async function openInvoiceList(pk){
     (m.bought||[]).forEach(b=>{
       const unit=b.price!=null?Math.round(Number(b.price)*100)/100:null;
       const k=(String(b.sku||'').trim().toUpperCase()||String(b.desc||'').trim().toLowerCase())+'|'+(unit==null?'':unit);
-      if(!byKey[k]){ byKey[k]={sku:b.sku||'', desc:b.desc||'', unit, bought:0, supplier:b.supplier||'', invoice:String(b.invoice||''), src:[]}; order.push(k); }
+      if(!byKey[k]){ byKey[k]={sku:b.sku||'', desc:b.desc||'', unit, uom:b.uom||'', bought:0, supplier:b.supplier||'', invoice:String(b.invoice||''), src:[]}; order.push(k); }
       const it=byKey[k]; it.bought+=Number(b.qty)||0;
       const inv=(b.supplier||'')+' '+(b.invoice||''); if(!it.src.includes(inv)) it.src.push(inv);
     });
@@ -3877,8 +3877,8 @@ async function openInvoiceList(pk){
     if(saved&&saved.found){
       const sk=it=>(String(it.sku||'').trim().toUpperCase()||String(it.desc||'').trim().toLowerCase())+'|'+(it.unit==null?'':Math.round(it.unit*100)/100);
       const prev={}; (saved.items||[]).forEach(x=>prev[sk(x)]=x);
-      items.forEach(it=>{ const x=prev[sk(it)]; it.qty = x ? x.qty : 0; if(x) x._used=1; });
-      (saved.items||[]).filter(x=>!x._used&&x.bought==null).forEach(x=>items.push({sku:x.sku||'',desc:x.desc,unit:x.unit,bought:null,qty:x.qty,supplier:'',invoice:'',src:[],added:true}));
+      items.forEach(it=>{ const x=prev[sk(it)]; it.qty = x ? x.qty : 0; if(x){ x._used=1; if(x.uom) it.uom=x.uom; } });
+      (saved.items||[]).filter(x=>!x._used&&x.bought==null).forEach(x=>items.push({sku:x.sku||'',desc:x.desc,unit:x.unit,uom:x.uom||'ea',bought:null,qty:x.qty,supplier:'',invoice:'',src:[],added:true}));
     }
     invList={ref, items, savedAt: saved&&saved.found?saved.savedAt:''};
     renderInvoiceList();
@@ -3890,6 +3890,7 @@ function invListRead(){
     const q=document.getElementById('ilq'+i); if(q) it.qty=Math.max(0,Number(q.value)||0);
     if(it.added){ const d=document.getElementById('ild'+i), u=document.getElementById('ilu'+i);
       if(d) it.desc=d.value.trim(); if(u) it.unit=u.value===''?null:Math.max(0,Number(u.value)||0); }
+    const m=document.getElementById('ilm'+i); if(m) it.uom=m.value.trim();   // v138 - unit of measure, editable
   });
 }
 function invListTotals(){
@@ -3897,6 +3898,7 @@ function invListTotals(){
   invList.items.forEach(it=>{ if(it.qty>0&&it.desc){ n++; if(it.unit!=null) t+=it.unit*it.qty; } });
   const el=document.getElementById('ilTot'); if(el) el.textContent=`${n} part line${n===1?'':'s'} · $${t.toFixed(2)} at cost`;
   invList.items.forEach((it,i)=>{ const c=document.getElementById('ilc'+i); if(c) c.textContent=it.unit!=null?'$'+(it.unit*it.qty).toFixed(2):'—'; });
+  invList.items.forEach((it,i)=>{ const pp=document.getElementById('ilp'+i); if(pp) pp.textContent='@ '+(it.unit!=null?'$'+it.unit.toFixed(2)+(it.uom?' / '+it.uom:''):'no cost'); });
 }
 function renderInvoiceList(){
   const L=invList; if(!L) return;
@@ -3904,19 +3906,21 @@ function renderInvoiceList(){
       ${it.added
         ? `<input id="ild${i}" placeholder="Part description" value="${esc(it.desc||'')}" oninput="invListTotals()" style="margin:0 0 6px">`
         : `<div><b>${esc(it.desc)}</b></div>
-           <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}`:''}</div>`}
+           <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}${it.uom?' '+esc(it.uom):''}`:''}</div>`}
       <div class="row" style="align-items:center;gap:8px;margin-top:4px">
         <button class="secondary" style="width:44px;padding:8px 0" onclick="invStep(${i},-1)">−</button>
         <input id="ilq${i}" type="number" min="0" step="any" inputmode="decimal" value="${it.qty}" oninput="invListTotals()" style="width:84px;margin:0;text-align:center">
         <button class="secondary" style="width:44px;padding:8px 0" onclick="invStep(${i},1)">+</button>
+        <input id="ilm${i}" value="${esc(it.uom||'')}" placeholder="unit" list="ilUoms" aria-label="Unit of measure" oninput="invListTotals()" style="width:58px;margin:0;text-align:center;padding-left:4px;padding-right:4px">
         ${it.added
           ? `<span class="small muted">@ $</span><input id="ilu${i}" type="number" min="0" step="0.01" inputmode="decimal" placeholder="cost" value="${it.unit==null?'':it.unit}" oninput="invListTotals()" style="width:84px;margin:0">`
-          : `<span class="small muted">@ ${it.unit!=null?'$'+it.unit.toFixed(2):'no cost'}</span>`}
+          : `<span class="small muted" id="ilp${i}">@ ${it.unit!=null?'$'+it.unit.toFixed(2)+(it.uom?' / '+esc(it.uom):''):'no cost'}</span>`}
         <span class="grow" style="text-align:right;font-weight:600" id="ilc${i}"></span>
       </div></div>`).join('');
   sheet(`<h2 style="margin-bottom:2px">${esc(L.ref.jobSite)} — parts to bill</h2>
     <p class="small muted" style="margin-top:0">${L.ref.po?('PO '+esc(L.ref.po)+' · '):''}Set how many of each part to put on the invoice. 0 = leave it off. Claude bills exactly this list at cost, then adds the hours.${L.savedAt?' <b>Pre-filled from your last save.</b>':''}</p>
     ${rows||'<p class="muted small">No supplier POs are filed against this job. Add parts below, or save with none for a labour-only draft.</p>'}
+    <datalist id="ilUoms"><option value="ea"><option value="m"><option value="ft"><option value="roll"><option value="box"><option value="kit"><option value="pkg"></datalist>
     <button class="secondary" style="width:100%;margin-top:8px" onclick="invAdd()">＋ Add a part</button>
     <div class="card row between" style="margin:10px 0"><b>Parts</b><b id="ilTot"></b></div>
     <div class="row" style="margin-top:6px">
@@ -3927,12 +3931,12 @@ function renderInvoiceList(){
 }
 function invStep(i,d){ invListRead(); const it=invList.items[i]; it.qty=Math.max(0,Math.round((Number(it.qty)+d)*1000)/1000);
   const q=document.getElementById('ilq'+i); if(q) q.value=it.qty; invListTotals(); }
-function invAdd(){ invListRead(); invList.items.push({sku:'',desc:'',unit:null,bought:null,qty:1,supplier:'',invoice:'',src:[],added:true}); renderInvoiceList();
+function invAdd(){ invListRead(); invList.items.push({sku:'',desc:'',unit:null,uom:'ea',bought:null,qty:1,supplier:'',invoice:'',src:[],added:true}); renderInvoiceList();
   const i=invList.items.length-1; setTimeout(()=>{ const d=document.getElementById('ild'+i); if(d) d.focus(); },50); }
 async function invListSave(){
   invListRead();
   const L=invList, btn=document.getElementById('ilGo');
-  const items=L.items.filter(it=>it.desc).map(it=>({sku:it.sku,desc:it.desc,qty:it.qty,unit:it.unit,supplier:it.supplier,invoice:it.invoice,bought:it.bought}));
+  const items=L.items.filter(it=>it.desc).map(it=>({sku:it.sku,desc:it.desc,qty:it.qty,unit:it.unit,uom:it.uom||'',supplier:it.supplier,invoice:it.invoice,bought:it.bought}));
   if(!items.some(it=>it.qty>0) && !confirm('No parts on the list — build a labour-only draft?')) return;
   btn.disabled=true; btn.textContent='Sending…';
   try{
