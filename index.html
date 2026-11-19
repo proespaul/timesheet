@@ -3175,6 +3175,7 @@ function todayMoneyCard(){
   </div>`;
 }
 function openMoney(k){
+  navSelf(()=>openMoney(k));
   const j=dereg(k); if(!j) return;
   const stage={wip:'In progress', invoiced:'Invoiced · waiting to be paid', paid:'Paid'}[j.stage]||'';
   const pp=(j.people||[]).map(p=>`<tr><td>${esc(p.name)}${p.pending?`<div class="small muted">${p.pending} h waiting for approval</div>`:''}</td>
@@ -3201,7 +3202,7 @@ function openMoney(k){
       <tr class="tot"><td>Total</td><td>${j.hours} h</td><td>${fm$(j.cost)}</td><td>${fm$(j.worth)}</td></tr></table>
     <div class="mres">${res}</div>${q}${b}
     <p class="small muted">Cost is pay rates × hours plus the supplier POs, the same as the Cost tab. At your rates is each person's charged rate, rounded to the half hour like the invoice, plus materials with the markup. Travel, km and permits aren't in it. Pending hours count.</p>
-    <div class="row" style="gap:8px"><button class="secondary grow" onclick="closeSheet()">Close</button><button class="grow" onclick="closeSheetDom();openJobAll('${jk}')">Open the job</button></div>`);
+    <div class="row" style="gap:8px"><button class="secondary grow" onclick="closeSheet()">Close</button><button class="grow" onclick="openJobAll('${jk}')">Open the job</button></div>`);
 }
 function moneyFix(key){
   const it=((S.today&&S.today.items)||[]).find(x=>x.key===key);
@@ -3504,6 +3505,7 @@ function openTodayRefused(k){
 }
 function openTodayBill(k){
   const it=dereg(k); if(!it) return;
+  navSelf(()=>openTodayBill(k));
   const pk=reg({jobSite:it.name, po:it.po}), hk=reg({key:it.key, days:14});
   sheet(`<h2>${esc(it.name)}</h2>
     <p class="small muted" style="margin-top:-4px">${esc(it.po)}${it.project?' · '+esc(it.project):''} · In progress on the PO Log, no invoice yet</p>
@@ -3516,6 +3518,7 @@ function openTodayBill(k){
 }
 function openTodayDraft(k){
   const it=dereg(k); if(!it) return;
+  navSelf(()=>openTodayDraft(k));
   const pk=reg({jobSite:it.name, po:it.po}), hk=reg({key:it.key, days:14});
   sheet(`<h2>${esc(it.name)}</h2>
     <p class="small muted" style="margin-top:-4px">${esc(it.po)} · draft #${esc(it.qb)} is in QuickBooks</p>
@@ -3658,6 +3661,7 @@ async function loadJobs(){
 }
 function openJobDetail(k){
   const j=dereg(k); if(!j) return;
+  navSelf(()=>openJobDetail(k));
   const pk=reg({jobSite:j.name, po:j.po||''});
   sheet(`<h2>${esc(j.name||j.po||'—')}</h2>
     ${j.project?`<p class="small" style="margin:-6px 0 6px">${esc(j.project)}</p>`:''}
@@ -3771,6 +3775,21 @@ function jobMatsHtml(r){
     ${foldersHtml}`;
 }
 
+/* v141 - MATERIALS INVOICED: the breakdown kept when the initial draft was built - each part's cost,
+   the markup tier and what the customer is charged. The PDF (customer-ready: no cost, no markup %)
+   sits in the job's folder under "Materials invoiced (PRO)". */
+function jobInvHtml(r){
+  if(!r||!r.found) return '<p class="muted small">Nothing yet. It is saved here when you build the initial draft for this job.</p>';
+  const f=n=>n==null?'—':'$'+Number(n).toFixed(2);
+  const when=r.builtAt?new Date(r.builtAt).toLocaleDateString([],{month:'short',day:'numeric',year:'numeric'}):'';
+  return `<p class="small muted" style="margin:0 0 6px">Built ${esc(when)} · markup <b>${esc(r.tier)}%</b> on ${f(r.cost)} cost → <b>${f(r.price)}</b> to the customer (before tax). As it stood at the initial draft.</p>
+    ${(r.lines||[]).map(l=>`<div class="row between small" style="margin-top:4px;gap:8px">
+      <span>${esc(l.qty)}${l.uom?' '+esc(l.uom):''} × ${esc(l.desc)}${l.supplier||l.invoice?` <span class="muted">${esc([l.supplier,l.invoice].filter(Boolean).join(' '))}</span>`:''}</span>
+      <span style="white-space:nowrap;text-align:right"><span class="muted">${f(l.lc)} →</span> <b>${f(l.lp)}</b></span></div>`).join('')}
+    <div class="row between small" style="margin-top:6px;border-top:1px solid var(--line);padding-top:4px"><b>Total</b><span><span class="muted">${f(r.cost)} →</span> <b>${f(r.price)}</b></span></div>
+    ${r.pdfUrl?`<a href="${esc(r.pdfUrl)}" target="_blank" style="text-decoration:none"><button class="secondary" style="width:100%;margin-top:8px">📄 Customer copy (PDF, no cost or markup)</button></a>`:''}`;
+}
+
 /* Photos: the quick look. The Drive folder stays the permanent home. */
 function jobPhotosHtml(r){
   const files=(r&&r.files)||[];
@@ -3793,6 +3812,7 @@ function jobPhotosHtml(r){
 async function openJobAll(pk){
   const ref=dereg(pk); if(!ref) return;
   if(!S.online) return toast('You need signal to load the job details.');
+  navPush(); navSelf(()=>openJobAll(pk));
   const title=esc(ref.jobSite||ref.po||'Job');
   const sec=(id,icon,label)=>`<div class="card" style="margin:8px 0">
       <h3 style="margin-top:0">${icon} ${label}</h3>
@@ -3801,9 +3821,10 @@ async function openJobAll(pk){
   sheet(`<h2>${title}</h2>
     <p class="small muted" style="margin-top:-4px">${ref.po?('PO '+esc(ref.po)):''}</p>
     ${sec('jdDays','📆','Day by day')}
-    ${sec('jdMats','📦','Materials &amp; supplier POs')}
+    ${sec('jdMats','📦','Supplier\'s receipts')}
+    ${canSeePrices()?sec('jdInv','🧾','Materials invoiced'):''}
     ${sec('jdPics','📷','Job photos')}
-    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+    <div class="row" style="gap:8px;margin-top:6px">${(S._navStack||[]).length?'<button class="secondary grow" onclick="navBack()">← Back</button>':''}<button class="secondary grow" onclick="closeSheet()">Close</button></div>`);
   const mine=S._sheet;
   const put=(id,html)=>{ if(S._sheet!==mine) return; const el=document.getElementById(id); if(el) el.innerHTML=html; };
   const fail=(id,e)=>put(id,`<p class="small" style="color:var(--bad)">Could not load this — ${esc(e&&e.message||'no answer')}</p>`);
@@ -3811,6 +3832,8 @@ async function openJobAll(pk){
     .then(r=>put('jdDays', jobDaysHtml(r&&r.rows))).catch(e=>fail('jdDays',e));
   apiBg('jobMaterials',{jobSite:ref.jobSite, poNumber:ref.po||'', withFolder:1})
     .then(r=>put('jdMats', jobMatsHtml(r))).catch(e=>fail('jdMats',e));
+  if(canSeePrices()) apiBg('materialsInvoiced',{jobSite:ref.jobSite, po:ref.po||''})
+    .then(r=>put('jdInv', jobInvHtml(r))).catch(e=>fail('jdInv',e));
   apiBg('jobMedia',{jobSite:ref.jobSite})
     .then(r=>put('jdPics', jobPhotosHtml(r))).catch(e=>fail('jdPics',e));
 }
@@ -3856,6 +3879,7 @@ let invList=null;
 async function openInvoiceList(pk){
   const ref=dereg(pk); if(!ref) return;
   if(!S.online) return toast('You need signal to load the parts.');
+  navPush(); navSelf(()=>openInvoiceList(pk));
   sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center" style="margin:22px 0"><span class="spin"></span> Loading the POs…</p>`);
   const mine=S._sheet;
   try{
@@ -3881,6 +3905,7 @@ async function openInvoiceList(pk){
       (saved.items||[]).filter(x=>!x._used&&x.bought==null).forEach(x=>items.push({sku:x.sku||'',desc:x.desc,unit:x.unit,uom:x.uom||'ea',bought:null,qty:x.qty,supplier:'',invoice:'',src:[],added:true}));
     }
     invList={ref, items, savedAt: saved&&saved.found?saved.savedAt:''};
+    invList.snap=invSnap_(invList);
     renderInvoiceList();
   }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
 }
@@ -3923,16 +3948,41 @@ function renderInvoiceList(){
     <datalist id="ilUoms"><option value="ea"><option value="m"><option value="ft"><option value="roll"><option value="box"><option value="kit"><option value="pkg"></datalist>
     <button class="secondary" style="width:100%;margin-top:8px" onclick="invAdd()">＋ Add a part</button>
     <div class="card row between" style="margin:10px 0"><b>Parts</b><b id="ilTot"></b></div>
-    <div class="row" style="margin-top:6px">
-      <button class="secondary grow" onclick="invList=null;closeSheet()">Cancel</button>
-      <button class="grow" id="ilGo" onclick="invListSave()">Save &amp; build draft</button>
-    </div>`);
+    <div class="row" style="margin-top:6px;gap:8px">
+      <button class="secondary grow" onclick="invLeave()">${(S._navStack||[]).length?'← Back':'Cancel'}</button>
+      <button class="secondary grow" id="ilSave" onclick="invListSaveOnly()">💾 Save</button>
+    </div>
+    <button style="width:100%;margin-top:8px" id="ilGo" onclick="invListSave()">🧾 Build initial draft</button>
+    <p class="small muted" id="ilSaved" style="margin:6px 0 0;text-align:center">${L.savedAt?'Last saved '+esc(new Date(L.savedAt).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})):'Not saved yet'}</p>`);
   invListTotals();
 }
 function invStep(i,d){ invListRead(); const it=invList.items[i]; it.qty=Math.max(0,Math.round((Number(it.qty)+d)*1000)/1000);
   const q=document.getElementById('ilq'+i); if(q) q.value=it.qty; invListTotals(); }
 function invAdd(){ invListRead(); invList.items.push({sku:'',desc:'',unit:null,uom:'ea',bought:null,qty:1,supplier:'',invoice:'',src:[],added:true}); renderInvoiceList();
   const i=invList.items.length-1; setTimeout(()=>{ const d=document.getElementById('ild'+i); if(d) d.focus(); },50); }
+function invSnap_(L){ return JSON.stringify((L.items||[]).map(it=>[it.desc,it.qty,it.uom||'',it.unit])); }
+/* v141 - leave the parts list: back to where it was opened from (or close). Unsaved changes ask first. */
+function invLeave(){
+  if(invList){ invListRead(); if(invSnap_(invList)!==invList.snap && !confirm('Leave without saving your changes to the parts list?')) return; }
+  invList=null; navBack();
+}
+/* v141 - Save on its own: the list is kept (and pre-fills next time); nothing is built. */
+async function invListSaveOnly(){
+  invListRead();
+  const L=invList, btn=document.getElementById('ilSave');
+  const items=L.items.filter(it=>it.desc).map(it=>({sku:it.sku,desc:it.desc,qty:it.qty,unit:it.unit,uom:it.uom||'',supplier:it.supplier,invoice:it.invoice,bought:it.bought}));
+  if(!S.online) return toast('You need signal to save.');
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const r=await api('invoiceMaterialsSave',{po:L.ref.po||'', jobSite:L.ref.jobSite, items, build:false},{timeout:60000});
+    if(r&&r.built===false){
+      L.savedAt=r.savedAt||new Date().toISOString(); L.snap=invSnap_(L);
+      const sv=document.getElementById('ilSaved'); if(sv) sv.textContent='Saved ✓ '+new Date(L.savedAt).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})+' · build the draft when you are ready';
+      toast(`Saved ${r.lines} part line(s) — $${Number(r.partsCost||0).toFixed(2)} at cost. Nothing built yet.`);
+    } else toast('Saved — but the office is still on the old version and started the draft too.');
+  }catch(e){ toast(e.message); }
+  btn.disabled=false; btn.textContent='💾 Save';
+}
 async function invListSave(){
   invListRead();
   const L=invList, btn=document.getElementById('ilGo');
@@ -3940,14 +3990,14 @@ async function invListSave(){
   if(!items.some(it=>it.qty>0) && !confirm('No parts on the list — build a labour-only draft?')) return;
   btn.disabled=true; btn.textContent='Sending…';
   try{
-    const r=await api('invoiceMaterialsSave',{po:L.ref.po||'', jobSite:L.ref.jobSite, items},{timeout:90000});
+    const r=await api('invoiceMaterialsSave',{po:L.ref.po||'', jobSite:L.ref.jobSite, items, build:true},{timeout:90000});
     invList=null; closeSheet();
     toast(r&&r.fired
       ? `Saved ${r.lines} part line(s) ($${Number(r.partsCost||0).toFixed(2)} at cost). Claude started on it — the draft should be in QuickBooks in about 5–10 minutes.`
       : `Saved ${r.lines} part line(s). Initial draft requested.` + (r&&r.note?' ('+r.note+')':''), 8000);
   }catch(e){
     if (e && e.kind === 'network'){ invList=null; closeSheet(); toast('The office was slow to answer, but the list has most likely been saved and sent — watch for the "Initial draft ready" email before trying again.', 8000); return; }
-    toast(e.message); btn.disabled=false; btn.textContent='Save & build draft';
+    toast(e.message); btn.disabled=false; btn.textContent='🧾 Build initial draft';
   }
 }
 
@@ -6091,16 +6141,29 @@ function weekHours(){
  * ==========================================================================*/
 let _popIgnore=0;
 function closeSheetDom(){ if(S._sheet){ S._sheet.remove(); S._sheet=null; } } // no history side effects
+/* v141 - BACK BETWEEN POP-UPS (Paul, 19 Nov: "a back button option on that popup rather than just
+   close or cancel" when Build initial draft opens over a job). A screen that can open another one
+   says how to re-open itself (navSelf); a screen opened from it pushes that (navPush), and every
+   pop-up drawn while there is somewhere to go back to gets "← Back" at the top. A fresh pop-up -
+   nothing open before it - starts a clean trail, and closing forgets it. */
+function navSelf(fn){ S._navPending=fn; }
+function navPush(){ if(S._sheet && S._navCur){ (S._navStack=S._navStack||[]).push(S._navCur); S._navCur=null; } }
+function navBack(){ const fn=(S._navStack||[]).pop(); if(fn) fn(); else closeSheet(); }
+function navReset_(){ S._navStack=[]; S._navCur=null; S._navPending=null; }
 function sheet(inner){
   const had=!!S._sheet;
+  if(!had){ S._navStack=[]; S._navCur=null; }
+  if(S._navPending){ S._navCur=S._navPending; S._navPending=null; }
+  const back=(S._navStack||[]).length ? `<button class="ghost" style="padding:4px 2px;margin:-6px 0 4px;font-weight:700" onclick="navBack()">← Back</button>` : '';
   closeSheetDom(); // replacing sheet-to-sheet keeps the single history entry for the flow
-  const s = el(`<div class="sheet" onclick="if(event.target===this)closeSheet()"><div class="panel">${inner}</div></div>`);
+  const s = el(`<div class="sheet" onclick="if(event.target===this)closeSheet()"><div class="panel">${back}${inner}</div></div>`);
   document.body.appendChild(s); S._sheet=s;
   // Phone Back support: ONE history entry per open sheet flow, so Back closes the popup
   // instead of exiting the app (2.6).
   if(!had){ try{ history.pushState({s:1},''); }catch(e){} }
 }
 function closeSheet(){
+  navReset_();
   if(!S._sheet) return;
   closeSheetDom();
   if(history.state&&history.state.s){ _popIgnore++; try{ history.back(); }catch(e){} }
@@ -6108,7 +6171,7 @@ function closeSheet(){
 window.addEventListener('popstate', (ev)=>{
   if(_popIgnore>0){ _popIgnore--; return; }              // our own programmatic back
   if(pvS){ pvClose(true); return; }                       // v128 - Back closes the photo viewer, not the sheet under it
-  if(S._sheet){ S._sheet.remove(); S._sheet=null; if(camStream) camStop(); return; } // Back closes the open popup (and the camera with it)
+  if(S._sheet){ S._sheet.remove(); S._sheet=null; navReset_(); if(camStream) camStop(); return; } // Back closes the open popup (and the camera with it)
   const st=ev.state||{};
   if(st.tab && st.tab!==S.tab){ S.tab=st.tab; render(); }   // Back = previous tab
 });
