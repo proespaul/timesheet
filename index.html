@@ -3175,8 +3175,8 @@ function todayMoneyCard(){
   </div>`;
 }
 function openMoney(k){
-  navSelf(()=>openMoney(k));
   const j=dereg(k); if(!j) return;
+  navSelf(()=>openMoney(k));
   const stage={wip:'In progress', invoiced:'Invoiced · waiting to be paid', paid:'Paid'}[j.stage]||'';
   const pp=(j.people||[]).map(p=>`<tr><td>${esc(p.name)}${p.pending?`<div class="small muted">${p.pending} h waiting for approval</div>`:''}</td>
       <td>${Math.round((p.hours+p.pending)*100)/100} h</td><td>${fm$(p.cost)}</td>
@@ -3307,13 +3307,13 @@ function hcDayHtml(g,d){
       <div class="row" style="gap:6px;margin-top:6px"><button class="ghost" style="padding:9px 4px" onclick="todayHide('${hk}')">Looks right — hide this</button></div></div>`; }
   const diff=d.app-d.sheet;
   const sp=d.stat;
-  const why = d.kind==='stat' ? (sp.app===0 ? 'Stat pay on the sheet, not in the app' : `Stat pay: app $${sp.app.toFixed(2)}, sheet $${sp.sheet.toFixed(2)}`)
+  const why = d.kind==='stat' ? (!sp.appHours ? 'Stat pay on the sheet, not in the app' : `Stat pay: app $${sp.app.toFixed(2)}, sheet $${sp.sheet.toFixed(2)}`)
     : d.kind==='job' ? 'Same hours, different job' : d.app===0 ? 'On the sheet, not in the app'
     : d.sheet===0 ? 'In the app, not on the sheet' : (diff>0 ? `App ${diff.toFixed(2)} h more` : `App ${(-diff).toFixed(2)} h less`);
   // Each line: what it was (the job, as the PO Log names it), then when and how long.
   const appR=(d.appRows||[]).map(r=>`<div class="hcrow"${r.notWork?' style="opacity:.55"':''}><b>${esc(r.label)}</b><span>${r.in?esc(fmtTime(r.in))+'–'+(r.out?esc(fmtTime(r.out)):'…')+' · ':''}${Number(r.h).toFixed(2)} h${r.amt!=null?' · $'+Number(r.amt).toFixed(2):''}${r.st==='pending'?' · pending':''}${r.notWork?' · compared as stat pay':''}</span></div>`).join('') || '<div class="hcrow"><span>Nothing</span></div>';
   const shR=(d.sheetRows||[]).map(r=>`<div class="hcrow"${r.notWork?' style="opacity:.55"':''}><b>${esc(r.label||'Hours')}</b>${r.task?`<span>${esc(r.task)}</span>`:''}${(r.note||r.notes)?`<span>${esc(r.note||r.notes)}</span>`:''}<span>${r.start?esc(r.start)+(r.end?'–'+esc(r.end):'')+' · ':''}${r.stat?'':Number(r.h).toFixed(2)+' h'}${r.notWork&&!r.stat?' · not time worked':''}</span></div>`).join('') || '<div class="hcrow"><span>Nothing</span></div>';
-  const statNote = sp ? `<p class="small" style="margin:6px 0 0">${sp.app===0 ? `The sheet pays $${sp.sheet.toFixed(2)} stat (${esc(sp.cells)}) and the app has no holiday entry that day.` : `The app's holiday entry is ${sp.appHours.toFixed(2)} h = $${sp.app.toFixed(2)}; the sheet's ${esc(sp.cells)} says $${sp.sheet.toFixed(2)}. One of them needs changing so payroll gets one number.`}</p>` : '';
+  const statNote = sp ? `<p class="small" style="margin:6px 0 0">${!sp.appHours ? `The sheet pays $${sp.sheet.toFixed(2)} stat (${esc(sp.cells)}) and the app has no holiday entry that day.` : `The app's holiday entry is ${sp.appHours.toFixed(2)} h = $${sp.app.toFixed(2)}; the sheet's ${esc(sp.cells)} says $${sp.sheet.toFixed(2)}. One of them needs changing so payroll gets one number.`}</p>` : '';
   const missing=d.sheet-d.app;
   const one=(d.app===0 && (d.sheetRows||[]).length===1) ? d.sheetRows[0] : null;
   const addK = missing>0.5 && d.kind!=='stat' ? reg({email:g.email, date:d.date, hours:Math.round(missing*4)/4, start: one?tdTime24(one.start):''}) : '';
@@ -6147,8 +6147,9 @@ function closeSheetDom(){ if(S._sheet){ S._sheet.remove(); S._sheet=null; } } //
    pop-up drawn while there is somewhere to go back to gets "← Back" at the top. A fresh pop-up -
    nothing open before it - starts a clean trail, and closing forgets it. */
 function navSelf(fn){ S._navPending=fn; }
-function navPush(){ if(S._sheet && S._navCur){ (S._navStack=S._navStack||[]).push(S._navCur); S._navCur=null; } }
-function navBack(){ const fn=(S._navStack||[]).pop(); if(fn) fn(); else closeSheet(); }
+function navPush(){ if(S._navBacking) return; if(S._sheet && S._navCur){ (S._navStack=S._navStack||[]).push(S._navCur); S._navCur=null; } }
+function navBack(){ const fn=(S._navStack||[]).pop(); if(!fn) return closeSheet();
+  S._navBacking=true; try{ fn(); } finally { S._navBacking=false; } }   // v142 - the screen gone back to must not push the one being left
 function navReset_(){ S._navStack=[]; S._navCur=null; S._navPending=null; }
 function sheet(inner){
   const had=!!S._sheet;
@@ -6171,6 +6172,13 @@ function closeSheet(){
 window.addEventListener('popstate', (ev)=>{
   if(_popIgnore>0){ _popIgnore--; return; }              // our own programmatic back
   if(pvS){ pvClose(true); return; }                       // v128 - Back closes the photo viewer, not the sheet under it
+  // v142 - inside a trail of pop-ups the phone's Back goes ONE step back, like the ← Back button
+  // (the parts list still asks before dropping unsaved changes); the history entry it used is put back.
+  if(S._sheet && (S._navStack||[]).length && !camStream){
+    try{ history.pushState({s:1},''); }catch(e){}
+    if(invList && document.getElementById('ilGo')) invLeave(); else navBack();
+    return;
+  }
   if(S._sheet){ S._sheet.remove(); S._sheet=null; navReset_(); if(camStream) camStop(); return; } // Back closes the open popup (and the camera with it)
   const st=ev.state||{};
   if(st.tab && st.tab!==S.tab){ S.tab=st.tab; render(); }   // Back = previous tab
@@ -8122,6 +8130,14 @@ function docScanWait(kind){
 function docWaitOpen(seq){ const st=document.getElementById('dsStatus'); return !!st && Number(st.dataset.seq)===seq; }
 /* Sends a scan (first round or confirm round). qid = the offline-queue id when this is a queued
  * item being resolved, so a successful save also removes it from the queue. */
+/* v142 - what a scan answered in the background says. A duplicate was NOT filed, and when it was
+   matched by its lines (not its number) the person is told which purchase it was taken for. */
+function scanDoneMsg_(kind, r){
+  const w=kind==='quote'?'Estimate':'Receipt', sa=r.sameAs;
+  if(r.duplicate && sa && sa.how!=='number') return `${w} NOT counted again — it reads as the same purchase as ${r.supplier||''} ${sa.invoiceNo||''} (${sa.date||''}${sa.by==='email'?', from the email':''}). If it was a different purchase, scan it again and tap "file it anyway".`;
+  if(r.duplicate) return `${w} was already on file — nothing was doubled.`;
+  return w+' filed ✓'+(r.warn?' — '+r.warn:'');
+}
 async function docScanCall(p, qid){
   const seq=docWaitSeq;
   try{
@@ -8133,7 +8149,7 @@ async function docScanCall(p, qid){
     }
     if(qid) await docQueueDel(qid);
     if(docWaitOpen(seq)) docShowResult(p, r);
-    else toast((r.kind==='quote'?'Estimate':'Receipt')+' filed ✓'+(r.warn?' — '+r.warn:''));
+    else toast(scanDoneMsg_(r.kind, r), r.duplicate?9000:undefined);
   }catch(e){
     // v44 - an overloaded or renamed AI model is TRANSIENT, not a bad photo. It used to print the
     // error and lose the picture; now it queues like a no-signal scan and retries on its own.
@@ -8395,7 +8411,7 @@ async function flushScans(){
         if(!(await docQueueAll()).some(x=>x.qid===it.qid)) continue;
         did++;
         if(r&&r.needsConfirm){ await docQueueUpdate(it.qid, {needsConfirm:true, server:r}); toast('A scanned document needs your OK — see the home screen'); }
-        else { await docQueueDel(it.qid); toast((it.kind==='quote'?'Estimate':'Receipt')+' read and filed ✓'+(r&&r.warn?' — '+r.warn:'')); }
+        else { await docQueueDel(it.qid); toast(scanDoneMsg_(it.kind, r||{}), r&&r.duplicate?9000:undefined); }
       }catch(e){
         const msg=e.message||'';
         if(/does not look like|Could not read|clearer photo|could not be read/i.test(msg)){ await docQueueDel(it.qid); toast('⚠ A queued photo was unreadable — scan it again'); }
