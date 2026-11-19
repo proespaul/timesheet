@@ -8170,7 +8170,7 @@ async function docForceNew(){
   await docScanCall(Object.assign({}, x.p, {extract:x.r.extract, kind:x.r.kind||x.p.kind, confirmed:true, forceNew:true}));
 }
 function docShowResult(p, r){
-  S._docDupe = (r.duplicate && r.sameAs && r.sameAs.how==='lines' && r.extract) ? {p, r} : null;
+  S._docDupe = (r.duplicate && r.sameAs && r.sameAs.how!=='number' && r.extract) ? {p, r} : null;
   const st=document.getElementById('dsStatus'); if(!st) return;      // only paint the wait sheet that is actually open
   const isQ=r.kind==='quote';
   const head=document.getElementById('dsHead');
@@ -8191,8 +8191,8 @@ function docShowResult(p, r){
   const doc=`<b>${esc(r.supplier||'')} ${esc(r.invoiceNo||'')}</b>${r.date?' · '+esc(r.date):''}`;
   const sa=r.sameAs;
   st.innerHTML = r.duplicate
-    ? (sa && sa.how==='lines'
-        ? `${doc} is the same purchase as <b>${esc(r.supplier||'')} ${esc(sa.invoiceNo||'')}</b> (${esc(sa.date||'')}, ${sa.by==='email'?'from the supplier\'s email':'scanned earlier'}${sa.jobSite&&sa.jobSite!=='Stock'?', '+esc(sa.jobSite):''}) — same lines and prices, so nothing was counted twice.`
+    ? (sa && sa.how!=='number'
+        ? `${doc} is the same purchase as <b>${esc(r.supplier||'')} ${esc(sa.invoiceNo||'')}</b> (${esc(sa.date||'')}, ${sa.by==='email'?'from the supplier\'s email':'scanned earlier'}${sa.jobSite&&sa.jobSite!=='Stock'?', '+esc(sa.jobSite):''}) — ${sa.how==='ref'?'both show number <b>'+esc(sa.ref||'')+'</b> and ':''}same lines and prices, so nothing was counted twice.`
           + (r.extract?`<button class="secondary" style="width:100%;margin-top:10px" onclick="docForceNew()">It's a different purchase — file it anyway</button>`:'')
         : `${doc} was already filed earlier${sa&&sa.date?' ('+esc(sa.date)+(sa.by==='email'?', from the email':'')+')':''} — nothing was doubled.`)
     : isQ
