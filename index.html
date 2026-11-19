@@ -8162,7 +8162,15 @@ function priceDelta(oldP, newP){
   return `<span class="small muted">${f(oldP)}</span> → <b style="color:${up?'var(--bad)':'var(--good)'}">${f(newP)}</b>`;
 }
 function canSeePrices(){ return !!(S.me && (S.me.role==='admin' || S.me.role==='bookkeeper')); }
+/* v139 - the scan matched a purchase already on file by its lines (not its number), and the person
+   says it really is a second purchase: send it again, marked to be filed regardless. */
+async function docForceNew(){
+  const x=S._docDupe; if(!x) return; S._docDupe=null;
+  const st=document.getElementById('dsStatus'); if(st) st.innerHTML='<span class="spin"></span> Filing it…';
+  await docScanCall(Object.assign({}, x.p, {extract:x.r.extract, kind:x.r.kind||x.p.kind, confirmed:true, forceNew:true}));
+}
 function docShowResult(p, r){
+  S._docDupe = (r.duplicate && r.sameAs && r.sameAs.how==='lines' && r.extract) ? {p, r} : null;
   const st=document.getElementById('dsStatus'); if(!st) return;      // only paint the wait sheet that is actually open
   const isQ=r.kind==='quote';
   const head=document.getElementById('dsHead');
@@ -8181,8 +8189,12 @@ function docShowResult(p, r){
       .filter(x=>x.name));
   }
   const doc=`<b>${esc(r.supplier||'')} ${esc(r.invoiceNo||'')}</b>${r.date?' · '+esc(r.date):''}`;
+  const sa=r.sameAs;
   st.innerHTML = r.duplicate
-    ? `${doc} was already filed earlier — nothing was doubled.`
+    ? (sa && sa.how==='lines'
+        ? `${doc} is the same purchase as <b>${esc(r.supplier||'')} ${esc(sa.invoiceNo||'')}</b> (${esc(sa.date||'')}, ${sa.by==='email'?'from the supplier\'s email':'scanned earlier'}${sa.jobSite&&sa.jobSite!=='Stock'?', '+esc(sa.jobSite):''}) — same lines and prices, so nothing was counted twice.`
+          + (r.extract?`<button class="secondary" style="width:100%;margin-top:10px" onclick="docForceNew()">It's a different purchase — file it anyway</button>`:'')
+        : `${doc} was already filed earlier${sa&&sa.date?' ('+esc(sa.date)+(sa.by==='email'?', from the email':'')+')':''} — nothing was doubled.`)
     : isQ
       ? `${doc} — <b>${r.added}</b> price(s) read. Nothing was added to inventory and nothing was recorded against a job.`+(r.poUrl?` <a href="${esc(r.poUrl)}" target="_blank" style="color:var(--accent2)">PDF ↗</a>`:'')
       : `${doc} — <b>${r.added}</b> item(s) ${r.credit?'taken back out of':'added to'} inventory${r.jobSite&&r.jobSite!=='Stock'?', recorded against '+esc(r.jobSite):''}.`+
