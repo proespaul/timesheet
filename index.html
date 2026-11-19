@@ -3775,19 +3775,44 @@ function jobMatsHtml(r){
     ${foldersHtml}`;
 }
 
-/* v141 - MATERIALS INVOICED: the breakdown kept when the initial draft was built - each part's cost,
-   the markup tier and what the customer is charged. The PDF (customer-ready: no cost, no markup %)
-   sits in the job's folder under "Materials invoiced (PRO)". */
-function jobInvHtml(r){
+/* v141/v143 - MATERIALS INVOICED: the breakdown kept when the initial draft was built - each part's
+   cost, the markup tier and what the customer is charged. v143 (Paul, 19 Nov: "don't do it
+   automatically - just have a button option for it if needed"): the customer PDF is made only when
+   "Make customer PDF" is tapped. It goes in the job's Drive folder (the one Job photos opens) under
+   "Materials invoiced (PRO)", and shows quantity, unit, item and price - no cost, no markup. */
+function jobInvHtml(r, ref){
   if(!r||!r.found) return '<p class="muted small">Nothing yet. It is saved here when you build the initial draft for this job.</p>';
   const f=n=>n==null?'—':'$'+Number(n).toFixed(2);
   const when=r.builtAt?new Date(r.builtAt).toLocaleDateString([],{month:'short',day:'numeric',year:'numeric'}):'';
-  return `<p class="small muted" style="margin:0 0 6px">Built ${esc(when)} · markup <b>${esc(r.tier)}%</b> on ${f(r.cost)} cost → <b>${f(r.price)}</b> to the customer (before tax). As it stood at the initial draft.</p>
+  const noCost=(r.lines||[]).filter(l=>l.lp==null).length;
+  const k=reg({r, ref});
+  const pdf = r.pdfUrl
+    ? `<a href="${esc(r.pdfUrl)}" target="_blank" style="text-decoration:none"><button class="secondary" style="width:100%;margin-top:8px">📄 Open the customer PDF</button></a>
+       <button class="ghost" style="width:100%;margin-top:2px;padding:6px" onclick="jobInvPdf('${k}',this)">Make it again</button>`
+    : `<button class="secondary" style="width:100%;margin-top:8px" onclick="jobInvPdf('${k}',this)">📄 Make customer PDF</button>`;
+  return `<p class="small muted" style="margin:0 0 6px">Built ${esc(when)} · markup <b>${esc(r.tier)}%</b> on ${f(r.cost)} cost → <b>${f(r.price)}</b> to the customer (before tax).</p>
     ${(r.lines||[]).map(l=>`<div class="row between small" style="margin-top:4px;gap:8px">
       <span>${esc(l.qty)}${l.uom?' '+esc(l.uom):''} × ${esc(l.desc)}${l.supplier||l.invoice?` <span class="muted">${esc([l.supplier,l.invoice].filter(Boolean).join(' '))}</span>`:''}</span>
       <span style="white-space:nowrap;text-align:right"><span class="muted">${f(l.lc)} →</span> <b>${f(l.lp)}</b></span></div>`).join('')}
     <div class="row between small" style="margin-top:6px;border-top:1px solid var(--line);padding-top:4px"><b>Total</b><span><span class="muted">${f(r.cost)} →</span> <b>${f(r.price)}</b></span></div>
-    ${r.pdfUrl?`<a href="${esc(r.pdfUrl)}" target="_blank" style="text-decoration:none"><button class="secondary" style="width:100%;margin-top:8px">📄 Customer copy (PDF, no cost or markup)</button></a>`:''}`;
+    ${pdf}
+    <p class="small muted" style="margin:6px 0 0">Only if a customer asks: the PDF shows quantity, unit, item and price — no cost or markup. It's this list as built at the initial draft, so changes made in QuickBooks afterwards aren't in it.${noCost?` <span style="color:var(--needs-ink)">${noCost} part${noCost===1?' has':'s have'} no cost on file and will show without a price.</span>`:''}</p>`;
+}
+/* v143 - "Make customer PDF" / "Make it again". */
+async function jobInvPdf(k, btn){
+  const x=dereg(k); if(!x||!x.ref) return;
+  if(!S.online) return toast('You need signal to make the PDF.');
+  const mine=S._sheet, label=btn.textContent;
+  btn.disabled=true; btn.textContent='Making the PDF…';
+  try{
+    const res=await api('materialsInvoicedPdf',{jobSite:x.ref.jobSite, po:x.ref.po||''},{timeout:90000});
+    let r=Object.assign({}, x.r, {pdfUrl:res&&res.pdfUrl||''});
+    if(res && res.linked===false){ try{ r=await apiBg('materialsInvoiced',{jobSite:x.ref.jobSite, po:x.ref.po||''}); }catch(e){} }
+    const el=S._sheet===mine && document.getElementById('jdInv'); if(el) el.innerHTML=jobInvHtml(r, x.ref);
+    toast(res && res.linked===false
+      ? 'The list changed while the PDF was being made, so that copy was not kept as the customer PDF. Make it again.'
+      : 'Customer PDF saved in the job\'s Drive folder, under "Materials invoiced (PRO)". Tap Open to see it.', 7000);
+  }catch(e){ toast(e.message); if(btn.isConnected){ btn.disabled=false; btn.textContent=label; } }
 }
 
 /* Photos: the quick look. The Drive folder stays the permanent home. */
@@ -3833,7 +3858,7 @@ async function openJobAll(pk){
   apiBg('jobMaterials',{jobSite:ref.jobSite, poNumber:ref.po||'', withFolder:1})
     .then(r=>put('jdMats', jobMatsHtml(r))).catch(e=>fail('jdMats',e));
   if(canSeePrices()) apiBg('materialsInvoiced',{jobSite:ref.jobSite, po:ref.po||''})
-    .then(r=>put('jdInv', jobInvHtml(r))).catch(e=>fail('jdInv',e));
+    .then(r=>put('jdInv', jobInvHtml(r, ref))).catch(e=>fail('jdInv',e));
   apiBg('jobMedia',{jobSite:ref.jobSite})
     .then(r=>put('jdPics', jobPhotosHtml(r))).catch(e=>fail('jdPics',e));
 }
