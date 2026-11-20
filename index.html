@@ -2797,7 +2797,7 @@ function todayRows(){
     rows.push({c:'b', k:'Ready to bill?', t:`${i.po} ${i.name}`,
       s:`${(Number(i.hours)+Number(i.pending||0)).toFixed(1)} h${mj&&mj.worth?' · ~'+fm$(mj.worth)+' at your rates':''} · last on site ${tdShort(i.last)} · ${i.calOk?'nothing booked':'calendar not checked'}`, on:`openTodayBill('${k}')`}); });
   items.filter(i=>i.kind==='draft').forEach(i=>{ const k=reg(i);
-    rows.push({c:'b', k:'Finish the invoice', t:`${i.po} ${i.name}`, s:i.final?`Final draft #${i.final.inv||i.qb} is built · not sent yet — send it from QuickBooks`:`Initial draft #${i.qb} is in QuickBooks · the final draft is not built yet`, on:`openTodayDraft('${k}')`}); });
+    rows.push({c:'b', k:'Finish the invoice', t:`${i.po} ${i.name}`, s:i.final?`Final draft #${i.final.inv||i.qb} is built · not sent yet — send it from QuickBooks`:`Invoice #${i.qb} is in QuickBooks · the job is still In progress`, on:`openTodayDraft('${k}')`}); });
   items.filter(i=>i.kind==='book').forEach(i=>{ const k=reg(i);
     rows.push({c:'g', k:'Not booked', t:`${i.po} ${i.name}`, s:i.start?`Start date ${tdShort(i.start)} · no hours yet`:'In progress with no start date and no hours', on:`openTodayBook('${k}')`}); });
   return rows;
@@ -3532,8 +3532,8 @@ function openTodayDraft(k){
   sheet(`<h2>${esc(it.name)}</h2>
     <p class="small muted" style="margin-top:-4px">${esc(it.po)} · invoice #${esc(it.qb)} in QuickBooks · the job is still <b>In progress</b></p>
     ${it.final
-      ? `<p>The <b>final draft is built</b>${it.final.total!=null?' — '+fd$(it.final.total)+' with GST':''}. It has not been sent. Send it from QuickBooks when you are ready: the job turns <b>Invoiced</b> once it has gone out, and <b>Closed</b> once it is paid.</p>`
-      : `<p>The initial draft is in QuickBooks at cost. Correct it there, then build the final draft. Nothing is sent to the customer by either.</p>`}
+      ? `<p>The <b>final draft is built</b>${fdWhen(it.final.at)?' ('+esc(fdWhen(it.final.at))+')':''}. Send it from QuickBooks when you are ready: the job turns <b>Invoiced</b> once it has gone out, and <b>Closed</b> once it is paid.</p>`
+      : `<p>If it is still the initial draft at cost, correct it in QuickBooks, then build the final draft. Nothing is sent to the customer by either. The job turns <b>Invoiced</b> once the invoice has gone out, and <b>Closed</b> once it is paid.</p>`}
     <button ${it.final?'class="secondary" ':''}style="width:100%;margin-top:6px" data-fd="${esc(fdKey(it.po,it.name))}" onclick="reqInvoice('${pk}','final',this)">✅ Build final draft</button>
     <p class="small muted" data-fdnote="${esc(fdKey(it.po,it.name))}" style="margin:6px 0 0"></p>
     ${miQuickBox(pk)}
