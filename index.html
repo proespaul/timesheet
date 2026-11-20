@@ -4761,6 +4761,26 @@ function schUndoToast(msg, fn){
   clearTimeout(toastT); toastT=setTimeout(()=>{ t.innerHTML=''; S._undoFn=null; }, 7000);
 }
 function schUndoNow(){ const f=S._undoFn; S._undoFn=null; clearTimeout(toastT); document.getElementById('toast').innerHTML=''; if(f) f(); }
+/* v155 (Paul, 20 Nov): "schedule a job whenever i want ... even if the time has passed. just flag it",
+   "double book a timeslot when i want", "do not automatically take the other job off. just flag it to me".
+   Nothing is refused for its time and nothing already booked is moved: the office answers with a
+   flag (slotNote) - a time that has passed, a slot that already has a booking - and it is shown here. */
+function bookFlag(r, delay){ const n=r&&r.slotNote; if(n) setTimeout(()=>toast(n, 9000), delay==null?3400:delay); }
+/* The other bookings a window lands on, from the calendar already on the phone (drag, add a day). */
+function schOverlaps(id, startIso, endIso){
+  const s=new Date(startIso).getTime(), e=new Date(endIso).getTime(), out=[];
+  Object.values(S.schedMonths||{}).forEach(m=>((m&&m.events)||[]).forEach(x=>{
+    if(String(x.id)===String(id) || x.allDay || !x.start || !x.end) return;
+    if(new Date(x.start).getTime()<e && new Date(x.end).getTime()>s && !out.some(o=>o.id===x.id)) out.push(x);
+  }));
+  return out;
+}
+function schFlagText(id, startIso, endIso){
+  const f=[], past=new Date(startIso).getTime()<Date.now()-60000, ov=schOverlaps(id,startIso,endIso);
+  if(past) f.push('⚠ that time has already passed');
+  if(ov.length) f.push('⚠ double-booked with '+ov.map(x=>schedName(x)).join(', '));
+  return f.length?' · '+f.join(' · '):'';
+}
 function schWhen(iso){ const d=new Date(iso); return d.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+' '+fmtTime(iso); }
 async function schMoveTo(evOrKey, day, t){
   const ev=(typeof evOrKey==='string')?dereg(evOrKey):evOrKey; if(!ev) return;
@@ -4772,10 +4792,8 @@ async function schMoveTo(evOrKey, day, t){
   if(t!==null && t!==undefined && t!==''){ h=Math.floor(Number(t)); mi=Math.round((Number(t)-h)*60); }
   const ns=new Date(Number(p[0]),Number(p[1])-1,Number(p[2]),h,mi);
   if(ns.getTime()===old.getTime()) return;
-  // v104 - a drop onto a day that has passed is almost always a slip of the finger on the month
-  // grid. Ask once; it is still allowed, because a job that actually happened on another day may
-  // need to be put there.
-  if(ns.getTime()<Date.now()-60000 && !confirm(schedName(ev)+': '+schWhen(ns.toISOString())+' has already passed. Move it there anyway?')) return;
+  // v155 (Paul, 20 Nov: "not block me ... even if the time has passed. just flag it") - a drop onto a
+  // time that has passed, or onto another booking, goes through; the Undo bar says so (v104 asked first).
   const id=ev.id, name=schedName(ev);
   const prev={start:ev.start, end:ev.end, confirm:ev.confirm||'none'};
   schApply(id,{start:ns.toISOString(), end:new Date(ns.getTime()+dur).toISOString(), confirm:'waiting'});
@@ -4783,7 +4801,7 @@ async function schMoveTo(evOrKey, day, t){
   try{
     const r=await api('scheduleMove',{eventId:id, start:ns.toISOString()},{timeout:90000});
     schApply(id,{start:r.start, end:r.end, confirm:r.confirm||'waiting'}); S.schedYears={}; render();
-    schUndoToast(`${name.split(' · ')[0]} moved to ${schWhen(r.start)}`, ()=>schUndoMove(id, prev, name));
+    schUndoToast(`${name.split(' · ')[0]} moved to ${schWhen(r.start)}${schFlagText(id, r.start, r.end)}`, ()=>schUndoMove(id, prev, name));
     if(S.online){ loadSched(); loadRequests(); }   // the Requests tab shows the booked time too
   }catch(e){
     schApply(id,prev); render();
@@ -4843,8 +4861,7 @@ async function schAddDayGo(k, btn){
   if(!(hrs>=0.5 && hrs<=12)) return toast('Hours that day: between 0.5 and 12.');
   const p=day.split('-'), q=tm.split(':');
   const ns=new Date(Number(p[0]),Number(p[1])-1,Number(p[2]),Number(q[0]),Number(q[1]));
-  if(ns.getTime()<Date.now()-60000 && !confirm(schWhen(ns.toISOString())+' has already passed. Add it anyway?')) return;
-  const was=btn.textContent; btn.disabled=true; btn.textContent='Adding…';
+  const was=btn.textContent; btn.disabled=true; btn.textContent='Adding…';   // v155 - a past day is added, and flagged
   try{
     const r=await api('scheduleAddDay',{eventId:ev.id, start:ns.toISOString(), hours:hrs},{timeout:90000});
     const m=localDateStr(new Date(r.start)).slice(0,7), data=(S.schedMonths||{})[m];
@@ -4857,6 +4874,7 @@ async function schAddDayGo(k, btn){
     const added=(S._addDays||[]).concat([{day, when:schWhen(r.start)}]);
     render();
     schOpenAddDay(k, added);
+    { const fl=schFlagText(r.eventId, r.start, r.end); if(fl) toast('Added'+fl, 8000); }
     if(S.online) loadSched();
   }catch(e){
     toast(/unknown action/i.test(e.message)?'The office needs the latest script (v95) to add a day.':e.message, 8000);
@@ -6032,8 +6050,7 @@ function openVisitMove(key){
     <div class="row"><div class="grow"><label>New date</label><input id="vmDate" type="date" value="${esc(moveToDate(`${cur.getFullYear()}-${pad(cur.getMonth()+1)}-${pad(cur.getDate())}`))}"></div>
       <div class="grow"><label>New start</label><input id="vmTime" type="time" value="${pad(cur.getHours())}:${pad(cur.getMinutes())}"></div></div>
     <div class="perm"><input type="checkbox" id="vmNotify"><label for="vmNotify" style="margin:0">Email the customer the new time</label></div>
-    <div class="perm"><input type="checkbox" id="vmBump"><label for="vmBump" style="margin:0">Let it take a slot that already has a job in it</label></div>
-    <p class="small muted">${info.po?esc(info.po)+' keeps its start date':'The calendar only'} — this moves the visit, not the job.</p>
+    <p class="small muted">${info.po?esc(info.po)+' keeps its start date':'The calendar only'} — this moves the visit, not the job. Any time works: a time that has passed, or a slot with another booking in it, is flagged and nothing else moves.</p>
     <div class="row" style="margin-top:14px">
       <button class="secondary grow" onclick="closeSheet()">Back</button>
       <button class="grow" onclick="visitMoveGo('${key}',this)">📅 Move it</button>
@@ -6048,11 +6065,11 @@ async function visitMoveGo(key,btn){
   if(isNaN(start)) return toast('That date/time did not read properly.');
   const hours=Math.max(0.25,Number(val('vmHours'))||info.hours||2);
   const notifyCustomer=(document.getElementById('vmNotify')||{}).checked!==false;
-  const bump=(document.getElementById('vmBump')||{checked:false}).checked===true;
   btn.disabled=true; btn.textContent='Moving…';
   try{
     const r=await api('eventMove',{eventId:info.eventId, start:start.toISOString(), hours,
-      notifyCustomer, bump, allowPast:true},{timeout:120000});
+      notifyCustomer, bump:false, allowPast:true},{timeout:120000});
+    bookFlag(r);
     const back=(r&&r.bumped&&r.bumped.length)||0;
     toast('Moved to '+fmtDay(start.toISOString())+' '+fmtTime(start.toISOString())
       +(back?' · '+back+' job(s) now need a new time':''),7000);
@@ -7279,7 +7296,7 @@ async function coRvOwnCheck(){
   const date=val('coRvOwnDate'), time=val('coRvOwnTime');
   if(!date||!time) return toast('Pick the day and the start time.');
   const start=new Date(date+'T'+time); if(isNaN(start)) return toast('That day/time did not read properly.');
-  const box=document.getElementById('coRvOwnPlan'); if(box) box.innerHTML='<p class="small muted">Working out what moves…</p>';
+  const box=document.getElementById('coRvOwnPlan'); if(box) box.innerHTML='<p class="small muted">Reading the calendar…</p>';
   try{
     const plan=await api('bumpPlan',{start:start.toISOString(), hours:h, po:c.poNumber||'', jobSite:c.jobSite||c.company||''},{timeout:60000});
     c.rv.custom={ date, time, start:start.toISOString(), hours:h, plan, ok:false };
@@ -7295,23 +7312,29 @@ async function coRvOwnCheck(){
 }
 /* The plan, readable on a phone. Shared by the return visit and the Call-list Reschedule. */
 function bumpPlanHtml(plan){
-  const m=plan.mover;
+  const m=plan.mover, ov=plan.overlaps||[];
   let h='<div class="card" style="margin:0;padding:10px">'
     + '<div class="small"><b>'+(m.kind==='new'?'Return visit':'This job')+':</b> '+esc(fmtDay(m.start))+' '+esc(fmtTime(m.start))+'–'+esc(fmtTime(m.end))+'</div>';
-  if(plan.moves.length){
+  if(plan.moves&&plan.moves.length){
     // v51 — a displaced job is NOT given another time. It comes off the calendar and waits in
-    // Requests, so the time it eventually gets is one Paul chose and the customer agreed.
+    // Requests. (v155: only if the office turns moving back on - it is off.)
     h+='<div class="small" style="margin-top:8px;font-weight:700">'
       +(plan.moves.length===1?'This job comes off the calendar:':'These '+plan.moves.length+' jobs come off the calendar:')+'</div>';
     h+=plan.moves.map(x=>'<div class="small" style="margin-top:6px;padding-left:8px;border-left:3px solid var(--bad)">'
       + '<b>'+esc(x.customer||x.title)+'</b>'+(x.po?' <span class="muted">'+esc(x.po)+'</span>':'')
+      + '<br>was '+esc(fmtDay(x.from))+' '+esc(fmtTime(x.from))+' → <b>waiting for a new time</b></div>').join('');
+  } else if(ov.length){
+    // v155 (Paul, 20 Nov: "do not automatically take the other job off. just flag it to me")
+    h+='<div class="small" style="margin-top:8px;font-weight:700;color:var(--pending)">⚠️ Double-booked — '+(ov.length===1?'this stays where it is:':'these stay where they are:')+'</div>';
+    h+=ov.map(x=>'<div class="small" style="margin-top:6px;padding-left:8px;border-left:3px solid var(--pending)">'
+      + '<b>'+esc(x.customer||x.title)+'</b>'+(x.po?' <span class="muted">'+esc(x.po)+'</span>':'')
       + (x.job?'<br><span class="muted">'+esc(x.job)+'</span>':'')
-      + '<br>was '+esc(fmtDay(x.from))+' '+esc(fmtTime(x.from))+' → <b>waiting for a new time</b>'
-      + (x.phone?'<br>📞 '+esc(x.phone):'<br><span style="color:var(--pending)">no phone on file</span>')
+      + '<br>'+esc(fmtDay(x.from))+' '+esc(fmtTime(x.from))+(x.fromEnd?'–'+esc(fmtTime(x.fromEnd)):'')
       + '</div>').join('');
-    h+='<p class="small muted" style="margin:8px 0 0">They land under "⚡ Needs a new time" at the top of Requests, job numbers unchanged — ring or email them there, then pick a time or take the next opening. You get the same list by email.</p>';
-  } else h+='<div class="small" style="margin-top:6px;color:var(--good)">✓ Nothing needs to move.</div>';
-  if(plan.warnings&&plan.warnings.length) h+=plan.warnings.map(w=>'<div class="small" style="margin-top:6px;color:var(--pending)">⚠️ '+esc(w)+'</div>').join('');
+    h+='<p class="small muted" style="margin:8px 0 0">Nothing is moved. Fine when you have the crew for both.</p>';
+  } else h+='<div class="small" style="margin-top:6px;color:var(--good)">✓ Nothing else is booked then.</div>';
+  const warn=(plan.warnings||[]).filter(w=>!(ov.length&&/^Double-booked/.test(w)));
+  if(warn.length) h+=warn.map(w=>'<div class="small" style="margin-top:6px;color:var(--pending)">⚠️ '+esc(w)+'</div>').join('');
   return h+'</div>';
 }
 function coRvSlotsRender(){
@@ -7605,7 +7628,8 @@ async function coCommit_(){
       const b = await api('bumpApply',{ start:k.start, hours:k.hours, po:c.poNumber||'', jobSite:c.jobSite||c.company||'',
         note:c.notes, notifyCustomer:!!c.rv.notify, hash:k.plan.hash },{timeout:120000});
       toast('Return visit booked — '+fmtDay(k.start)+', '+fmtTime(k.start)
-        + (b&&b.moved?' · '+b.moved+' job(s) came off the calendar — give them a new time in Requests › ⚡ Needs a new time':''), 8000);
+        + (b&&b.moved?' · '+b.moved+' job(s) came off the calendar — give them a new time in Requests › ⚡ Needs a new time':'')
+        + (b&&b.overlaps&&b.overlaps.length?' · ⚠ double-booked with '+b.overlaps.map(x=>x.customer||x.title).join(', '):''), 9000);
       if (b&&b.problems&&b.problems.length) setTimeout(()=>toast('Could not move: '+b.problems.join('; '), 8000), 8200);
       loadRequests();
     }catch(e){ coRvFailed_(e.message, {start:k.start}); }
@@ -10522,7 +10546,7 @@ async function callMoveCheck(i){
   const date=val('cmDate'), time=val('cmTime'); if(!date||!time) return toast('Pick the day and the time.');
   const start=new Date(date+'T'+time); if(isNaN(start)) return toast('That day/time did not read properly.');
   const box=document.getElementById('cmPlan'), go=document.getElementById('cmGo');
-  if(box) box.innerHTML='<p class="small muted">Working out what moves…</p>'; if(go) go.disabled=true;
+  if(box) box.innerHTML='<p class="small muted">Reading the calendar…</p>'; if(go) go.disabled=true;
   try{
     const plan=await api('bumpPlan',{start:start.toISOString(), eventId:x.eventId},{timeout:60000});
     S._cmPlan={ start:start.toISOString(), plan };
@@ -10534,7 +10558,8 @@ async function callMoveGo(i,btn){
   btn.disabled=true; btn.textContent='Moving…';
   try{
     const b=await api('bumpApply',{start:k.start, eventId:x.eventId, hash:k.plan.hash, callId:x.id},{timeout:120000});
-    toast('Moved to '+fmtDay(k.start)+' '+fmtTime(k.start)+(b&&b.moved?' · '+b.moved+' more job(s) came off the calendar — they are under "⚡ Needs a new time"':''), 8000);
+    toast('Moved to '+fmtDay(k.start)+' '+fmtTime(k.start)+(b&&b.moved?' · '+b.moved+' more job(s) came off the calendar — they are under "⚡ Needs a new time"':'')
+      +(b&&b.overlaps&&b.overlaps.length?' · ⚠ double-booked with '+b.overlaps.map(x=>x.customer||x.title).join(', '):''), 9000);
     S._cmPlan=null; closeSheet(); loadRequests();
   }catch(e){
     toast(e.message, 7000); btn.disabled=false; btn.textContent='Confirm the move';
@@ -10610,7 +10635,8 @@ function openCollPick(i){
     hours:Number(x.bookedHours||x.hours)||1,
     onConfirm:async(start,hours,bump)=>{
       const r=await api('requestSchedule',{id:x.id,start,hours,type:'APPOINTMENT',
-        bump:!!bump,allowPast:true},{timeout:120000});
+        bump:false,allowPast:true},{timeout:120000});
+      bookFlag(r);
       const back=(r&&r.bumped&&r.bumped.length)||0;
       return (x.customer||'Booked')+' — '+fmtDay(start)+' '+fmtTime(start)
         +(x.po?' · '+x.po+' unchanged':'')
@@ -10623,9 +10649,10 @@ function openCollPick(i){
  * TWO SCREENS, the way a calendar works. First the MONTH: every day of it, with a dot for each
  * job booked that day, weekends and stat holidays and Paul's days off shaded. Tap a day and you
  * get THAT DAY — what is on it, who it is for, tap any booking for its detail — and underneath, a
- * start time and a length that accept ANYTHING: 6 AM, a Sunday, a slot with a job already in it.
- * If a job is in the way the card says whose it is and what happens to it, and the booking does
- * not go through until Paul ticks the box. ================================================*/
+ * start time and a length that accept ANYTHING: 6 AM, a Sunday, a time that has passed, a slot with
+ * a job already in it. v155 (Paul, 20 Nov: "double book a timeslot when i want ... in case i have
+ * more crew"; "do not automatically take the other job off. just flag it to me") - a job in the way
+ * is named and flagged, and STAYS where it is; nothing has to be ticked to book. ================*/
 let dpState=null;
 function dpDateStr(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function dpMonthOf(ds){ return String(ds||'').substring(0,7); }
@@ -10747,8 +10774,8 @@ async function dayPickLoad(){
   }catch(e){ if(!dpState||dpState.date!==want) return; dpState.loading=false; dpState.err=e.message||'Could not read the calendar.'; }
   dayPickRender();
 }
-/* Everything the chosen window lands on. A JOB would be sent back to Requests; anything else
-   (an estimate call, a dentist appointment, a reminder) stays exactly where it is. */
+/* Everything the chosen window lands on. v155 - all of it stays where it is: the new booking sits
+   beside it (double-booked) and the card flags it. */
 function dpClash(){
   const d=dpState; if(!d||!d.data||!d.time) return [];
   const s=new Date(d.date+'T'+d.time).getTime();
@@ -10760,26 +10787,22 @@ function dpClash(){
 function dpVerdictHtml(jobs,other){
   const d=dpState;
   if(!d.time) return '';
-  if(jobs.length) return `<div class="banner ot" style="margin-top:8px">
-    <b>That slot has ${jobs.length===1?'a job on it':jobs.length+' jobs on it'}.</b>
-    ${jobs.map(x=>`<div class="small" style="margin-top:4px">• ${esc(x.title)}${x.customer?' — '+esc(x.customer):''} <span class="muted">(${esc(fmtTime(x.start))}–${esc(fmtTime(x.end))})</span></div>`).join('')}
-    <div class="small" style="margin-top:6px">Booking here takes ${jobs.length===1?'it':'them'} off the calendar and puts ${jobs.length===1?'it':'them'} under <b>⚡ Needs a new time</b> at the top of the Requests tab. The job number${jobs.length===1?'':'s'} do${jobs.length===1?'es':''} not change, and nobody is given a time you have not agreed — you pick it, or take the next opening.</div>
-    <label class="row" style="gap:10px;align-items:center;margin-top:8px;cursor:pointer">
-      <input type="checkbox" ${d.bump?'checked':''} onchange="dpBump(this.checked)" style="width:20px;height:20px;flex:none;margin:0">
-      <span class="small"><b>Yes — take the slot and send ${jobs.length===1?'that job':'those jobs'} back</b></span></label>
+  const st=new Date(d.date+'T'+d.time), past=!isNaN(st)&&st.getTime()<Date.now()-60000;
+  const pastHtml=past?`<div class="small" style="margin-top:8px;color:var(--pending)">⚠️ ${esc(fmtDay(st.toISOString()))} ${esc(fmtTime(st.toISOString()))} has already passed — it will still be booked.</div>`:'';
+  const all=jobs.concat(other);
+  if(all.length) return pastHtml+`<div class="banner" style="margin-top:8px;text-align:left;background:var(--needs-bg);color:var(--needs-ink)">
+    <b>⚠️ Double-booked: that slot already has ${all.length===1?'a booking':all.length+' bookings'}.</b>
+    ${all.map(x=>`<div class="small" style="margin-top:4px">• ${esc(x.title)}${x.customer?' — '+esc(x.customer):''} <span class="muted">(${esc(fmtTime(x.start))}–${esc(fmtTime(x.end))})</span></div>`).join('')}
+    <div class="small" style="margin-top:6px">Both stay on the calendar — nothing is moved. ${jobs.length?'Fine when you have the crew for both.':''}</div>
   </div>`;
-  if(other.length) return `<div class="small" style="margin-top:8px;color:var(--pending)">⚠️ Sits over ${esc(other.map(x=>x.title).join(', '))} — ${other.length===1?'that is not a job, so it stays':'those are not jobs, so they stay'} where ${other.length===1?'it is':'they are'}.</div>`;
-  return '<div class="small" style="margin-top:8px;color:var(--good)">✓ That slot is free.</div>';
+  return pastHtml+(past?'':'<div class="small" style="margin-top:8px;color:var(--good)">✓ That slot is free.</div>');
 }
 function dpVerdict(){
   const d=dpState; if(!d) return;
   const clash=dpClash(), jobs=clash.filter(x=>x.isJob), other=clash.filter(x=>!x.isJob);
   const box=document.getElementById('dpVerdict'); if(box) box.innerHTML=dpVerdictHtml(jobs,other);
   const go=document.getElementById('dpGo');
-  if(go){
-    go.disabled=!(d.time && (!jobs.length || d.bump));
-    go.textContent=(jobs.length&&d.bump)?('Book it and move '+(jobs.length===1?'that job':'those jobs')):'Book it';
-  }
+  if(go){ go.disabled=!d.time; go.textContent=d.onPick?'Use this time ›':'Book it'; }
 }
 function dpTime(v){ if(!dpState) return; dpState.time=v; dpState.bump=false; dpVerdict(); }
 function dpHours(v){ if(!dpState) return; dpState.hours=Math.max(0.25,Math.min(12,Number(v)||1)); dpState.bump=false; dpVerdict(); }
@@ -10815,11 +10838,11 @@ function dpDayRender(){
       <div class="grow"><label>Start</label><input id="dpTime" type="time" value="${esc(d.time)}" onchange="dpTime(this.value)"></div>
       <div class="grow"><label>Hours</label><input id="dpHours" type="number" step="0.25" min="0.25" value="${d.hours}" onchange="dpHours(this.value)"></div>
     </div>
-    <p class="small muted" style="margin-top:4px">Any time you like — after hours, a weekend, or a slot that already has a job in it.</p>
+    <p class="small muted" style="margin-top:4px">Any time you like — after hours, a weekend, a time that has passed, or a slot that already has a job in it (it is flagged, and nothing moves).</p>
     <div id="dpVerdict">${dpVerdictHtml(jobs,other)}</div>
     <div class="row" style="margin-top:12px">
       <button class="secondary grow" onclick="dpBackToMonth()">‹ Back</button>
-      <button class="grow" id="dpGo" ${(d.time&&(!jobs.length||d.bump))?'':'disabled'} onclick="dayPickGo(this)">${d.onPick?'Use this time ›':(jobs.length&&d.bump)?('Book it and move '+(jobs.length===1?'that job':'those jobs')):'Book it'}</button>
+      <button class="grow" id="dpGo" ${d.time?'':'disabled'} onclick="dayPickGo(this)">${d.onPick?'Use this time ›':'Book it'}</button>
     </div>`);
 }
 /* Tap an event on the day — the same thing Google Calendar gives you. */
@@ -10831,7 +10854,7 @@ function dpShow(j){
     ${x.customer?`<div class="small" style="margin-top:4px">👤 ${esc(x.customer)}</div>`:''}
     ${x.phone?`<div class="small" style="margin-top:2px">📞 <a href="tel:${esc(String(x.phone).replace(/[^0-9+]/g,''))}">${esc(x.phone)}</a></div>`:''}
     ${x.location?`<div class="small" style="margin-top:2px">📍 ${esc(x.location)}</div>`:''}
-    <div style="margin-top:8px">${x.isJob?'<span class="pill live">A job — booking over it sends it back to Requests</span>':'<span class="pill">Not a job — it stays where it is</span>'}</div>
+    <div style="margin-top:8px">${x.isJob?'<span class="pill live">A job — booking over it double-books the slot; it stays where it is</span>':'<span class="pill">Not a job — it stays where it is</span>'}</div>
     ${x.detail?`<pre class="small muted" style="white-space:pre-wrap;word-break:break-word;margin-top:10px">${esc(x.detail)}</pre>`:''}
     <button class="secondary" style="width:100%;margin-top:12px" onclick="dpDayRender()">‹ Back to the day</button>`);
 }
@@ -10842,8 +10865,8 @@ async function dayPickGo(btn){
   if(isNaN(start)) return toast('That time did not read properly.');
   btn.disabled=true; btn.textContent='Booking…';
   try{
-    if(d.onPick){ const f=d.onPick, b=!!d.bump; dpState=null; f(start.toISOString(), Number(d.hours)||1, b); return; }   // v125 - pick only; the form books it
-    const msg=await d.onConfirm(start.toISOString(), Number(d.hours)||1, !!d.bump);
+    if(d.onPick){ const f=d.onPick; dpState=null; f(start.toISOString(), Number(d.hours)||1, false); return; }   // v125 - pick only; the form books it (v155: never moves another job)
+    const msg=await d.onConfirm(start.toISOString(), Number(d.hours)||1, false);
     dpState=null; closeSheet(); toast(msg||'Booked ✓',8000); loadRequests();
     if(S.tab==='sched') schedRefreshAll();          // v116 - the new booking shows on the calendar
     if(S.estData) loadEstimates();
@@ -11121,6 +11144,7 @@ async function bwBook(start, hours, bump){
   if(r&&r.custNote&&/NOT notified|unavailable/i.test(r.custNote)) msg+=' · '+r.custNote;
   const back=(r&&r.bumped&&r.bumped.length)||0; if(back) msg+=' · '+back+' job(s) now need a new time';
   if(notes.length) msg+=' · '+notes.join(' · ');
+  bookFlag(r);
   return msg;
 }
 /* The job's own contact details come off its PO Log row, so nothing is retyped and nothing
@@ -11214,9 +11238,9 @@ function amPickTime(){
     onConfirm:async(start,hours,bump)=>{
       const r=await api('requestAddManual',{ kind:a.kind, po:a.po||'', customer:a.customer, phone:a.phone,
         email:a.email, address:a.address, scope:a.scope, company:a.company, hours:hours,
-        start:start, bump:!!bump, emergency:!!a.emergency,
+        start:start, bump:false, emergency:!!a.emergency, allowPast:true,
         notifyCustomer:a.notifyCustomer!==false, poType:a.poType||'', fromPo:a.fromPo||'' },{timeout:120000});
-      amState=null;
+      amState=null; bookFlag(r);
       if(a.kind==='call') loadEstimates();          // v115 - the visit shows under Visit booked
       const back=(r&&r.bumped&&r.bumped.length)||0;
       return (a.kind==='call'?'Call booked — ':'Job booked — ')+fmtDay(start)+' '+fmtTime(start)
@@ -11426,7 +11450,7 @@ async function reqSchedule(i,btn){
     // Calendar event + crew email + PO workbook write + customer email in one call — well past
     // the 30 s default, and an abort here looks like a failure on a booking that actually ran.
     const callMinutes=Number(val('rqCallMin'))||30;
-    const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify, type, notifyCustomer, callMinutes, crew:assign.length||q.crew||1, bump:!!S._rqBump},{timeout:120000});
+    const r=await api('requestSchedule',{id:q.id, start:start.toISOString(), hours, assign, notify, type, notifyCustomer, callMinutes, crew:assign.length||q.crew||1, bump:false, allowPast:true},{timeout:120000});   // v155 - nothing is moved to make room
     S.requests=(S.requests||[]).filter(x=>x.id!==q.id); S.pendingRequests=S.requests.length;
     // v23: approving also writes the PO Log workbook — an APPOINTMENT burns the next PO number,
     // an ESTIMATE files a row on the Estimate tab. Say which, because the PO number is the one
@@ -11624,7 +11648,7 @@ function openReqMove(i,k){
     <div class="row"><div class="grow"><label>New date</label><input id="mvDate" type="date" value="${esc(moveToDate(d))}"></div>
       <div class="grow"><label>New start</label><input id="mvTime" type="time" value="${t}"></div></div>
     <div class="perm"><input type="checkbox" id="mvNotify"><label for="mvNotify" style="margin:0">Email the customer the new time</label></div>
-    <div class="perm"><input type="checkbox" id="mvBump"><label for="mvBump" style="margin:0">Let it take a slot that already has a job in it</label></div>
+    <p class="small muted">Any time works: a time that has passed, or a slot with another booking in it, is flagged and nothing else moves.</p>
     <p class="small muted">${isEst
       ? 'Moves the estimate call on the calendar. No PO number is involved — nothing is booked yet.'
       : 'Moves the calendar event and the PO Log start date. Goes back to 🟠 until they answer.'}</p>
@@ -11648,9 +11672,9 @@ async function reqMove(i,btn,k){
   const callMinutes=Number(val('mvCallMin'))||0;
   btn.disabled=true; btn.textContent='Moving…';
   try{
-    const bump=(document.getElementById('mvBump')||{checked:false}).checked===true;
     const r=await api('requestReschedule',{id:q.id, start:start.toISOString(), hours,
-      callMinutes:callMinutes||undefined, notify:notifyCustomer, bump},{timeout:120000});
+      callMinutes:callMinutes||undefined, notify:notifyCustomer, bump:false, allowPast:true},{timeout:120000});
+    bookFlag(r);
     const back=(r&&r.bumped&&r.bumped.length)||0; S._mvQ=null;
     toast('Moved ✓'+(notifyCustomer?' — customer emailed':'')
       +(back?' · '+back+' job(s) now need a new time':''),back?7000:4000);
