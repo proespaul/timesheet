@@ -4018,7 +4018,7 @@ async function openJobAll(pk){
    the app). What does not add up comes first. A part on two receipts that look like one purchase, or a
    clock-out that went in twice, is a question with two answers - and either answer can be taken back
    under Answered. Nothing is merged or dropped without a tap. */
-function jdKey(ref, part){ return 'jd|'+part+'|'+(ref.po||'')+'|'+lc(ref.jobSite); }
+function jdKey(ref, part){ return 'jd|'+lc(S.me&&S.me.email)+'|'+part+'|'+(ref.po||'')+'|'+lc(ref.jobSite); }   // v153 - per person: the copy holds prices
 function jmDay(s){ if(!s) return ''; s=String(s); const d=/T\d/.test(s)?new Date(s):new Date(s.slice(0,10)+'T12:00');
   return isNaN(d)?s:d.toLocaleDateString([],{month:'short',day:'numeric'}); }
 function jmDocLine(d){
@@ -4089,12 +4089,19 @@ function jobMatchHtml(r, ref){
   const usd=L.filter(l=>l.state==='check'&&l.why.includes('used'));
   const ok=L.filter(l=>l.state==='ok');
   const info=L.filter(l=>l.state==='info');
+  // v153 - a part that is in a question above but otherwise adds up (bought 6, logged 3) was in none of
+  // the groups and dropped off the list. Every part the office sends is shown.
+  const shown=new Set([...more,...rec,...usd,...ok,...info]);
+  const waiting=L.filter(l=>!shown.has(l));
   h+=group('Logged more than bought', more, l=>row(l,
     `<div>logged <span class="bad">${qu(l.used,l.unit)}</span></div><div class="small muted">bought ${qu(l.bought,l.unit)}</div>`,
     subU(l)+(l.buys.length?'<br>'+subB(l):'')));
   h+=group('On a receipt, not logged at clock-out', rec, l=>row(l, `<div>bought <b>${qu(l.bought,l.unit)}</b></div>`, subB(l)));
   h+=group('Logged at clock-out, no receipt on this job', usd, l=>row(l,
     `<div>logged <b>${qu(l.used,l.unit)}</b></div><div class="small muted">from stock?</div>`, subU(l)));
+  h+=group('In a question above', waiting, l=>row(l,
+    `<div>bought <b>${qu(l.bought,l.unit)}</b></div><div class="small muted">logged ${qu(l.used,l.unit)}</div>`,
+    (l.buys.length?subB(l):'')+(l.buys.length&&l.claims.length?'<br>':'')+(l.claims.length?subU(l):'')));
   h+=group('Match', ok, l=>row(l,
     `<div><span class="good">✓</span> ${qu(l.bought,l.unit)}</div>${l.why.includes('left')?`<div class="small muted">${qu(l.bought-l.used,l.unit)} not logged</div>`:''}`,
     ''));
