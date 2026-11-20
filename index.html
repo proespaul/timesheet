@@ -2784,6 +2784,10 @@ function todayRows(){
       s:'The check is off until it opens again — that is not zero hours', on:`openHoursCheck('${k}')`});
     else if(n) rows.push({c:'o', k:'Hours check · '+tdFirst(g.name), t:`${n} day${n===1?'':'s'} don't match the hour sheet`,
       s:`${g.days.slice(0,6).map(x=>tdShort(x.date)).join(', ')}${n>6?' +'+(n-6):''}${g.through?' · sheet filled to '+tdShort(g.through):''}`, on:`openHoursCheck('${k}')`}); });
+  // v145 - look-alike receipt scans the office is holding: file it or drop it (openTodayHeld).
+  items.filter(i=>i.kind==='held').forEach(i=>{ const k=reg(i);
+    rows.push({c:'o', k:'Receipt to check', t:`${i.supplier||''} ${i.doc||''}`.trim()+(canSeePrices()&&i.total?' · '+fd$(i.total):''),
+      s:`Looks like ${heldSame_(i)} · nothing counted yet`, on:`openTodayHeld('${k}')`}); });
   const leads=S.pendingRequests||0, apv=apvCount(), ests=S.pendingEstimates||0;
   if(leads||apv) rows.push({c:'b', k:'Requests', t:[leads?`${leads} job${leads===1?'':'s'} to book`:'', apv?`${apv} waiting for your OK`:''].filter(Boolean).join(' · '),
     s:'On the Requests tab', on:`go('requests')`});
@@ -2807,6 +2811,7 @@ const TD_GROUP_WORDS = {
   'Fix this entry':    n=>`${n} entries to fix`,
   'Punch refused':     n=>`${n} punches never landed`,
   'Hours check':       n=>`${n} days don't match the hour sheets`,
+  'Receipt to check':  n=>`${n} receipts to check`,
   'Ready to bill?':    n=>`${n} jobs to bill`,
   'Finish the invoice':n=>`${n} invoices to finish`,
   'Not booked':        n=>`${n} jobs never booked`
@@ -3523,10 +3528,50 @@ function openTodayDraft(k){
   sheet(`<h2>${esc(it.name)}</h2>
     <p class="small muted" style="margin-top:-4px">${esc(it.po)} · draft #${esc(it.qb)} is in QuickBooks</p>
     <p>The initial draft was built, but the PO Log still says <b>In progress</b>, so the invoice hasn't been finished and sent yet.</p>
-    <button style="width:100%;margin-top:6px" onclick="reqInvoice('${pk}','final',this)">✅ Build final draft</button>
+    <button style="width:100%;margin-top:6px" data-fd="${esc(fdKey(it.po,it.name))}" onclick="reqInvoice('${pk}','final',this)">✅ Build final draft</button>
+    <p class="small muted" data-fdnote="${esc(fdKey(it.po,it.name))}" style="margin:6px 0 0"></p>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobAll('${pk}')">📋 Job details</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="todayHide('${hk}')">Not yet — hide it for 2 weeks</button>
     <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Close</button>`);
+  fdPeek(it.po, it.name);
+}
+/* v145 - A LOOK-ALIKE RECEIPT, DECIDED HERE (Paul, 19 Nov, about "file it anyway" on the scan screen:
+   "dont give me this option there. put it in the needs you list"). A scan that reads as a purchase
+   already on file is held by the office (script v118) - photo kept, nothing counted - and listed
+   under Needs you. This is where it is filed as a second purchase or dropped as the same one. */
+function heldSame_(i){
+  const sa=i.sameAs||{};
+  return `${i.supplier||'one'} ${sa.invoiceNo||''}`.trim()+(sa.date?' ('+tdShort(sa.date)+(sa.by==='email'?', from email':', scanned')+')':'');
+}
+function openTodayHeld(k){
+  const it=dereg(k); if(!it) return;
+  navSelf(()=>openTodayHeld(k));
+  const sa=it.sameAs||{}, hk=reg({id:it.id});
+  const mine=!!(it.by && S.me && String(it.by).toLowerCase()===String(S.me.email||'').toLowerCase());
+  const w0=tdFirst(String(it.by||'').split('@')[0]);
+  const who=mine?'you':(w0?w0.charAt(0).toUpperCase()+w0.slice(1):'');
+  sheet(`<h2>Receipt to check</h2>
+    <p class="small muted" style="margin-top:-4px">Scanned ${it.at?esc(fmtDay(it.at))+' '+esc(fmtTime(it.at)):''}${who?' by '+esc(who):''}${it.jobSite&&it.jobSite!=='Stock'?' · for '+esc(it.jobSite):' · for stock'}</p>
+    <p><b>${esc(it.supplier||'')} ${esc(it.doc||'')}</b>${it.date?' · '+esc(tdShort(it.date)):''} · ${Number(it.lines)||0} line${Number(it.lines)===1?'':'s'}${canSeePrices()&&it.total?' · '+fd$(it.total):''}</p>
+    <p>It looks like one already on file: <b>${esc(it.supplier||'')} ${esc(sa.invoiceNo||'(no number)')}</b>${sa.date?' from '+esc(tdShort(sa.date)):''}${sa.by==='email'?', which came in by email':', which was scanned earlier'}${sa.jobSite&&sa.jobSite!=='Stock'?', for '+esc(sa.jobSite):''}. ${sa.how==='ref'&&sa.ref?'Both show number <b>'+esc(sa.ref)+'</b>, with the':'The'} same quantities and prices.</p>
+    <p class="small muted">So nothing has been filed and no parts have been counted. If it really is a second purchase, file it; if it is the same one, drop this scan.</p>
+    ${(it.photoUrl||sa.url)?`<p class="small" style="margin:0 0 4px">${it.photoUrl?`<a href="${esc(it.photoUrl)}" target="_blank" style="color:var(--accent2)">📷 This scan ↗</a>`:''}${it.photoUrl&&sa.url?' &nbsp;·&nbsp; ':''}${sa.url?`<a href="${esc(sa.url)}" target="_blank" style="color:var(--accent2)">📄 The one on file ↗</a>`:''}</p>`:''}
+    <button style="width:100%;margin-top:8px" onclick="heldDecide('${hk}','file',this)">It's a different purchase — file it</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="heldDecide('${hk}','same',this)">It's the same one — drop this scan</button>
+    <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Close</button>`);
+}
+async function heldDecide(k, what, btn){
+  const ref=dereg(k); if(!ref) return;
+  if(!S.online) return toast('You need signal for this.');
+  const was=btn.textContent; btn.disabled=true; btn.textContent=what==='file'?'Filing it…':'Dropping it…';
+  try{
+    const r=await api('heldScanDecide',{id:ref.id, decision:what},{timeout:90000});
+    if(S.today&&S.today.items){ S.today.items=S.today.items.filter(i=>!(i.kind==='held'&&i.id===ref.id)); try{ DB.setCache('today', S.today); }catch(e){} }
+    closeSheet(); if(S.tab==='today') render();
+    toast(r&&r.already ? 'That one had already been dealt with.' : what==='file'
+      ? `Filed as a separate purchase — ${r.added||0} line${(r.added||0)===1?'':'s'} counted${r.jobSite&&r.jobSite!=='Stock'?' against '+r.jobSite:''}.${r.warn?' '+r.warn:''}`
+      : 'Dropped — it was the same purchase, so nothing is counted twice.', 7000);
+  }catch(e){ toast((e&&e.message)||'That did not go through.', 8000); btn.disabled=false; btn.textContent=was; }
 }
 function openTodayBook(k){
   const it=dereg(k); if(!it) return;
@@ -3675,10 +3720,12 @@ function openJobDetail(k){
       <div class="small muted" style="margin-top:12px">Invoicing — two steps</div>
       ${j.po && /closed|invoiced|cancel/i.test(j.status||'') ? `<button class="secondary" style="width:100%;margin:6px 0 4px;border-color:#f59e0b;color:#92400e" onclick="jobReopen('${pk}',this)">↩ Reopen this job — back to In progress</button>`:''}
       <button style="width:100%;margin-top:4px" onclick="openInvoiceList('${pk}')">🧾 Build Initial Draft</button>
-      <button class="secondary" style="width:100%;margin-top:6px" onclick="reqInvoice('${pk}','final',this)">✅ Build Final Draft</button>
+      <button class="secondary" style="width:100%;margin-top:6px" data-fd="${esc(fdKey(j.po||'',j.name))}" onclick="reqInvoice('${pk}','final',this)">✅ Build Final Draft</button>
+      <p class="small" data-fdnote="${esc(fdKey(j.po||'',j.name))}" style="margin:6px 0 0;color:var(--accent2)"></p>
       <p class="small muted" style="margin:6px 0 0">Initial: you confirm the quantity of each part first, then Claude bills that list at cost and adds the hours. Final rolls them up and applies the markup. Neither is ever sent to the customer.</p>`:''}
     <button class="secondary" style="width:100%;margin-top:${S.me&&S.me.role==='admin'?'6':'10'}px" onclick="openJobAll('${pk}')">📋 Job details</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
+  if(S.me&&S.me.role==='admin') fdPeek(j.po||'', j.name);
 }
 
 
@@ -3871,6 +3918,89 @@ async function openJobAll(pk){
    FINAL: reads back whatever Paul left on the invoice, rolls the parts into the usual single
    Materials line and applies the markup tier to the corrected total. Neither stage sends. */
 const INV_LABEL = { initial:'🧾 Build Initial Draft', final:'✅ Build Final Draft' };
+
+/* v145 - THE FINAL DRAFT ANSWERS BACK (office script v118; Paul, 19 Nov: "why cant it just transfer
+   what it did into a simple button?"). After the tap the app asks the office every few seconds what
+   the build said, and the button itself reports it: building (with the clock), built (with the total),
+   already final, stopped (and why) or no answer. The watch is kept by job, not by sheet, so closing
+   the sheet does not lose the answer - the message still comes. Nothing here changes anything; the
+   office closes the PO Log row and files the folders itself when the build reports in. */
+const FD_WATCH={};
+function fdKey(po,job){ return String(po||job||'').toUpperCase().replace(/[^A-Z0-9]+/g,'_'); }
+function fd$(n){ return '$'+Number(n||0).toLocaleString('en-CA',{minimumFractionDigits:2, maximumFractionDigits:2}); }
+function fdClock(secs){ return secs<60 ? secs+' s' : Math.floor(secs/60)+' min '+String(secs%60).padStart(2,'0')+' s'; }
+function fdWords(st){
+  const r=(st&&st.result)||{}, inv=r.invoiceNo?('invoice #'+r.invoiceNo):'the invoice', tot=r.total!=null?fd$(r.total):'';
+  const Inv=inv.charAt(0).toUpperCase()+inv.slice(1);
+  if(st.state==='built') return {ok:true, btn:'✅ Final draft built'+(tot?' — '+tot:''),
+    msg:`${Inv} is now the final draft in QuickBooks${tot?': '+tot+' with GST':''}.`
+      +(r.partsCost!=null&&r.markupPct!=null&&r.materials!=null?` Parts ${fd$(r.partsCost)} + ${r.markupPct}% = ${fd$(r.materials)}.`:'')
+      +' Not sent — it is waiting for you.'+(r.note?' '+r.note:'')};
+  if(st.state==='already') return {ok:true, btn:'✅ Already a final draft'+(tot?' — '+tot:''),
+    msg:`${Inv} was already a final draft${tot?' ('+tot+' with GST)':''}. Nothing was changed. Not sent.`};
+  if(st.state==='stopped') return {ok:false, btn:'⚠ Not built — tap to try again',
+    msg:'Final draft NOT built: '+(r.note||'the build stopped on one of its checks')+'.'};
+  if(st.state==='noanswer') return {ok:false, btn:'⚠ No answer — tap to try again',
+    msg:'Claude has not answered after 10 minutes. Look at the invoice in QuickBooks before tapping again.'};
+  return null;
+}
+function fdBtn(key){ return document.querySelector('button[data-fd="'+key+'"]'); }
+function fdNoteEl(key){ return document.querySelector('[data-fdnote="'+key+'"]'); }
+function fdWatch(po, jobSite, t0){
+  const key=fdKey(po,jobSite); if(!key) return;
+  if(FD_WATCH[key]) clearTimeout(FD_WATCH[key].timer);
+  const w=FD_WATCH[key]={t0:t0||Date.now(), timer:0, busy:false};
+  const paint=()=>{ const b=fdBtn(key); if(b){ b.disabled=true; b.textContent='⚡ Claude is building it… '+fdClock(Math.max(0,Math.round((Date.now()-w.t0)/1000))); } };
+  const done=(words, st)=>{
+    if(FD_WATCH[key]!==w) return;
+    clearTimeout(w.timer); delete FD_WATCH[key];
+    const b=fdBtn(key); if(b){ b.textContent=words.btn; b.disabled=!!words.ok; }
+    const n=fdNoteEl(key); if(n) n.textContent=words.msg;
+    // The whole answer is under the button when the sheet is still open; a short pop-up then, so it
+    // does not cover it. With the sheet closed the pop-up is the only place to say it, so it says it all.
+    if(n) toast(words.ok ? (st&&st.state==='already'?'Already a final draft ✓':'Final draft built ✓') : 'Final draft NOT built — see under the button', 5000);
+    else toast(words.msg, words.ok?10000:12000);
+    // The office has closed the job out by now: take it off this phone's "Finish the invoice" list.
+    if(words.ok && S.today && S.today.items){
+      const before=S.today.items.length;
+      S.today.items=S.today.items.filter(i=>!(i.kind==='draft' && fdKey(i.po,i.name)===key));
+      if(S.today.items.length!==before){ try{ DB.setCache('today', S.today); }catch(e){} if(S.tab==='today' && !S._sheet) render(); }
+    }
+  };
+  const tick=async()=>{
+    if(FD_WATCH[key]!==w) return;
+    const secs=Math.round((Date.now()-w.t0)/1000);
+    paint();
+    if(S.online && !w.busy && secs>=10 && Date.now()-(w.last||0) >= (secs<150?5000:15000)){
+      w.busy=true; w.last=Date.now(); let st=null;
+      try{ st=await api('finalStatus',{po:po, jobSite:jobSite},{bg:true, timeout:30000}); }catch(e){}
+      w.busy=false;
+      if(FD_WATCH[key]!==w) return;
+      const words=st&&fdWords(st);
+      if(words) return done(words, st);
+    }
+    if(secs>690) return done({ok:false, btn:'⚠ No answer — tap to try again',
+      msg:'Claude has not answered after 10 minutes. Look at the invoice in QuickBooks before tapping again.'});
+    w.timer=setTimeout(tick, 1000);
+  };
+  paint(); w.timer=setTimeout(tick, 1000);
+}
+/* A sheet with the Final Draft button has just opened: if a build is running, put its clock on the
+   button; if one has answered, say so under it. One quiet question to the office, no waiting on it. */
+function fdPeek(po, jobSite){
+  const key=fdKey(po,jobSite); if(!key || !isOffice()) return;
+  if(FD_WATCH[key]){ const b=fdBtn(key); if(b){ b.disabled=true; b.textContent='⚡ Claude is building it…'; } return; }
+  if(!S.online) return;
+  api('finalStatus',{po:po, jobSite:jobSite},{bg:true, timeout:30000}).then(st=>{
+    if(!st) return;
+    if(st.state==='building'){ fdWatch(po, jobSite, st.requestedAt?new Date(st.requestedAt).getTime():Date.now()); return; }
+    const words=fdWords(st), n=fdNoteEl(key);
+    if(words && n && (st.state==='built'||st.state==='already')){
+      const r=st.result||{};
+      n.textContent=(st.state==='built'?'Final draft built':'Already a final draft')+(r.reportedAt?' · '+r.reportedAt:'')+(r.total!=null?' · '+fd$(r.total)+' with GST':'')+' · not sent.';
+    } else if(words && n && st.requestedAt){ n.textContent=words.msg; }
+  }).catch(()=>{});
+}
 async function reqInvoice(pk,stage,btn){
   const ref=dereg(pk); if(!ref) return;
   if(!S.online) return toast('You need signal to send the request.');
@@ -3887,13 +4017,22 @@ async function reqInvoice(pk,stage,btn){
     // was tapped three times before anyone found nothing had reached QuickBooks.
     if(stage==='final'){
       const ok=!!(r&&r.fired), busy=!!(r&&r.already);
-      btn.textContent = ok ? '⚡ Claude is building it' : busy ? '⚡ Already building' : '⚠ Not started — tap to try again';
-      if(!ok && !busy) btn.disabled=false;  // nothing is running, so a retry must be possible
-      toast(ok
-        ? 'Claude started the final draft. Check QuickBooks in about 5–10 minutes — still not sent to the customer.'
-        : busy
-          ? 'Claude is already on this one ('+(r.startedAt?'started '+r.startedAt:'started a few minutes ago')+'). Give it 10 minutes before tapping again.'
-          : 'Final draft NOT started: '+((r&&r.note)||'Claude did not start')+'. Nothing else will build it.', 9000);
+      if(ok || busy){
+        // v145 - the button now reports the answer itself (see fdWatch): no more "go and look in QuickBooks".
+        const fk=fdKey(ref.po||'', ref.jobSite);
+        btn.setAttribute('data-fd', fk);
+        btn.textContent='⚡ Claude is building it…';
+        fdWatch(ref.po||'', ref.jobSite);
+        // Said under the button, not in a pop-up: the pop-up sat on top of the very button that reports.
+        const say = ok ? 'Usually about a minute. You can close this — a message comes up when it is done.'
+                       : 'Claude was already on this one'+(r.startedAt?' (started '+r.startedAt+')':'')+'. A message comes up when it is done.';
+        const fn=fdNoteEl(fk);
+        if(fn) fn.textContent=say; else toast(ok?'Final draft started — usually about a minute.':say, 5000);
+      } else {
+        btn.textContent='⚠ Not started — tap to try again';
+        btn.disabled=false;                  // nothing is running, so a retry must be possible
+        toast('Final draft NOT started: '+((r&&r.note)||'Claude did not start')+'. Nothing else will build it.', 9000);
+      }
       return;
     }
     btn.textContent = r&&r.fired ? '⚡ Claude is building it' : '✓ Sent to Claude';
@@ -8173,7 +8312,8 @@ function docWaitOpen(seq){ const st=document.getElementById('dsStatus'); return 
    matched by its lines (not its number) the person is told which purchase it was taken for. */
 function scanDoneMsg_(kind, r){
   const w=kind==='quote'?'Estimate':'Receipt', sa=r.sameAs;
-  if(r.duplicate && sa && sa.how!=='number') return `${w} NOT counted again — it reads as the same purchase as ${r.supplier||''} ${sa.invoiceNo||''} (${sa.date||''}${sa.by==='email'?', from the email':''}). If it was a different purchase, scan it again and tap "file it anyway".`;
+  if(r.duplicate && sa && sa.how!=='number') return `${w} NOT counted — it reads as the same purchase as ${r.supplier||''} ${sa.invoiceNo||''} (${sa.date||''}${sa.by==='email'?', from the email':''}).`
+    + (r.held ? (isOffice() ? ' It is under Needs you on Today in case it was a different purchase.' : ' The office will check it.') : '');
   if(r.duplicate) return `${w} was already on file — nothing was doubled.`;
   return w+' filed ✓'+(r.warn?' — '+r.warn:'');
 }
@@ -8280,19 +8420,15 @@ function priceDelta(oldP, newP){
   return `<span class="small muted">${f(oldP)}</span> → <b style="color:${up?'var(--bad)':'var(--good)'}">${f(newP)}</b>`;
 }
 function canSeePrices(){ return !!(S.me && (S.me.role==='admin' || S.me.role==='bookkeeper')); }
-/* v139 - the scan matched a purchase already on file by its lines (not its number), and the person
-   says it really is a second purchase: send it again, marked to be filed regardless. */
-async function docForceNew(){
-  const x=S._docDupe; if(!x) return; S._docDupe=null;
-  const st=document.getElementById('dsStatus'); if(st) st.innerHTML='<span class="spin"></span> Filing it…';
-  await docScanCall(Object.assign({}, x.p, {extract:x.r.extract, kind:x.r.kind||x.p.kind, confirmed:true, forceNew:true}));
-}
+/* v145 (Paul, 19 Nov: "dont give me this option there. put it in the needs you list") - a scan that
+   reads as a purchase already on file is no longer decided on this screen. The office holds it
+   (script v118: photo kept, nothing counted) and it waits under Needs you on Today - openTodayHeld. */
 function docShowResult(p, r){
-  S._docDupe = (r.duplicate && r.sameAs && r.sameAs.how!=='number' && r.extract) ? {p, r} : null;
+  if(r && r.duplicate && r.held && isOffice()){ try{ loadToday(); }catch(e){} }   // so it is on Today when he gets there
   const st=document.getElementById('dsStatus'); if(!st) return;      // only paint the wait sheet that is actually open
   const isQ=r.kind==='quote';
   const head=document.getElementById('dsHead');
-  if(head) head.textContent=r.duplicate?'Already on file':(isQ?(r.replaced?'Quote revised — prices updated':'Prices updated from the estimate'):(r.credit?'Credit note filed':'Added to inventory'));
+  if(head) head.textContent=r.duplicate?((r.sameAs&&r.sameAs.how!=='number')?'Looks like one already on file':'Already on file'):(isQ?(r.replaced?'Quote revised — prices updated':'Prices updated from the estimate'):(r.credit?'Credit note filed':'Added to inventory'));
   const sp=document.getElementById('dsSpin'); if(sp) sp.remove();
   const hint=document.getElementById('dsHint'); if(hint) hint.remove();
   // v44 — the receipt's lines become the Materials used rows, quantity pre-filled with what was
@@ -8310,8 +8446,8 @@ function docShowResult(p, r){
   const sa=r.sameAs;
   st.innerHTML = r.duplicate
     ? (sa && sa.how!=='number'
-        ? `${doc} is the same purchase as <b>${esc(r.supplier||'')} ${esc(sa.invoiceNo||'')}</b> (${esc(sa.date||'')}, ${sa.by==='email'?'from the supplier\'s email':'scanned earlier'}${sa.jobSite&&sa.jobSite!=='Stock'?', '+esc(sa.jobSite):''}) — ${sa.how==='ref'?'both show number <b>'+esc(sa.ref||'')+'</b> and ':''}same lines and prices, so nothing was counted twice.`
-          + (r.extract?`<button class="secondary" style="width:100%;margin-top:10px" onclick="docForceNew()">It's a different purchase — file it anyway</button>`:'')
+        ? `${doc} reads as the same purchase as <b>${esc(r.supplier||'')} ${esc(sa.invoiceNo||'')}</b> (${esc(sa.date||'')}, ${sa.by==='email'?'from the supplier\'s email':'scanned earlier'}${sa.jobSite&&sa.jobSite!=='Stock'?', '+esc(sa.jobSite):''}) — ${sa.how==='ref'?'both show number <b>'+esc(sa.ref||'')+'</b> and ':''}same lines and prices, so nothing was counted.`
+          + (r.held ? (isOffice() ? ' It is waiting under <b>Needs you</b> on the Today screen, in case it really is a second purchase.' : ' The office will check whether it is a second purchase.') : '')
         : `${doc} was already filed earlier${sa&&sa.date?' ('+esc(sa.date)+(sa.by==='email'?', from the email':'')+')':''} — nothing was doubled.`)
     : isQ
       ? `${doc} — <b>${r.added}</b> price(s) read. Nothing was added to inventory and nothing was recorded against a job.`+(r.poUrl?` <a href="${esc(r.poUrl)}" target="_blank" style="color:var(--accent2)">PDF ↗</a>`:'')
