@@ -3566,8 +3566,11 @@ async function heldDecide(k, what, btn){
   const was=btn.textContent; btn.disabled=true; btn.textContent=what==='file'?'Filing it…':'Dropping it…';
   try{
     const r=await api('heldScanDecide',{id:ref.id, decision:what},{timeout:90000});
+    const gone=(S.today&&S.today.items||[]).find(i=>i.kind==='held'&&i.id===ref.id)||null;
     if(S.today&&S.today.items){ S.today.items=S.today.items.filter(i=>!(i.kind==='held'&&i.id===ref.id)); try{ DB.setCache('today', S.today); }catch(e){} }
     closeSheet(); if(S.tab==='today') render();
+    // v147 - "the same one" tapped by mistake can be taken back for a few seconds (office script v119)
+    if(what==='same' && !(r&&r.already)) return schUndoToast('Dropped — it was the same purchase.', ()=>heldUndo(ref.id, gone));
     toast(r&&r.already ? 'That one had already been dealt with.' : what==='file'
       ? `Filed as a separate purchase — ${r.added||0} line${(r.added||0)===1?'':'s'} counted${r.jobSite&&r.jobSite!=='Stock'?' against '+r.jobSite:''}.${r.warn?' '+r.warn:''}`
       : 'Dropped — it was the same purchase, so nothing is counted twice.', 7000);
@@ -3928,16 +3931,24 @@ const INV_LABEL = { initial:'🧾 Build Initial Draft', final:'✅ Build Final D
 const FD_WATCH={};
 function fdKey(po,job){ return String(po||job||'').toUpperCase().replace(/[^A-Z0-9]+/g,'_'); }
 function fd$(n){ return '$'+Number(n||0).toLocaleString('en-CA',{minimumFractionDigits:2, maximumFractionDigits:2}); }
+function fdWhen(s){   // "2026-11-19 21:54" as "Nov 19, 9:54 PM"
+  const m=/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})/.exec(String(s||'')); if(!m) return '';
+  const h=Number(m[4]); return tdShort(m[1]+'-'+m[2]+'-'+m[3])+', '+((h%12)||12)+':'+m[5]+' '+(h<12?'AM':'PM');
+}
 function fdClock(secs){ return secs<60 ? secs+' s' : Math.floor(secs/60)+' min '+String(secs%60).padStart(2,'0')+' s'; }
 function fdWords(st){
   const r=(st&&st.result)||{}, inv=r.invoiceNo?('invoice #'+r.invoiceNo):'the invoice', tot=r.total!=null?fd$(r.total):'';
   const Inv=inv.charAt(0).toUpperCase()+inv.slice(1);
-  if(st.state==='built') return {ok:true, btn:'✅ Final draft built'+(tot?' — '+tot:''),
+  // v147 (audit) - what the office did about the PO Log and the folders is said too, when it changed
+  // something or could not do it (closeIssue); a labour-only invoice has no parts sentence.
+  const close=r.closeNote ? ' '+(r.closeIssue?'⚠ ':'')+r.closeNote : '', issue=!!r.closeIssue;
+  if(st.state==='built') return {ok:true, issue, btn:'✅ Final draft built'+(tot?' — '+tot:''),
     msg:`${Inv} is now the final draft in QuickBooks${tot?': '+tot+' with GST':''}.`
-      +(r.partsCost!=null&&r.markupPct!=null&&r.materials!=null?` Parts ${fd$(r.partsCost)} + ${r.markupPct}% = ${fd$(r.materials)}.`:'')
-      +' Not sent — it is waiting for you.'+(r.note?' '+r.note:'')};
-  if(st.state==='already') return {ok:true, btn:'✅ Already a final draft'+(tot?' — '+tot:''),
-    msg:`${Inv} was already a final draft${tot?' ('+tot+' with GST)':''}. Nothing was changed. Not sent.`};
+      +(Number(r.partsCost)>0&&r.markupPct!=null&&r.materials!=null?` Parts ${fd$(r.partsCost)} + ${r.markupPct}% = ${fd$(r.materials)}.`:'')
+      +' Not sent — it is waiting for you.'+(r.note?' '+r.note:'')+close};
+  if(st.state==='already') return {ok:true, issue, btn:'✅ Already a final draft'+(tot?' — '+tot:''),
+    msg:`${Inv} was already a final draft${tot?' ('+tot+' with GST)':''}. Nothing was changed on it.`
+      +(r.note?' '+String(r.note).replace(/[.\s]+$/,'')+'.':' Not sent.')+close};   // the build says when it HAS been sent or paid
   if(st.state==='stopped') return {ok:false, btn:'⚠ Not built — tap to try again',
     msg:'Final draft NOT built: '+String(r.note||'the build stopped on one of its checks').replace(/[.\s]+$/,'')+'.'};
   if(st.state==='noanswer') return {ok:false, btn:'⚠ No answer — tap to try again',
@@ -3958,7 +3969,8 @@ function fdWatch(po, jobSite, t0){
     const n=fdNoteEl(key); if(n) n.textContent=words.msg;
     // The whole answer is under the button when the sheet is still open; a short pop-up then, so it
     // does not cover it. With the sheet closed the pop-up is the only place to say it, so it says it all.
-    if(n) toast(words.ok ? (st&&st.state==='already'?'Already a final draft ✓':'Final draft built ✓') : 'Final draft NOT built — see under the button', 5000);
+    if(n) toast(words.ok ? ((st&&st.state==='already'?'Already a final draft ✓':'Final draft built ✓')+(words.issue?' — but one thing was not done, see under the button':''))
+                         : 'Final draft NOT built — see under the button', words.issue?9000:5000);
     else toast(words.msg, words.ok?10000:12000);
     // The office has closed the job out by now: take it off this phone's "Finish the invoice" list.
     if(words.ok && S.today && S.today.items){
@@ -3996,10 +4008,24 @@ function fdPeek(po, jobSite){
     if(st.state==='building'){ fdWatch(po, jobSite, st.requestedAt?new Date(st.requestedAt).getTime():Date.now()); return; }
     const words=fdWords(st), n=fdNoteEl(key);
     if(words && n && (st.state==='built'||st.state==='already')){
-      const r=st.result||{};
-      n.textContent=(st.state==='built'?'Final draft built':'Already a final draft')+(r.reportedAt?' · '+r.reportedAt:'')+(r.total!=null?' · '+fd$(r.total)+' with GST':'')+' · not sent.';
+      // No total here: this is old news, and the invoice may have been edited in QuickBooks since.
+      const r=st.result||{}, when=fdWhen(r.reportedAt);
+      // Nor "not sent": it may have gone out since.
+      n.textContent=(st.state==='built' ? 'Final draft built'+(when?' '+when:'') : 'Already a final draft'+(when?' when checked '+when:''))+'.'
+        +(r.closeIssue&&r.closeNote?' ⚠ '+r.closeNote:'');
     } else if(words && n && st.requestedAt){ n.textContent=words.msg; }
   }).catch(()=>{});
+}
+async function heldUndo(id, item){
+  if(!S.online) return toast('You need signal for this.');
+  try{
+    const r=await api('heldScanDecide',{id:id, decision:'undo'},{timeout:60000});
+    // An office script older than v119 does not know 'undo' and answers "already dealt with".
+    if(!(r && r.decision==='undo' && r.back)) throw new Error('It could not be put back. Scan the receipt again.');
+    if(item && S.today && S.today.items && !S.today.items.some(i=>i.kind==='held'&&i.id===id)){ S.today.items.push(item); try{ DB.setCache('today', S.today); }catch(e){} }
+    if(S.tab==='today' && !S._sheet) render();
+    toast('Put back under Needs you.'+(r.photo===false?' Its photo could not be brought back.':''), 5000);
+  }catch(e){ toast((e&&e.message)||'It could not be put back.', 8000); }
 }
 async function reqInvoice(pk,stage,btn){
   const ref=dereg(pk); if(!ref) return;
@@ -4042,8 +4068,11 @@ async function reqInvoice(pk,stage,btn){
   }catch(e){
     // No answer is not a no: the request is usually already on its way. Say so, and do not
     // invite a second tap (the build checks QuickBooks first, so a repeat is harmless anyway).
+    // v147 - a final draft whose start got no answer: look once, 20 s on. If the build is running the
+    // button picks it up and reports like any other.
+    if (e && e.kind === 'network' && stage==='final'){ const fpo=ref.po||'', fjob=ref.jobSite; setTimeout(()=>fdPeek(fpo, fjob), 20000); }
     if (e && e.kind === 'network'){ btn.textContent='✓ Probably sent'; toast(stage==='final'
-        ? 'The office was slow to answer, but the request has most likely gone through — check QuickBooks in about 10 minutes before tapping again.'
+        ? 'The office was slow to answer, but the request has most likely gone through. Give it a minute, then open this job again — the button will say what happened.'
         : 'The office was slow to answer, but the request has most likely gone through — watch for the "Initial draft ready" email in a few minutes before tapping again.', 8000); return; }
     toast(e.message); btn.disabled=false; btn.textContent=INV_LABEL[stage]||'Build the invoice'; }
 }
