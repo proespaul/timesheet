@@ -3939,7 +3939,7 @@ function fdWords(st){
   if(st.state==='already') return {ok:true, btn:'✅ Already a final draft'+(tot?' — '+tot:''),
     msg:`${Inv} was already a final draft${tot?' ('+tot+' with GST)':''}. Nothing was changed. Not sent.`};
   if(st.state==='stopped') return {ok:false, btn:'⚠ Not built — tap to try again',
-    msg:'Final draft NOT built: '+(r.note||'the build stopped on one of its checks')+'.'};
+    msg:'Final draft NOT built: '+String(r.note||'the build stopped on one of its checks').replace(/[.\s]+$/,'')+'.'};
   if(st.state==='noanswer') return {ok:false, btn:'⚠ No answer — tap to try again',
     msg:'Claude has not answered after 10 minutes. Look at the invoice in QuickBooks before tapping again.'};
   return null;
@@ -4007,7 +4007,7 @@ async function reqInvoice(pk,stage,btn){
   if(stage==='final' && !confirm('Final draft rewrites the invoice in QuickBooks: the itemised '
       +'part lines are replaced by one Materials line with the markup applied.\n\n'
       +'Have you finished correcting it in QuickBooks?')) return;
-  btn.disabled=true; btn.textContent='Sending…';
+  btn.disabled=true; btn.textContent=stage==='final'?'Starting Claude…':'Sending…';   // v146 - the final draft's start can take 5-25 s; say what it is doing
   try{
     // v53 — the script now emails the request AND starts Claude; on a cold start that can take
     // longer than the default wait, so give it 90 s instead of calling a sent request a failure.
