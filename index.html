@@ -2797,7 +2797,7 @@ function todayRows(){
     rows.push({c:'b', k:'Ready to bill?', t:`${i.po} ${i.name}`,
       s:`${(Number(i.hours)+Number(i.pending||0)).toFixed(1)} h${mj&&mj.worth?' · ~'+fm$(mj.worth)+' at your rates':''} · last on site ${tdShort(i.last)} · ${i.calOk?'nothing booked':'calendar not checked'}`, on:`openTodayBill('${k}')`}); });
   items.filter(i=>i.kind==='draft').forEach(i=>{ const k=reg(i);
-    rows.push({c:'b', k:'Finish the invoice', t:`${i.po} ${i.name}`, s:`Draft #${i.qb} is in QuickBooks · the PO Log still says In progress`, on:`openTodayDraft('${k}')`}); });
+    rows.push({c:'b', k:'Finish the invoice', t:`${i.po} ${i.name}`, s:i.final?`Final draft #${i.final.inv||i.qb} is built · not sent yet — send it from QuickBooks`:`Initial draft #${i.qb} is in QuickBooks · the final draft is not built yet`, on:`openTodayDraft('${k}')`}); });
   items.filter(i=>i.kind==='book').forEach(i=>{ const k=reg(i);
     rows.push({c:'g', k:'Not booked', t:`${i.po} ${i.name}`, s:i.start?`Start date ${tdShort(i.start)} · no hours yet`:'In progress with no start date and no hours', on:`openTodayBook('${k}')`}); });
   return rows;
@@ -3207,7 +3207,9 @@ function openMoney(k){
       <tr class="tot"><td>Total</td><td>${j.hours} h</td><td>${fm$(j.cost)}</td><td>${fm$(j.worth)}</td></tr></table>
     <div class="mres">${res}</div>${q}${b}
     <p class="small muted">Cost is pay rates × hours plus the supplier POs, the same as the Cost tab. At your rates is each person's charged rate, rounded to the half hour like the invoice, plus materials with the markup. Travel, km and permits aren't in it. Pending hours count.</p>
+    ${j.qb?miQuickBox(jk):''}
     <div class="row" style="gap:8px"><button class="secondary grow" onclick="closeSheet()">Close</button><button class="grow" onclick="openJobAll('${jk}')">Open the job</button></div>`);
+  if(j.qb) miQuickLoad(jk);
 }
 function moneyFix(key){
   const it=((S.today&&S.today.items)||[]).find(x=>x.key===key);
@@ -3525,15 +3527,40 @@ function openTodayDraft(k){
   const it=dereg(k); if(!it) return;
   navSelf(()=>openTodayDraft(k));
   const pk=reg({jobSite:it.name, po:it.po}), hk=reg({key:it.key, days:14});
+  // v148 (Paul, 19 Nov: "building an invoice draft should not label the job is closed") - the job stays
+  // In progress through both drafts. It reads Invoiced once the invoice has been sent, Closed once paid.
   sheet(`<h2>${esc(it.name)}</h2>
-    <p class="small muted" style="margin-top:-4px">${esc(it.po)} · draft #${esc(it.qb)} is in QuickBooks</p>
-    <p>The initial draft was built, but the PO Log still says <b>In progress</b>, so the invoice hasn't been finished and sent yet.</p>
-    <button style="width:100%;margin-top:6px" data-fd="${esc(fdKey(it.po,it.name))}" onclick="reqInvoice('${pk}','final',this)">✅ Build final draft</button>
+    <p class="small muted" style="margin-top:-4px">${esc(it.po)} · invoice #${esc(it.qb)} in QuickBooks · the job is still <b>In progress</b></p>
+    ${it.final
+      ? `<p>The <b>final draft is built</b>${it.final.total!=null?' — '+fd$(it.final.total)+' with GST':''}. It has not been sent. Send it from QuickBooks when you are ready: the job turns <b>Invoiced</b> once it has gone out, and <b>Closed</b> once it is paid.</p>`
+      : `<p>The initial draft is in QuickBooks at cost. Correct it there, then build the final draft. Nothing is sent to the customer by either.</p>`}
+    <button ${it.final?'class="secondary" ':''}style="width:100%;margin-top:6px" data-fd="${esc(fdKey(it.po,it.name))}" onclick="reqInvoice('${pk}','final',this)">✅ Build final draft</button>
     <p class="small muted" data-fdnote="${esc(fdKey(it.po,it.name))}" style="margin:6px 0 0"></p>
+    ${miQuickBox(pk)}
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="openInvoiceList('${pk}')">🧾 Parts list (initial draft)</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobAll('${pk}')">📋 Job details</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="todayHide('${hk}')">Not yet — hide it for 2 weeks</button>
     <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Close</button>`);
   fdPeek(it.po, it.name);
+  miQuickLoad(pk);
+}
+/* v148 - MATERIALS INVOICED WHEREVER AN INVOICE IS OPENED (Paul, 19 Nov: "invoice 195 when i click on
+   it does not show me the materials invoiced, or an option to build a material breakdown for the
+   customer"). It was only inside Job details, one tap further on. The same section now sits on the
+   invoice's own pop-ups (Today's "Finish the invoice", the money card, the Jobs tab), and when no
+   breakdown exists yet it offers to make one from the saved parts list. Admin and bookkeeper only. */
+function miQuickBox(pk){
+  if(!canSeePrices()) return '';
+  return `<div class="card" style="margin:10px 0 4px;padding:12px"><h3 style="margin:0 0 6px">🧾 Materials invoiced</h3>
+    <div data-miq="${pk}"><p class="small muted" style="margin:0"><span class="spin"></span> Loading…</p></div></div>`;
+}
+function miQuickLoad(pk){
+  if(!canSeePrices()) return;
+  const ref=dereg(pk); if(!ref) return;
+  const put=h=>{ const el=document.querySelector('[data-miq="'+pk+'"]'); if(el) el.innerHTML=h; };
+  if(!S.online) return put('<p class="small muted" style="margin:0">You need signal to load it.</p>');
+  apiBg('materialsInvoiced',{jobSite:ref.jobSite, po:ref.po||''})
+    .then(r=>put(jobInvHtml(r, ref))).catch(e=>put(`<p class="small muted" style="margin:0">Could not load it (${esc((e&&e.message)||'no answer')}).</p>`));
 }
 /* v145 - A LOOK-ALIKE RECEIPT, DECIDED HERE (Paul, 19 Nov, about "file it anyway" on the scan screen:
    "dont give me this option there. put it in the needs you list"). A scan that reads as a purchase
@@ -3725,10 +3752,12 @@ function openJobDetail(k){
       <button style="width:100%;margin-top:4px" onclick="openInvoiceList('${pk}')">🧾 Build Initial Draft</button>
       <button class="secondary" style="width:100%;margin-top:6px" data-fd="${esc(fdKey(j.po||'',j.name))}" onclick="reqInvoice('${pk}','final',this)">✅ Build Final Draft</button>
       <p class="small" data-fdnote="${esc(fdKey(j.po||'',j.name))}" style="margin:6px 0 0;color:var(--accent2)"></p>
-      <p class="small muted" style="margin:6px 0 0">Initial: you confirm the quantity of each part first, then Claude bills that list at cost and adds the hours. Final rolls them up and applies the markup. Neither is ever sent to the customer.</p>`:''}
+      <p class="small muted" style="margin:6px 0 0">Initial: you confirm the quantity of each part first, then Claude bills that list at cost and adds the hours. Final rolls them up and applies the markup. Neither is ever sent to the customer, and neither changes the job's status: it reads Invoiced once the invoice has been sent, Closed once it is paid.</p>`:''}
+    ${j.po?miQuickBox(pk):''}
     <button class="secondary" style="width:100%;margin-top:${S.me&&S.me.role==='admin'?'6':'10'}px" onclick="openJobAll('${pk}')">📋 Job details</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
   if(S.me&&S.me.role==='admin') fdPeek(j.po||'', j.name);
+  if(j.po) miQuickLoad(pk);
 }
 
 
@@ -3831,38 +3860,67 @@ function jobMatsHtml(r){
    "Make customer PDF" is tapped. It goes in the job's Drive folder (the one Job photos opens) under
    "Materials invoiced (PRO)", and shows quantity, unit, item and price - no cost, no markup. */
 function jobInvHtml(r, ref){
-  if(!r||!r.found) return '<p class="muted small">Nothing yet. It is saved here when you build the initial draft for this job.</p>';
   const f=n=>n==null?'—':'$'+Number(n).toFixed(2);
-  const when=r.builtAt?new Date(r.builtAt).toLocaleDateString([],{month:'short',day:'numeric',year:'numeric'}):'';
+  const day=x=>x?new Date(x).toLocaleDateString([],{month:'short',day:'numeric',year:'numeric'}):'';
+  const L=r&&r.list, admin=!!(S.me&&S.me.role==='admin');
+  const k=reg({r, ref}), pk=reg(ref);
+  // v148 - nothing made yet: offer to make it from the saved parts list (no QuickBooks build), or say
+  // where that list is saved. Jobs invoiced before 19 Nov have neither.
+  if(!r||!r.found){
+    if(L && admin) return `<p class="small muted" style="margin:0 0 6px">No breakdown has been made yet. The parts list saved ${esc(day(L.savedAt))} has ${L.lines} part line${L.lines===1?'':'s'} (${f(L.cost)} at cost).</p>
+      <button class="secondary" style="width:100%" onclick="jobInvBuild('${k}',this)">🧾 Make the breakdown from that list</button>
+      <p class="small muted" style="margin:6px 0 0">It works out the markup and the price of each part and keeps it here. Nothing goes to QuickBooks or to the customer.</p>`;
+    return `<p class="muted small" style="margin:0 0 6px">Nothing yet. It is made from the job's parts list.</p>
+      ${admin?`<button class="secondary" style="width:100%" onclick="openInvoiceList('${pk}')">🧾 Open the parts list</button>
+      <p class="small muted" style="margin:6px 0 0">Check the parts, tap <b>Save</b>, then come back here and make the breakdown. Saving builds nothing in QuickBooks.</p>`:''}`;
+  }
   const noCost=(r.lines||[]).filter(l=>l.lp==null).length;
-  const k=reg({r, ref});
+  const isP=l=>String(l.sku||'').trim().toUpperCase()==='PERMIT';
+  const pmt=Math.round((r.lines||[]).filter(isP).reduce((a,l)=>a+(l.lc||0),0)*100)/100;
+  const parts=Math.round((Number(r.cost||0)-pmt)*100)/100;
+  const stale=!!(L && L.savedAt && r.builtAt && new Date(L.savedAt).getTime() > new Date(r.builtAt).getTime()+60000);
   const pdf = r.pdfUrl
     ? `<a href="${esc(r.pdfUrl)}" target="_blank" style="text-decoration:none"><button class="secondary" style="width:100%;margin-top:8px">📄 Open the customer PDF</button></a>
        <button class="ghost" style="width:100%;margin-top:2px;padding:6px" onclick="jobInvPdf('${k}',this)">Make it again</button>`
     : `<button class="secondary" style="width:100%;margin-top:8px" onclick="jobInvPdf('${k}',this)">📄 Make customer PDF</button>`;
-  return `<p class="small muted" style="margin:0 0 6px">Built ${esc(when)} · markup <b>${esc(r.tier)}%</b> on ${f(r.cost)} cost → <b>${f(r.price)}</b> to the customer (before tax).</p>
+  return `<p class="small muted" style="margin:0 0 6px">Made ${esc(day(r.builtAt))} · markup <b>${esc(r.tier)}%</b> on ${f(parts)} of parts${pmt?` + ${f(pmt)} permit at cost`:''} → <b>${f(r.price)}</b> to the customer (before tax).</p>
+    ${stale&&admin?`<div class="banner" style="background:var(--needs-bg);color:var(--needs-ink);margin:0 0 6px">The parts list was changed ${esc(day(L.savedAt))}, after this was made. <a href="#" style="color:inherit;font-weight:700" onclick="jobInvBuild('${k}',this);return false">Bring it up to date</a></div>`:''}
     ${(r.lines||[]).map(l=>`<div class="row between small" style="margin-top:4px;gap:8px">
-      <span>${esc(l.qty)}${l.uom?' '+esc(l.uom):''} × ${esc(l.desc)}${l.supplier||l.invoice?` <span class="muted">${esc([l.supplier,l.invoice].filter(Boolean).join(' '))}</span>`:''}</span>
+      <span>${esc(l.qty)}${l.uom?' '+esc(l.uom):''} × ${esc(l.desc)}${isP(l)?' <span class="muted">· at cost, no markup</span>':''}${l.supplier||l.invoice?` <span class="muted">${esc([l.supplier,l.invoice].filter(Boolean).join(' '))}</span>`:''}</span>
       <span style="white-space:nowrap;text-align:right"><span class="muted">${f(l.lc)} →</span> <b>${f(l.lp)}</b></span></div>`).join('')}
     <div class="row between small" style="margin-top:6px;border-top:1px solid var(--line);padding-top:4px"><b>Total</b><span><span class="muted">${f(r.cost)} →</span> <b>${f(r.price)}</b></span></div>
     ${pdf}
-    <p class="small muted" style="margin:6px 0 0">Only if a customer asks: the PDF shows quantity, unit, item and price — no cost or markup. It's this list as built at the initial draft, so changes made in QuickBooks afterwards aren't in it.${noCost?` <span style="color:var(--needs-ink)">${noCost} part${noCost===1?' has':'s have'} no cost on file and will show without a price.</span>`:''}</p>`;
+    <p class="small muted" style="margin:6px 0 0">Only if a customer asks: the PDF shows quantity, unit, item and price — no cost or markup. It's the saved parts list, so changes made in QuickBooks afterwards aren't in it.${noCost?` <span style="color:var(--needs-ink)">${noCost} part${noCost===1?' has':'s have'} no cost on file and will show without a price.</span>`:''}</p>`;
 }
+/* Where a Materials invoiced section is drawn: Job details (#jdInv) or one of the invoice pop-ups. */
+function jobInvBox(btn){ return (btn&&btn.closest&&btn.closest('[data-miq],#jdInv'))||document.getElementById('jdInv'); }
 /* v143 - "Make customer PDF" / "Make it again". */
 async function jobInvPdf(k, btn){
   const x=dereg(k); if(!x||!x.ref) return;
   if(!S.online) return toast('You need signal to make the PDF.');
-  const mine=S._sheet, label=btn.textContent;
+  const box=jobInvBox(btn), label=btn.textContent;
   btn.disabled=true; btn.textContent='Making the PDF…';
   try{
     const res=await api('materialsInvoicedPdf',{jobSite:x.ref.jobSite, po:x.ref.po||''},{timeout:90000});
     let r=Object.assign({}, x.r, {pdfUrl:res&&res.pdfUrl||''});
     if(res && res.linked===false){ try{ r=await apiBg('materialsInvoiced',{jobSite:x.ref.jobSite, po:x.ref.po||''}); }catch(e){} }
-    const el=S._sheet===mine && document.getElementById('jdInv'); if(el) el.innerHTML=jobInvHtml(r, x.ref);
+    if(box&&box.isConnected) box.innerHTML=jobInvHtml(r, x.ref);
     toast(res && res.linked===false
       ? 'The list changed while the PDF was being made, so that copy was not kept as the customer PDF. Make it again.'
       : 'Customer PDF saved in the job\'s Drive folder, under "Materials invoiced (PRO)". Tap Open to see it.', 7000);
   }catch(e){ toast(e.message); if(btn.isConnected){ btn.disabled=false; btn.textContent=label; } }
+}
+/* v148 - make (or bring up to date) the breakdown from the saved parts list. Nothing goes to QuickBooks. */
+async function jobInvBuild(k, btn){
+  const x=dereg(k); if(!x||!x.ref) return;
+  if(!S.online) return toast('You need signal for this.');
+  const box=jobInvBox(btn), label=btn.textContent;
+  btn.disabled=true; btn.textContent='Working it out…';
+  try{
+    const r=await api('materialsInvoicedBuild',{jobSite:x.ref.jobSite, po:x.ref.po||''},{timeout:60000});
+    if(box&&box.isConnected) box.innerHTML=jobInvHtml(r, x.ref);
+    toast(r&&r.found?`Breakdown made — ${(r.lines||[]).length} line${(r.lines||[]).length===1?'':'s'}, $${Number(r.price||0).toFixed(2)} to the customer before tax.`:'The saved list has no parts on it, so there is nothing to break down.', 6000);
+  }catch(e){ toast(/unknown action/i.test(e.message)?'The office needs its latest script for this — try again in a few minutes.':e.message, 8000); if(btn.isConnected){ btn.disabled=false; btn.textContent=label; } }
 }
 
 /* Photos: the quick look. The Drive folder stays the permanent home. */
@@ -3927,7 +3985,8 @@ const INV_LABEL = { initial:'🧾 Build Initial Draft', final:'✅ Build Final D
    the build said, and the button itself reports it: building (with the clock), built (with the total),
    already final, stopped (and why) or no answer. The watch is kept by job, not by sheet, so closing
    the sheet does not lose the answer - the message still comes. Nothing here changes anything; the
-   office closes the PO Log row and files the folders itself when the build reports in. */
+   office notes the invoice number on the PO Log when the build reports in. v148: it no longer marks
+   the job Invoiced or files its folders - that waits until the invoice has actually been sent. */
 const FD_WATCH={};
 function fdKey(po,job){ return String(po||job||'').toUpperCase().replace(/[^A-Z0-9]+/g,'_'); }
 function fd$(n){ return '$'+Number(n||0).toLocaleString('en-CA',{minimumFractionDigits:2, maximumFractionDigits:2}); }
@@ -3972,11 +4031,12 @@ function fdWatch(po, jobSite, t0){
     if(n) toast(words.ok ? ((st&&st.state==='already'?'Already a final draft ✓':'Final draft built ✓')+(words.issue?' — but one thing was not done, see under the button':''))
                          : 'Final draft NOT built — see under the button', words.issue?9000:5000);
     else toast(words.msg, words.ok?10000:12000);
-    // The office has closed the job out by now: take it off this phone's "Finish the invoice" list.
+    // v148 - a built final draft is still a draft: the job stays In progress and stays on "Finish the
+    // invoice", which now says it is ready to send (the office marks nothing Invoiced until it is sent).
     if(words.ok && S.today && S.today.items){
-      const before=S.today.items.length;
-      S.today.items=S.today.items.filter(i=>!(i.kind==='draft' && fdKey(i.po,i.name)===key));
-      if(S.today.items.length!==before){ try{ DB.setCache('today', S.today); }catch(e){} if(S.tab==='today' && !S._sheet) render(); }
+      const r=(st&&st.result)||{}; let hit=false;
+      S.today.items.forEach(i=>{ if(i.kind==='draft' && fdKey(i.po,i.name)===key){ i.final={at:r.reportedAt||'', inv:r.invoiceNo||i.qb, total:r.total}; hit=true; } });
+      if(hit){ try{ DB.setCache('today', S.today); }catch(e){} if(S.tab==='today' && !S._sheet) render(); }
     }
   };
   const tick=async()=>{
@@ -4108,7 +4168,14 @@ async function openInvoiceList(pk){
     if(saved&&saved.found){
       const sk=it=>(String(it.sku||'').trim().toUpperCase()||String(it.desc||'').trim().toLowerCase())+'|'+(it.unit==null?'':Math.round(it.unit*100)/100);
       const prev={}; (saved.items||[]).forEach(x=>prev[sk(x)]=x);
-      items.forEach(it=>{ const x=prev[sk(it)]; it.qty = x ? x.qty : 0; if(x){ x._used=1; if(x.uom) it.uom=x.uom; } });
+      // v148 - a part bought AFTER the list was saved (a late receipt, a permit fee) used to come up at 0,
+      // exactly like one Paul had left off on purpose. The office now says which ones he set to 0
+      // (saved.zeros); anything else new comes up at what was bought, marked "new since you saved".
+      const zero={}; (saved.zeros||[]).forEach(x=>zero[sk(x)]=1); const knowsZeros=Array.isArray(saved.zeros);
+      items.forEach(it=>{ const x=prev[sk(it)];
+        if(x){ it.qty=x.qty; x._used=1; if(x.uom) it.uom=x.uom; }
+        else if(knowsZeros && !zero[sk(it)]){ it.fresh=true; }          // keeps qty = bought
+        else it.qty=0; });
       (saved.items||[]).filter(x=>!x._used&&x.bought==null).forEach(x=>items.push({sku:x.sku||'',desc:x.desc,unit:x.unit,uom:x.uom||'ea',bought:null,qty:x.qty,supplier:'',invoice:'',src:[],added:true}));
     }
     invList={ref, items, savedAt: saved&&saved.found?saved.savedAt:''};
@@ -4137,8 +4204,8 @@ function renderInvoiceList(){
   const rows=L.items.map((it,i)=>`<div class="list-item" style="padding:8px 0">
       ${it.added
         ? `<input id="ild${i}" placeholder="Part description" value="${esc(it.desc||'')}" oninput="invListTotals()" style="margin:0 0 6px">`
-        : `<div><b>${esc(it.desc)}</b></div>
-           <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}${it.uom?' '+esc(it.uom):''}`:''}</div>`}
+        : `<div><b>${esc(it.desc)}</b>${it.fresh?' <span class="small" style="color:var(--needs-ink);font-weight:700">· new since you saved</span>':''}</div>
+           <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}${it.uom?' '+esc(it.uom):''}`:''}${String(it.sku||'').toUpperCase()==='PERMIT'?' · billed at cost, no markup':''}</div>`}
       <div class="row" style="align-items:center;gap:8px;margin-top:4px">
         <button class="secondary" style="width:44px;padding:8px 0" onclick="invStep(${i},-1)">−</button>
         <input id="ilq${i}" type="number" min="0" step="any" inputmode="decimal" value="${it.qty}" oninput="invListTotals()" style="width:84px;margin:0;text-align:center">
@@ -4389,7 +4456,7 @@ function schNav(label){
 function schLegend(data){
   const sw=t=>`<span class="sw" style="background:${t.bg};border-color:${t.bd}"></span>`;
   return `<p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
-    ?'Tap a job for its details · press and hold to drag it to another day or time'
+    ?'Tap a job for its details · drag it to another day or time (on a phone: press and hold first)'
     :'Tap a job for the address, the details and who\'s with you'}<br>
     ${sw(SCH_TONE.none)}booked &nbsp; ${sw(SCH_TONE.confirmed)}confirmed &nbsp; ${sw(SCH_TONE.waiting)}not confirmed yet &nbsp; ${sw(SCH_TONE.declined)}needs a new time</p>`;
 }
@@ -4729,7 +4796,19 @@ function schedGrab(e, key, day){
   // one id, so the office could not tell which one moved and would move the first of the series.
   const canDrag=canApprove() && !(ev&&ev.recurring);
   SD_={ key, ev, day, el, x0:e.clientX, y0:e.clientY, lx:e.clientX, ly:e.clientY, id:e.pointerId, on:false, over:'', flipDir:0,
+        mouse:e.pointerType==='mouse', canDrag,
         timer:canDrag?setTimeout(()=>schedLift(), 320):null };   // v101: crew taps, never drags
+  // v148 - WHERE THE JOB WAS PICKED UP. The slot under the finger used to become the job's START, so
+  // an 8:30-4:30 job picked up by its middle and set down on another day began at 12:30. In the week
+  // and day grids the job now keeps the half hours above the finger: pick it up anywhere, and it lands
+  // where its top edge would be.
+  SD_.off=0;
+  try{
+    if(ev && !ev.allDay && el.classList && el.classList.contains('blk')){
+      const under=(document.elementsFromPoint?document.elementsFromPoint(e.clientX,e.clientY):[]).find(x=>x.getAttribute&&x.getAttribute('data-drop')&&x.getAttribute('data-t')!==null);
+      if(under){ const o=Number(under.getAttribute('data-t'))-Math.floor(schHours(ev)*2)/2; if(o>0 && o<24) SD_.off=o; }
+    }
+  }catch(err){}
   try{ el.setPointerCapture(e.pointerId); }catch(err){}
   window.addEventListener('pointermove', schedMoveP, {passive:false});
   window.addEventListener('pointerup', schedDrop);
@@ -4762,8 +4841,14 @@ function schedLift(){
 function schedMoveP(e){
   if(!SD_) return;
   if(!SD_.on){
-    if(Math.abs(e.clientX-SD_.x0)>8 || Math.abs(e.clientY-SD_.y0)>8) schedAbort();   // a scroll
-    return;
+    if(Math.abs(e.clientX-SD_.x0)>8 || Math.abs(e.clientY-SD_.y0)>8){
+      // v148 - WITH A MOUSE, PULLING IS DRAGGING (Paul, 19 Nov: "i've lost the ability to drag appointments").
+      // The press-and-hold exists to tell a finger's drag from a finger's scroll; a mouse does not scroll
+      // by dragging, yet a job pulled before the 0.3 s hold had passed was dropped as "a scroll" and
+      // simply stayed put. A touch still needs the hold.
+      if(SD_.mouse && SD_.canDrag){ clearTimeout(SD_.timer); schedLift(); }
+      else { schedAbort(); return; }
+    } else return;
   }
   e.preventDefault();
   SD_.lx=e.clientX; SD_.ly=e.clientY;
@@ -4775,9 +4860,15 @@ function schedMoveP(e){
 function schHit(){
   if(!SD_||!SD_.on) return;
   SD_.ghost.style.left=SD_.lx+'px'; SD_.ghost.style.top=SD_.ly+'px';
-  const el=document.elementFromPoint(SD_.lx, SD_.ly);
+  // v148 - LOOK THROUGH THE JOBS. In the week and day grids a job's block lies ON TOP of the half-hour
+  // slots, so a drop anywhere a block covered - the job's own block (moving an all-day job an hour later)
+  // or another job's (two jobs can run at once) - found no slot under the finger and put the job back.
+  // Every element under the finger is asked, top down, and the first slot or page arrow wins.
+  const stack=(document.elementsFromPoint?document.elementsFromPoint(SD_.lx, SD_.ly):[document.elementFromPoint(SD_.lx, SD_.ly)]).filter(Boolean);
+  const pick=sel=>{ for(const x of stack){ const h=x.closest?x.closest(sel):null; if(h) return h; } return null; };
+  const el=stack[0]||null;
   // Parked over ‹ or ›: turn the page now and then every second while it stays there.
-  const fz=el&&el.closest?el.closest('[data-flip]'):null;
+  const fz=pick('[data-flip]');
   const dir=fz?Number(fz.getAttribute('data-flip')):0;
   if(dir!==SD_.flipDir){
     clearTimeout(SD_.flipT); SD_.flipDir=dir;
@@ -4790,9 +4881,10 @@ function schHit(){
   }
   // v101 - any [data-drop] is a target: a month day (keeps the time), a half hour in the week
   // or day grid (that day, that time), or a day button above the day view (keeps the time).
-  const cell=(!dir&&el&&el.closest)?el.closest('[data-drop]'):null;
+  const cell=!dir?pick('[data-drop]'):null;
   const day=cell?cell.getAttribute('data-day'):'';
-  const t=cell?(cell.getAttribute('data-t')||''):'';
+  let t=cell?(cell.getAttribute('data-t')||''):'';
+  if(t!=='' && SD_.off) t=String(Math.max(0, Number(t)-SD_.off));
   const key=day?(day+'|'+t):'';
   if(key!==SD_.over){
     document.querySelectorAll('[data-drop].drop').forEach(d=>d.classList.remove('drop'));
@@ -4852,6 +4944,8 @@ function schedDrop(e){
   const was=SD_, dropped=was.on?was.overDay:'';
   schedClear();
   if(!was.on){ if(was.ev) openSchedDetail(reg(was.ev)); return; }                     // a tap (a fresh key: a redraw may have cleared the old one)
+  // v148 - a mouse click that slid a few pixels is still a click, not a move of the job
+  if(was.mouse && Math.abs(was.lx-was.x0)<14 && Math.abs(was.ly-was.y0)<14){ if(was.ev) openSchedDetail(reg(was.ev)); return; }
   if(!dropped) return;                                                               // put back
   schMoveTo(was.ev, dropped, was.overT===''?null:Number(was.overT));                 // v101: moves at once, no sheet
 }
@@ -4952,7 +5046,7 @@ function schedMonthHtml(){
     </div>
     <div class="cal" ontouchmove="schTouchClaim(event)">${cells}</div>
     <p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
-      ? 'Tap a job to open it, or <b>press and hold to drag it onto another day</b> · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · dashed = nobody assigned · 🏖 = someone off'
+      ? 'Tap a job to open it, or <b>drag it onto another day</b> (on a phone: press and hold first) · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · dashed = nobody assigned · 🏖 = someone off'
       : 'Your jobs this month · 🏖 = your time off · yellow = stat holiday · tap a day to see where you\'re heading'}</p>
   </div>`;
 }
