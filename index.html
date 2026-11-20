@@ -2797,7 +2797,7 @@ function todayRows(){
     rows.push({c:'b', k:'Ready to bill?', t:`${i.po} ${i.name}`,
       s:`${(Number(i.hours)+Number(i.pending||0)).toFixed(1)} h${mj&&mj.worth?' · ~'+fm$(mj.worth)+' at your rates':''} · last on site ${tdShort(i.last)} · ${i.calOk?'nothing booked':'calendar not checked'}`, on:`openTodayBill('${k}')`}); });
   items.filter(i=>i.kind==='draft').forEach(i=>{ const k=reg(i);
-    rows.push({c:'b', k:'Finish the invoice', t:`${i.po} ${i.name}`, s:i.final?`Final draft #${i.final.inv||i.qb} is built · not sent yet — send it from QuickBooks`:`Invoice #${i.qb} is in QuickBooks · the job is still In progress`, on:`openTodayDraft('${k}')`}); });
+    rows.push({c:'b', k:'Finish the invoice', t:`${i.po} ${i.name}`, s:i.final?`Final draft #${i.final.inv||i.qb} is built · send it from QuickBooks`:`Invoice #${i.qb} is in QuickBooks · the job is still In progress`, on:`openTodayDraft('${k}')`}); });
   items.filter(i=>i.kind==='book').forEach(i=>{ const k=reg(i);
     rows.push({c:'g', k:'Not booked', t:`${i.po} ${i.name}`, s:i.start?`Start date ${tdShort(i.start)} · no hours yet`:'In progress with no start date and no hours', on:`openTodayBook('${k}')`}); });
   return rows;
@@ -3534,15 +3534,38 @@ function openTodayDraft(k){
     ${it.final
       ? `<p>The <b>final draft is built</b>${fdWhen(it.final.at)?' ('+esc(fdWhen(it.final.at))+')':''}. Send it from QuickBooks when you are ready: the job turns <b>Invoiced</b> once it has gone out, and <b>Closed</b> once it is paid.</p>`
       : `<p>If it is still the initial draft at cost, correct it in QuickBooks, then build the final draft. Nothing is sent to the customer by either. The job turns <b>Invoiced</b> once the invoice has gone out, and <b>Closed</b> once it is paid.</p>`}
+    <p class="small muted" style="margin-top:-4px">QuickBooks is checked at 7 am, noon and 6 pm. Sent it and don't want to wait? Use the button at the bottom.</p>
     <button ${it.final?'class="secondary" ':''}style="width:100%;margin-top:6px" data-fd="${esc(fdKey(it.po,it.name))}" onclick="reqInvoice('${pk}','final',this)">✅ Build final draft</button>
     <p class="small muted" data-fdnote="${esc(fdKey(it.po,it.name))}" style="margin:6px 0 0"></p>
     ${miQuickBox(pk)}
     <button class="secondary" style="width:100%;margin-top:6px" onclick="openInvoiceList('${pk}')">🧾 Parts list (initial draft)</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobAll('${pk}')">📋 Job details</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="todayHide('${hk}')">Not yet — hide it for 2 weeks</button>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="jobMarkSent('${reg({jobSite:it.name, po:it.po, qb:it.qb, key:it.key})}',this)">📤 I've sent it — mark the job Invoiced</button>
     <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Close</button>`);
   fdPeek(it.po, it.name);
   miQuickLoad(pk);
+}
+/* v151 (audit of v148) - THE INVOICE HAS GONE OUT, SAID BY HAND. Since v148 a job turns Invoiced only
+   when QuickBooks shows the invoice was sent, and that is looked at three times a day - so for hours
+   after sending, the job still read In progress with no way to put it right from here. This marks it
+   Invoiced now and files its folders, exactly as the check would. "Reopen this job" takes it back. */
+async function jobMarkSent(k, btn){
+  const ref=dereg(k); if(!ref||!ref.po) return;
+  if(!S.online) return toast('You need signal for this.');
+  const nums=String(ref.qb||'').split(/[^A-Za-z0-9-]+/).filter(Boolean), no=nums[nums.length-1]||'';
+  if(!no) return toast('There is no QuickBooks invoice number on this job yet.');
+  if(!confirm(`Mark ${ref.po} ${ref.jobSite} as Invoiced? Only once invoice #${no} has really gone to the customer. Its folders are filed under Completed.`)) return;
+  const was=btn.textContent; btn.disabled=true; btn.textContent='Marking it…';
+  try{
+    await api('jobInvoiced',{po:ref.po, jobSite:ref.jobSite, invoiceNo:no, invoiceDate:localDateStr(new Date())},{timeout:90000});
+    if(S.today&&S.today.items){ S.today.items=S.today.items.filter(i=>i.key!==ref.key); try{ DB.setCache('today', S.today); }catch(e){} }
+    (S._stFix=S._stFix||{})[String(ref.po).toUpperCase()]={ status:'Invoiced', until:Date.now()+180000 };
+    (S.customers||[]).forEach(c=>{ if(String(c.po).toUpperCase()===String(ref.po).toUpperCase()) c.status='Invoiced'; });
+    closeSheet(); render();
+    toast(ref.po+' is marked Invoiced. It turns Closed once it is paid.', 6000);
+    loadToday(true); loadCustomers(true);
+  }catch(e){ toast(e.message, 8000); if(btn.isConnected){ btn.disabled=false; btn.textContent=was; } }
 }
 /* v148 - MATERIALS INVOICED WHEREVER AN INVOICE IS OPENED (Paul, 19 Nov: "invoice 195 when i click on
    it does not show me the materials invoiced, or an option to build a material breakdown for the
@@ -4861,12 +4884,13 @@ function schHit(){
   // v148 - LOOK THROUGH THE JOBS. In the week and day grids a job's block lies ON TOP of the half-hour
   // slots, so a drop anywhere a block covered - the job's own block (moving an all-day job an hour later)
   // or another job's (two jobs can run at once) - found no slot under the finger and put the job back.
-  // Every element under the finger is asked, top down, and the first slot or page arrow wins.
+  // v151 (audit) - through JOB BLOCKS ONLY. The first thing under the finger that is not a job decides:
+  // the menu bar, the page header or a pop-up lying over the calendar still stops a drop, as it always
+  // did (v148 looked through those too, onto a slot nobody could see).
   const stack=(document.elementsFromPoint?document.elementsFromPoint(SD_.lx, SD_.ly):[document.elementFromPoint(SD_.lx, SD_.ly)]).filter(Boolean);
-  const pick=sel=>{ for(const x of stack){ const h=x.closest?x.closest(sel):null; if(h) return h; } return null; };
-  const el=stack[0]||null;
+  const top=stack.find(x=>!(x.closest&&x.closest('.blk,.ev')))||null;
   // Parked over ‹ or ›: turn the page now and then every second while it stays there.
-  const fz=pick('[data-flip]');
+  const fz=top&&top.closest?top.closest('[data-flip]'):null;
   const dir=fz?Number(fz.getAttribute('data-flip')):0;
   if(dir!==SD_.flipDir){
     clearTimeout(SD_.flipT); SD_.flipDir=dir;
@@ -4879,10 +4903,13 @@ function schHit(){
   }
   // v101 - any [data-drop] is a target: a month day (keeps the time), a half hour in the week
   // or day grid (that day, that time), or a day button above the day view (keeps the time).
-  const cell=!dir?pick('[data-drop]'):null;
+  const cell=(!dir&&top&&top.closest)?top.closest('[data-drop]'):null;
   const day=cell?cell.getAttribute('data-day'):'';
   let t=cell?(cell.getAttribute('data-t')||''):'';
-  if(t!=='' && SD_.off) t=String(Math.max(0, Number(t)-SD_.off));
+  if(t!=='' && SD_.off){   // v151 - never above the first hour the grid shows (a tall job set down near the top landed at midnight)
+    const first=cell.parentElement&&cell.parentElement.querySelector('[data-drop][data-t]');
+    t=String(Math.max(first?Number(first.getAttribute('data-t')):0, Number(t)-SD_.off));
+  }
   const key=day?(day+'|'+t):'';
   if(key!==SD_.over){
     document.querySelectorAll('[data-drop].drop').forEach(d=>d.classList.remove('drop'));
