@@ -228,7 +228,7 @@ function doGet(e) {
   // Health check + config fingerprint (safe to expose: client IDs are public by design,
   // and this only shows the tail — lets us verify which config version is actually live).
   return ContentService.createTextOutput(JSON.stringify({
-    ok: true, service: 'PCW/PRO Timesheet API', v: 126, // v126 (20 Nov, audit of v125): reading a job's answers no longer creates the Match decisions tab (two first opens at once collided); a job number typed as the job site counts only when the cell is a job number; a same-purchase answer records and takes off the stock count only the rows that really left Job POs. // v125 (20 Nov): RECEIPTS VS CLOCK-OUT - jobMatch puts each part of a job once, what the receipts say was bought against what was logged at clock-out (or taken in the app), and flags what does not add up; jobMatchDecide answers a part on two receipts that look like one purchase (count once: the extra copy's lines leave Job POs and the stock count, kept on the Match decisions tab to undo) or a shift logged twice; jobMaterials/jobParts take a row's job number over a shared name (House on the Hill C26197/C26198 each showed the other's purchases); jobMaterials withDups tells the parts list. // v124 (20 Nov, audit of v121-v123): a job Paul reopened is not marked Invoiced again by a task on its OLD invoice - jobInvoiced with sent/paid needs sentAt/paidAt newer than the reopening (C26197: invoice 197 was sent a week before he reopened it), and a reopening is now kept to the minute; a permit line reads just 'Electrical permit'; a permit bill made out to somebody other than PRO goes to review instead of being skipped; a task cannot add a PO Log row already marked Invoiced or Closed. // v123 (20 Nov): a permit fee is priced like the job's other materials in Materials invoiced and the money card, the way the final-draft routine bills it (v121 had it at cost, which would not have added up to the invoice). // v122 (20 Nov): the permit reader counts only a BILL made out to PRO - the permit document itself (Superior Safety Codes, which prints its own fee) is left alone, so a permit is never on a job twice; an invoice date read day-first is put right against the day its email came; a range-road job site (two numbers, no street name) is matched. // v121 (19-20 Nov): a draft never changes a job's status - Invoiced means the invoice was SENT, Closed means PAID (Paul: 'only label the job closed once the customer has paid'); a task (the key) is refused Invoiced without sent:true and Closed without paid:true (jobSetStatus, poLogUpdate), jobInvoiced without either records the QuickBooks number and end date only; the app's own record after a final draft no longer marks Invoiced or files the folders; Today's 'Finish the invoice' says when the final draft is built; Materials invoiced can be made from the saved parts list (materialsInvoicedBuild); permit fees (AtPeace Electric) are read from email and filed to the job found by the customer's name and job site, at cost, never in the markup tier (permitSweep); the saved parts list says which parts were set to 0. // v120 (19 Nov): the money card and the Materials invoiced record put exactly $10,000.00 of parts in the 20 % tier, the same as the invoice (it read 30 % here; Paul: "go ahead"). // v119 (19 Nov, audit of v118): the close-out ADDS the invoice number to the PO Log's QuickBooks cell and never replaces what is there (a job billed on two invoices kept only the last); the close-out is written in plain words and the app is told when something was not done (no PO Log row, folders not filed); an answer whose request id was not copied is still matched to the tap (rows added after it); times on the Final drafts tab are read in the sheet's own time zone (it is set to Pacific); the build is handed the contact name when the company cell is blank; the app's own close-out finds the job folders by the job NUMBER only (a name matches any folder containing it - another job of the same customer), and a second folder with the same name is reported as left behind instead of as filed; a receipt dropped as "the same one" can be put back (heldScanDecide 'undo'). // v118 (19 Nov): Build Final Draft hands Claude the QuickBooks invoice number, customer and email off the PO Log with a request id; the build answers on the price list's 'Final drafts' tab; finalStatus tells the app (building / built / already final / stopped / no answer) and the app closes the PO Log row and files the folders itself, on that call or on the 5-minute timer. A look-alike receipt scan is held (photo kept, nothing counted) and listed under Needs you on Today; heldScanDecide files it or drops it. jobInvoiced leaves a Closed row Closed. A final-draft request that starts Claude sends no email (it only set off the hourly 'Final draft waiting' emails); one that does not start still does. // v117 (19 Nov): Build Final Draft starts its own Claude routine (Script properties INVOICE_FINAL_FIRE_URL / INVOICE_FINAL_FIRE_TOKEN), one start per job per 10 min. v116 (19 Nov): building the initial draft no longer makes the customer PDF - Job details -> Materials invoiced -> 'Make customer PDF' makes it on request, in the job's app folder; the copy's unit prices now multiply out to its amounts and its lines add up to the final draft's parts charge. // v115 (19 Nov, audit): look-alike purchases - never two emailed invoices, never on an account number, never when the parts differ; 'file it anyway' cannot override the same invoice number; the breakdown uses the money card's markup tiers, makes no empty PDF and replaces a same-day one. // v114 (19 Nov): Build initial draft can Save without building; building keeps a 'Materials invoiced' breakdown (cost, markup tier, price) on the price list tab and as a customer-ready PDF in the job folder's 'Materials invoiced (PRO)' subfolder. // v113 (19 Nov): every reference number on a supplier document (order, receipt, transaction no.) is read and kept (Job POs 'Other refs'); a shared number + the same lines is the same purchase whatever the road or date; same number, different lines = a back-order, counted and noted. v112 (19 Nov): a supplier purchase that reaches us by both roads - phone scan and email - is filed once even when the two read different numbers (same supplier, dates within 2 days, every line the same quantity and price); a duplicate scan files no photo either. // v111 (19 Nov): Build initial draft shows each part's unit of measure (from the Materials price list), keeps it on the saved list and in the request Claude builds from. // v110 (18 Nov): a month's pay panel is read only once that month has begun (December's template was showing). // v109 (18 Nov): the hours check starts 1 Nov 2026 (CONFIG.HOURS_CHECK_FROM), and a Vacation Pay cell needs no note - it is the 4% formula. // v108 (18 Nov): the hours check reads the hour sheet's pay panel (Stat Pay / Reimbursement / Vacation Pay, each explained by a cell note, gross under it): stat pay is matched by day in dollars instead of as hours, and a value with no note is listed. // v107 (16 Nov, audit): punchBatch stops taking new punches at 90 s so its answer always beats the phone's 150 s wait. // v106 (16 Nov): punchBatch - a phone sends every punch waiting on it in one request, in tap order, instead of one 10-20 s call each. // v105 (16 Nov): the Today 'Clock-out missing' item carries its entry so the app can open it for the clock-out time. // v104 (12 Nov): the hours check reads the hour sheet's Notes column, so 'Status day' there marks the line as not time worked. // v103 (12 Nov): stat holiday pay actually posts - statPayFor_ read real Date cells as text and found nobody had ever worked; the hours check sends each app row's source so a stat entry can be matched against a stat line on the hour sheet. // v102 (9-10 Nov): price-list units by what the part is; customerFromPo; time off added by hand; last day worked on jobCosts; an existing customer's new job keeps their PO letter; bids ignore surveys and a GC's "not submitting a bid" notice. // v101: BID DEADLINES ON TODAY (Paul, 8 Nov). Every Today build also reads the inbox (read only) for invitations to tender or bid from GCs and the bid platforms and keeps a Bids tab: GC, project, the closing date and time - taken from the newest thing the GC wrote, so a reply moving the close beats the subject line, with the time zone honoured and a missing time left missing - and Sent once our own reply with the bid attached is in the thread. A date typed in the app is never overwritten. Today carries the open bids; bidSave adds one by hand or sets its status (not decided / bidding / sent / not bidding / won / lost), closing and note. // v100: MONEY PER JOB ON TODAY (Paul, 8 Nov). The Today build also works out every job's money: cost so far (hours x each person's pay rate + the supplier POs - the same figures as the Cost tab), what it is worth at your rates (hours x each person's Charged rate, rounded to the half hour like the invoice, the journeyman line raised to match an apprentice's, + materials with the markup tier on the job's material total), the margin, and the quote or budget beside it; for invoiced jobs and jobs paid in the last 90 days, the Amount Invoiced typed on the Cost tab. jobCosts also sends each person's hours, pending hours and cost per job (people). Read only - nothing is written anywhere. // v99: AUDIT FIXES for the follow-up list. A job dragged to a new time (no email) is listed as 'confirm' with detail 'not told' and counted from the move, not from the email about the OLD time; and anyone who can approve hours can log a follow-up, not only admins. // v98: LEADS TO FOLLOW UP ON TODAY (Paul, 8 Nov). The Today build also lists every customer who has gone quiet: a price sent 3+ days ago with no answer, a booking they were asked to confirm 2+ days ago that is still unanswered, someone who said the time does not work or cancelled by email, a job they said yes to that has waited 2+ days to be booked, and an estimate request not priced after 2 days. followUp logs a call, text or email on a new Follow-ups tab and puts the person aside until the next check (2, 3 or 7 days); the count of follow-ups travels with each one. Nothing is sent to a customer by this. // v97: AN ENTRY CAN BE DELETED (Paul, 7 Nov: a 0-hour 'break never ended' entry 'was obviously a mistake'). deleteEntry marks the row Status 'deleted' - the row stays, it comes off every hours total, pay period, job cost and the Today checks like a rejected one, it disappears from the app's lists, and it is written to the Approval Log so 'What we have decided lately' can put it back with one tap. Approvers only; a running (open) entry can be deleted too and stops being the running clock. // v96: NOBODY WAITS ON THE OFFICE. eventInfoMany answers the job details for many bookings in one call (the app fetches the month in the background and opens details at the tap); a 5-minute keepWarm timer, 6 am to 8 pm, keeps the first tap of the day from a 10-20 s cold start - it installs itself on the first bootstrap. // v95: scheduleAddDay - another day on the same job from the Schedule tab: a copy of one booking (same name with (cont'd), address, notes, crew, length) on a new day, the original left where it is, no slot check, no email. // v94: REVIEW FIXES for the block calendar. A drag clears the customer's old Yes / Reschedule links (the old email asked about a time that no longer exists); a repeating event is refused (every instance shares one id); an event with no colour reads as 'none' (booked, nobody asked) instead of 'waiting'; scheduleList says which events repeat; the email sent after a move says Changed, not Booked. // v93: scheduleYear - a whole year's booked hours and bookings per day in one call, for the app's Year view. // v92: THE BLOCK CALENDAR. scheduleMove moves one booking to where it was dropped - no slot check, no bump, no email - and marks it not confirmed (amber); scheduleConfirm sets confirmed / waiting / needs a new time from the app; scheduleList sends each booking's confirm state. See the v92 block above leadEmail. // v91: THE NOV 7 AUDIT FIXES (see the V91 block at the end): a replayed punch is answered before it waits for the lock and a punch waits 25 s, not 15; a break nobody ended counts as ZERO and is flagged on Today instead of eating the shift; a clock-in or break changed on the clock-out review is written to the Edit Log; material claims are posted once per entry even when the phone sends them again days later; the PO Log Estimates tab gets Accepted / Denied / Closed (the words its dropdown allows); a supplier reference that is not a job ('REEL FOR ORDER 3997990') files to 'Needs review' instead of becoming a job folder; Home Hardware sales invoices are read as invoices; the Neo report keeps each item's id across repeat posts; contacts match on the name before ' - ' or ','; Today lists entries to correct and punches that were refused and never landed; the Cost tab on the PO Log is refreshed daily from the timesheet and the supplier POs; the supplier sweep runs every 2 hours. // v90: requestAdd files an emailed estimate request (entryNo "email:<threadId>") only once and answers {duplicate:true} after that, so the inbox sweep can run twice a day without filing the same email twice. // v89: NAMES ON THE CALENDAR, AND AN ESTIMATES TAB (Paul, 7 Nov). Bookings are titled by who they are - "Karen Eastman · R26201 — Replace the panel" - with no APPOINTMENT / ESTIMATE / RETURN in front; retitleCalendar renames the ones already booked. Requests for an estimate (from the website or, through the inbox sweep, by email) wait on a new Estimates tab instead of Requests; estimateSend emails the customer the price with Yes, book it / No thanks, and a yes puts it on Requests as a job to book (its number is minted then). See the ESTIMATES block. // v88: the Today answer also carries the paid-job count and every job in progress with its hours, for the desktop layout (menu on the left, the job pipeline, On the go). Nothing else changed. // v87: THE TODAY SCREEN (Paul, 7 Nov - steps 2 and 3 of the dashboard build). A new action, today, answers "what needs me right now?" for the office: forgotten clock-outs, every day the app and Charles's manual hour sheets are more than half an hour apart (the sheets are READ ONLY - see CONFIG.HOUR_SHEETS), jobs with hours and no invoice that nobody has worked on for two days and that have nothing on the calendar, jobs in progress that were never booked, plus four numbers (jobs in progress, hours that don't match, invoiced and waiting, the crew's pay period). It is built on an hourly timer that installs itself on first use and kept in the cache, so the screen opens on a stored answer; Refresh rebuilds it. todayHide puts an item aside: an hours day until either number changes, a job for two weeks. Nothing is written anywhere except that list of what was put aside. // v86: STEP 1 OF THE DASHBOARD BUILD (Paul, 7 Nov) - two data fixes, nothing on screen moves. (1) A job invoiced on the 1st of a month is archived in THAT month: completedMonthFolder_ read a bare date as midnight UTC, i.e. the evening before in Alberta. (2) ONE JOB, ONE ROW on the Jobs tab: hours are grouped on the job number's five digits and named off the PO Log, so a customer name or a corrected letter no longer splits a job in two (C26170 was "Angelica Alberto" + "The Beauty Bar & Co."). See jobByPo_. // v85: AN APPROVAL CAN BE TAKEN BACK. Paul, 3 Nov, about an employee's request to change their hours: "a log for all the changes we've made, to be able to undo or edit them if we click confirm by accident." Approve and Reject are two buttons a thumb apart deciding somebody else's pay, and the only record was an Activity Log line that cannot put anything back - once an entry said "approved" there was nothing anywhere saying what it had said a second earlier. Every decision now keeps the row's PREVIOUS status, approver, timestamp and rejection note on an "Approval Log" tab, so undo restores exactly that: the request goes back to pending, onto the Requests tab, where it can be read properly, edited and decided again. Two refusals that matter: a decision cannot be undone twice, and it will not undo an entry that someone has DECIDED AGAIN since - that would silently overwrite their decision, so it says what the entry reads now and changes nothing. No hours are ever touched by an undo. // v84: EVERY NAMING DECISION IS WRITTEN DOWN AND CAN BE TAKEN BACK. Paul, 3 Nov: "a log for all the changes we've made, to undo or edit them if we click confirm by accident." Naming a part is one tap that does three things at once - writes a catalogue row, renames a live job's line, and clears the question off the Requests tab - and the only trace was an Activity Log line, which says what happened and cannot put it back. Each decision now gets a row on a "Parts Log" tab carrying what was typed, what it was named and whether the catalogue row was created by THAT decision, which is exactly what an undo needs. Undoing puts the job line back to a question under the words actually typed, and removes the catalogue row only if this decision created it and no other job line has used it since - otherwise it stays and the app says why, because deleting it would strand that other job. A decision can be undone once. // v83: WHAT THE PO LOG KNOWS NOW REACHES THE APP. The details have only ever travelled one way: the app writes a booking's phone, email, address and scope to the PO Log, and nothing has ever read them back. R26195 Paddy is the case in point - the Requests row has the name, the time and the PO and nothing else, while the PO Log row typed by hand has the email, the phone, 83368 RR 201 and the whole scope of work, so the app showed a blank card beside a full sheet row. Every booking now falls back to its own PO Log row for anything it is missing, on the Requests tab and on the Schedule tab's booking sheet. It FILLS GAPS and never overwrites - what the customer themselves typed into the website form stays the truth - and it says which fields came off the sheet. The old fallback only fired when even the customer's NAME was missing, which is why a booking with a name and nothing else got nothing. One read of the PO Log per call, shared by every row. // v82: an approval shows the day and the time and nothing else. The Edit Log keeps its before-and-after as the words a person reads ("Mon Oct 26, 1:00 PM"), but the column was General, so Sheets parsed them back into datetimes and the row came out of getValues() as a Date - whose String() is "Mon Oct 26 2026 13:00:00 GMT-0600 (Mountain Daylight Time)". That is what was on the card. Those cells are now plain text, and anything already coerced is formatted on the way out instead of stringified. ALBERTA NO LONGER CHANGES ITS CLOCKS (permanent daylight time, UTC-6 all year), and since 1 Nov 2026 the zone database labels that permanent -6 "CST" - so a printed abbreviation would now claim Central Standard Time in Peace River. Nothing here hardcodes an offset and nothing should: the zone still gives the right instant, it is only the label that has to go. // v81: THE APP LOOKS FOR THE PART BEFORE IT ASKS ABOUT ONE. Everything that ever reached the Requests tab got there the same way - the name somebody typed did not match a catalogue row CHARACTER FOR CHARACTER - so "15A 1P SQD Breaker" and "Square D CHOM115 1P 120V 15A Circuit Breaker" were two parts, while "2x4x8 Lumber", genuinely new, was asked about just the same. A typed name is now scored against the price list, the field catalogue and THIS JOB'S OWN PO lines, on shared words with anything carrying a digit worth three - 14/2, 15A, 4x4 and 1P are what tell parts apart, "box" is not, and 3-1/2 is no longer the same fraction as 1-1/2. Three outcomes: a near-perfect match IS that part, so the line takes the name we already use and nobody is asked; something close is a question, and the Requests card offers the candidates as one-tap buttons with where each came from; nothing close is simply new, so it is learned into the field catalogue then and there and never mentioned. The price list is deliberately NOT written to - the supplier sweep owns it, because it has the real part number and the real price, and a name typed on a phone beside the invoice's own wording would price the job twice. // v80: THE MATERIALS LIST IS THE INVOICE, not a catalogue. jobParts now sends the inventory's PLAIN NAME beside the supplier's shouting, so the app can lead with "1-gang device box" and put "2-1/2 IN DEEP 1 GANG DEVICE BOX" underneath it in small type; there was only ever the supplier text and no way to show anything shorter. And a part nobody has heard of - typed on the job by whoever is standing there - now reaches the Requests tab: approvalsAll carries the pending ones, and resolveMaterial takes the NAME the office gives it, writes that name to the catalogue AND back onto the usage row (so the invoice and the shelf cannot disagree), keeps what was actually typed as an alias so the next person who types "2104 box" lands on the right part, and refuses to add a second copy of something already in the list. The part is on the job from the moment it is typed; only its name waits. // v79: PAUL'S PHONE CAN BE TOLD WHEN NEO FINDS SOMETHING. Charles chose a push notification over a text, which means no carrier, no Twilio account and nobody's number written down anywhere - but this script cannot send one and never will: VAPID is ECDSA over P-256 and the payload is sealed with ECDH + AES128GCM, and Utilities offers HMAC and RSA. So the sweep that writes the report sends the push as its last step, and this script is the address book: pushSubscribe files a phone (approvers only), pushUnsubscribe turns it off, and the sweep reads the list and reports the dead ones on the inbound key (pushSubs, pushDrop). A subscription is one browser on one phone, keyed by its endpoint, so re-subscribing updates the row instead of making a second one; a phone the push service answers 404 or 410 for is marked gone rather than deleted, so "it stopped telling me" still has an answer on the tab in three months. The endpoint plus the VAPID private key is enough to make that phone buzz, which is why it is admins only and why the tab belongs under the same protection as the rest. // v78: the inbox report remembers WHEN it last ran, separately from what it found. A sweep that finds nothing to answer leaves no row on the Neo Report tab, so neither the tab nor the app could tell "the inbox is clear" from "the sweep has never run" - and the app, which drew no card at all for an empty report, showed a blank Requests tab on the afternoon the feature went live. The sweep time is now kept in script properties by neoReportPost and returned by neoReport as lastSweep, so the card can say which it is. // v77: EVERY edit to an approved entry goes back for approval, an admin's own included. It used to be waved through for admins on the grounds that an admin is the approver, which left their own corrections invisible on the Requests tab - a one-minute test change on 27 Oct appeared nowhere. It now lands pending with its before-and-after on the card; either admin can approve it, so it is a prompt and a record rather than a lock. Only when something actually changed: opening an entry and saving it untouched no longer moves its status, clears its approver or writes an audit row. And a field whose DISPLAYED value did not move is no longer listed as a change - the comparison is to the second while the display is to the minute, so a clock-out nudged by seconds was logging "5:20 PM -> 5:20 PM", which makes the whole comparison look untrustworthy. // v76: NEO'S REPORT. A scheduled task reads what is still sitting in the inbox three times a day, decides what a person actually has to deal with, and posts a one-line summary plus a suggested reply for each on the inbound key (neoReportPost). The app shows it on the Requests tab, where the reply can be edited and sent as PRO on the original thread (neoReply) or saved as a Gmail draft, and each item can be ignored or put off (neoDecide). The "Neo Report" tab is also the memory, which is why the report is stored rather than emailed: an ignored or answered thread stays out of the report until the NEXT message arrives on it - a follow-up from the customer brings it back, because that is new information - a "later" item returns on the very next sweep, and anything the sweep no longer finds and that carries no decision is dropped, so a fresh report always replaces the old one. // v75: an edited entry is refused above 24 hours. Both ends of a shift now carry their own day in the app, which is what was asked for and is unambiguous for a night shift - and it also means a mistyped year could otherwise slide a 2000-hour entry into payroll. Nothing legitimate is one entry longer than a day; the app itself warns above 16 h and asks for a second tap. // v74: every edit to an entry records WHAT CHANGED - one row per changed field on a new "Edit Log" tab (was, now, who, when, and the reason they typed) - and the approvals payload carries the latest one with each pending entry, so the app can show the original beside the updated one. A separate tab rather than another column on the entry, because the per-employee tabs are written a whole row at a time at ENTRY_HEADERS width and adding a column there means migrating every tab and risking every punch write; this costs one sheet read on the approvals call and nothing anywhere else. Times, dates, breaks and hours are stored in the words a person reads, not as ISO strings, so the tab is an audit trail somebody can actually use: edit an entry three times and all three are there. An edit that changes nothing writes no rows, and a failure to write the audit row never costs anybody their correction - the edit stands and the Activity Log says the diff was lost. // v73: the supplier-email sweep stops reporting Google's own hiccups. Its trigger runs hourly and Apps Script mails a daily digest of any failed run, so one dead run on 20 Oct - "We're sorry, a server error occurred", Google's backend, not this script - produced an email the next morning about something the 21:02 run had already put right (every message read is on the Sweep log, so the next run re-reads the same threads and files what the dead one missed). A transient failure is now caught, written to the Activity Log and swallowed; it is only reported once it has failed three runs in a row, which means it is not recovering by itself. Anything that is not a Google wobble - a bug, a missing tab, a permission taken away, execution time exceeded - is still reported on the first failure, because those never self-heal. testSweep() in the editor runs the sweep itself so a developer still sees the real error. // v72: "Schedule a job" can be booked onto a job that is already in progress, and then it KEEPS that job number - a PO number becomes the QuickBooks invoice number, so it is minted once and never re-minted, and the existing PO Log row is re-dated instead (requestSchedule_ has done that for a rebooked job since v51; requestAddManual now writes the number onto the row so it takes the same path). Refused for a job that is closed, invoiced or cancelled, and for an estimate call, which is not booked against a job number at all. // v71: jobParts - what a job actually bought, rolled up one row per part (the same wire across four EECOL invoices is one line reading bought 150 m, 60 logged, 90 left), with the shop count beside it as the separate number it is. Stock flagged to go back to the supplier is not counted as used; a part used on the job that came off the shelf rather than off one of its POs is not in the list, because this list is the POs. Crew get the parts, the supplier and what is left; prices and invoice numbers are admin and bookkeeper only. The app opens its materials screens with this list. // v70: MATCHING, to Charles's rule: if the name, the email OR the phone is already in Google Contacts, that is the person. A name NEARLY the same (every word of the shorter in the longer, sharing a word of five letters or more - "McGregor" against "McGregor Hostetler", a real pair on the PO Log) is reported and nothing is written at all, rather than merged: a duplicate contact is a tidying job, the wrong email on somebody's card is a letter to the wrong person. A bare first name is not enough - there are two Ricks on the log - nothing is created, nothing that has a value is corrected, and only empty fields are filled. A name is compared on what it says rather than character for character, so "McGregor " and "mcgregor" are the same man (the old exact-string test said they were not, which is how a duplicate gets made). A form with no person name on it is looked up under its company, so a second "KFC" is not created. If TWO contacts already match - a duplicated address book, which the log shows for Isaac Laboucan-Aviron - nothing is written at all and both are named, because picking one would be a coin flip and filling both would spread the duplication. A business already in the book under its own name is reported alongside, never written to: the contact person's email does not belong on the company's card unless somebody says so. Every answer now says what it matched on. // v69: the contacts repair is driven by what the Activity Log actually shows. It CREATED one contact from a test form - "Test 1 Appointment", people/c102738742546907694, 9 Oct, from the test sent with Hannah's address - and every other contactAdd in the log says "existing contact", a path that has never been able to write a name. So contactsFixReport() now lists every contact that looks like a test lead with its addresses attached, before anything is changed, and a fix entry can delete a contact (remove: true) as well as rename one. // v68: GOOGLE CONTACTS. Two website-form tests were written in as clients - one sent from Charles's own address became a contact called "Test Test", one sent from the Wagyu address with no name in the form became "PCW" (with no name to use, the code fell back to the company) - and because Gmail shows a sender under the name Contacts holds, their own mail then arrived under those names. Our own addresses are never a client, so a form carrying an admin, bookkeeper, employee or @proes.ca / @pcwagyu.com address is no longer written to Contacts at all, and a name that is plainly a test ("Test", the same word twice, a single letter) does not create one either; both are reported and logged instead, and force: true still gets a real client through. On a contact that already exists the rule is now written down and complete: what is in Contacts wins, we only fill an empty spot, and a NAME is filled only when the contact has none - a name that disagrees is reported, never written. contactsFixReport() and contactsFixApply(), run from the editor, put the two wrong names back; they write the name and nothing else, and leave merging to Google Contacts. // v67: the forgotten-clock-out fix is replay-safe, because the app now keeps it on the phone and sends it again if the answer is lost - the same stop time comes back with the stored hours instead of 'already clocked out', which the app would show as a failure of a fix that actually landed. A clock-out time may be set up to CLOCKOUT_AHEAD_MIN (2 h) ahead of the phone's clock instead of 5 minutes: Paul asked to be able to round the finish up, type 5:30 at 5:20, and the old five-minute window silently pulled it back to 'now' so the entry did not say what he had typed. And Project Name on the PO Log is no longer written by the script: creating a job from a website enquiry used to copy the whole scope paragraph into it, and that column is what the crew now read on the job picker, so it has to be the short name a person gives the job. The scope still goes in Description of Work. // v66: the PROJECT NAME travels with the job list - read off the PO Log once in getPoCustomers_ and sent with every job, and picked up by the Jobs tab off that same read instead of a second one. Also: takeMaterial and logMaterials carry a submission id and the first one is remembered for six hours (onceGuard_), because the app gained write-ahead for them and a lost answer would otherwise put two sets of parts on one job and take the shelf down twice. // v65: leadEmail fetches the ORIGINAL website form email for a lead, so Paul can read what the customer actually wrote rather than only the ball-park's write-up of it. The link is already in every ball-park block, so it works for leads filed months ago, not just new ones. v64: the email to the customer is shown before it is sent, with a suggested sentence Paul can rewrite. Only that paragraph is his - the time, the address, the Yes/Reschedule/Cancel buttons and their one-off tokens are still built by the script, because an edited link is a link that no longer works, and the tokens are minted when it actually sends so a preview can never hand one out twice. v63: after changing a booking the app can record that the customer was rung, or send them the right email for that kind of booking - the confirmation with Yes/No buttons for a booked job, the plainer note for a return visit - and either way it is written on the job's row so there is an answer to "did anyone ring them" weeks later. v62: eventInfo also returns the JOB's request row (jobRequestId) and its quote, so a return visit can correct the customer's details - those are facts about the job, not about one trip to it - while Move and Cancel still act only on the event in front of you. v61: speed - the Requests tab is read ONCE per call and shared by every lookup. Tapping a booking on the Schedule tab was reading it twice on top of the calendar, which on a cold start could pass the app's 30-second timeout and come back as "No answer from the server". v60: a quoted estimate can now be moved (the CALL moves, 15/30/60/120 min - it used to block out the whole estimated job length), relabelled estimate<->appointment where nothing has been spent on it yet, and corrected including the hours and the quoted price range. v59: a RETURN VISIT can now be opened, moved and called off from the Schedule tab, and shows the original website enquiry of the job it continues. Return visits are created as calendar events with no Requests row, so until now they were the one booking the calendar could not act on - which on a quiet fortnight is the only booking there is. Cancelling a return visit does NOT mark the PO Log Cancelled and moving one does not change the job's start date: the job is still open and still gets invoiced under the same number. v58: TWO REAL BUGS. The Schedule tab was reading getDefaultCalendar() - the only place in the script that did - while every booking is created on the admin@proes.ca calendar, so the tab could show almost nothing while the jobs were all there. And "Correct details" in the app has called requestUpdate since v47, an action that was never written; it exists now and writes the Requests row, re-titles the calendar event and carries the contact details to the PO Log. v57: requestList now returns each booking's calendar event id, so a job tapped on the Schedule tab can be moved, cancelled, or have its original website enquiry read - the actions that until now only existed on the Requests tab. v56: contactLookup and contactAdd now exist - the sweeps have been calling them for weeks and they were never built. Google Contacts via the People API (ContactsApp is deprecated); a client is matched on email, then phone, then name, so nobody is added twice, and an existing contact has only its EMPTY fields filled - anything that disagrees is reported, never overwritten. Needs the People API added under Services once, then contactsSelfTest() run from the editor to approve it. v55: a call that sends the inbound key but asks for an action the key does not open now says exactly that, and names the actions it does open. It used to fall through to the sign-in path and answer "Not signed in.", which pointed at the web app's account instead of at the action - the actual fault. v54: MORE SPEED. The master workbook and its tabs are opened once per call instead of once per use (25 call sites, several per action), and the waiting-leads badge counts one column instead of reading the entire Requests tab and Call List - which bootstrap_ did on every app open and every background refresh. v53: SPEED. Working out whose job a calendar booking is used to open the PO Log workbook and read the whole Requests tab ONCE PER BOOKING - six range reads and a cross-file open each - so a day with six jobs on it did that six times before the screen could paint. Both tables are now read once per call and reused. No behaviour change. v52: the time picker opens on a full month - a day with a job on it carries a dot - and tapping a day shows that day's bookings and the start-time field. v51: a job displaced by another booking goes back to the Requests tab with NO time - its PO number, customer and scope intact - where Paul picks a time or takes the next opening, and can ring or email the customer; if the time he picks is taken, that job comes back the same way, one step at a time. Paul can add an emergency call or a job by hand from the Requests tab (after hours and on top of an existing job if he says so), with a day-view calendar to pick from; a manually added JOB gets the next PO number and a full PO Log row, a phone call does not. A rebooked job keeps the PO number it already had. v50: PO Log and price-list columns are found by what they MEAN, not by position or exact spelling - a renamed, mistyped, re-spaced or moved header no longer stops the PO Log being filled or a part being added; anything unresolvable falls back to the old column number, and checkHeaders() shows what resolved where. v49: the INITIAL DRAFT warning goes in the invoice MEMO (PrivateNote), never the customer message, and the initial pass fills BLANK contact fields on the QuickBooks customer from the PO Log row (never overwriting one that has a value). v48: approvalsAll gives the Requests tab every pending approval (hours, time off, allowances); an admin can add time for any employee (approved, employee emailed). v47: a supplier invoice whose reference is not a job number is checked against the PO Log (contact / company name, last digits of a job number) and, if still no job, filed in a folder named after that reference (PCW, a client's name...) in the PO archive; repairJobPOs moves the ones already filed. Typo-tolerant names (one job that close, flagged in the report); a job number is matched on its last 3 digits (a typo in the letter/year in front is fixed; different last digits = a different job, never guessed). v46: Build Initial Draft opens the job's PO lines with editable quantities; the saved list (Invoice lists tab) is what Claude bills, then it fetches the hours. v45: shop consumables (po_ref SHOP / STOCK / none) file to "Shop Supplies" in the PO archive, TOOLS to Tools, PAUL to Paul; repairJobPOs moves the ones already filed. v44: repairJobPOs moves supplier purchases wrongly filed to Stock onto their job (Job POs tab + the PDF into the job-number folder). v43: repairJobNames takes an except list. // v42: a job number typed as the job name (R26184) is turned into the real job - PO# + the PO Log name - at clock-in, clock-out, edit and manual entry; repairJobNames fixes the entries already saved that way. v41: v41: supplier invoices and credit notes file by JOB NUMBER - a job with no company name, or not on the PO Log yet, still gets its own job-number folder and its stock record; I26156 vs C26156 match on the digits. v40: v40: estimate calls pick 15/30/60/120 min and get open times (no more overlapping); clock-out materials come off the shelf; residential supplier invoices file to the job; return visit at any day+time with a confirmed bump chain + Call List; Build Initial Draft starts Claude immediately. v39: Status dropdown removed - the script keeps Status to Estimated / In progress / Invoiced / Closed / Cancelled, and setupPoStatusColours() colours the column by its text. v38: Claude can edit the PO Log (poLogFind / poLogUpdate / poLogAdd on the inbound key), dropdown-safe writes, PO numbers refused as customer names. v37: v37: invoicing in two passes - the job card has Initial draft (every part at cost, no markup, for Paul to correct in QuickBooks) and Final draft (reads his corrections back, rolls the parts up and applies the markup to the same invoice). v36: the slot finder now uses the ball-park working day (Mon-Fri 08:30-18:00, lunch 12:30-13:00 that a job may span, 9 working hours); the customer's form photos and the original-enquiry link go back onto the calendar event; nothing books into the past, and an APPOINTMENT is refused if the slot is taken - the refusal names the clash and offers the next open times. An ESTIMATE call may still sit over a running job (30 min on the phone) but the reply says what it lands on. v35: the customer's appointment email is a branded card with real Yes / No buttons instead of two raw script.google.com URLs in plain text; same links, same tokens, same handler, plus a plain-text part for clients that refuse HTML. The return-visit email uses the same shell. v34: return visits — visitSlots reads Paul's calendar and offers the first openings that fit the hours still needed (weekends, Alberta stats, approved leave and a 30 min travel buffer excluded); visitBook books the one agreed with the customer, re-checking the slot is still free. v33: jobSetStatus writes Status on its own (Invoiced = sent, Closed = paid); jobSetDates fills a BLANK start/end date from the timesheets; fmtDate_ no longer shifts a bare YYYY-MM-DD back a day. v32: job spend = labour (approved + pending) + materials bought, with an optional budget per job. v31: 24 h still-clocked-in email to employee + admins; late and stuck punches emailed + logged; punchStuck action. v30: punches idempotent on tap time, refused punches logged. v29: quotes update the price list (newest price wins), one scan button for receipts + estimates, supplier date formats fixed
+    ok: true, service: 'PCW/PRO Timesheet API', v: 127, // v127 (20 Nov): a READ-ONLY JOB VIEW FOR CLAUDE - three tabs on the timesheet workbook (Job view, Job view lines, Job view hours) carry what the job screens show: the PO Log row, the QuickBooks invoice (initial or final draft, total, sent, paid), every material line with cost, markup and customer price, permit fees, hours at the charged rates, and whether each line and the permit is on the QuickBooks invoice; rebuilt by keepWarm when anything changes, written only when it differs, never read back (cvBuild_). QuickBooks invoices are posted on the inbound key exactly as QuickBooks returns them (qbInvoicesPost -> 'QB invoices' tab); Today's final-draft total uses QuickBooks' own when it is newer. Permit fees are billed AT COST again (Paul: 'pass the permit through') - out of the markup tier on the money card and in Materials invoiced, their own line. The invoice buttons' routines are connected from the app (invoiceRoutines / invoiceRoutineSet; the token is never sent back). // v126 (20 Nov, audit of v125): reading a job's answers no longer creates the Match decisions tab (two first opens at once collided); a job number typed as the job site counts only when the cell is a job number; a same-purchase answer records and takes off the stock count only the rows that really left Job POs. // v125 (20 Nov): RECEIPTS VS CLOCK-OUT - jobMatch puts each part of a job once, what the receipts say was bought against what was logged at clock-out (or taken in the app), and flags what does not add up; jobMatchDecide answers a part on two receipts that look like one purchase (count once: the extra copy's lines leave Job POs and the stock count, kept on the Match decisions tab to undo) or a shift logged twice; jobMaterials/jobParts take a row's job number over a shared name (House on the Hill C26197/C26198 each showed the other's purchases); jobMaterials withDups tells the parts list. // v124 (20 Nov, audit of v121-v123): a job Paul reopened is not marked Invoiced again by a task on its OLD invoice - jobInvoiced with sent/paid needs sentAt/paidAt newer than the reopening (C26197: invoice 197 was sent a week before he reopened it), and a reopening is now kept to the minute; a permit line reads just 'Electrical permit'; a permit bill made out to somebody other than PRO goes to review instead of being skipped; a task cannot add a PO Log row already marked Invoiced or Closed. // v123 (20 Nov): a permit fee is priced like the job's other materials in Materials invoiced and the money card, the way the final-draft routine bills it (v121 had it at cost, which would not have added up to the invoice). // v122 (20 Nov): the permit reader counts only a BILL made out to PRO - the permit document itself (Superior Safety Codes, which prints its own fee) is left alone, so a permit is never on a job twice; an invoice date read day-first is put right against the day its email came; a range-road job site (two numbers, no street name) is matched. // v121 (19-20 Nov): a draft never changes a job's status - Invoiced means the invoice was SENT, Closed means PAID (Paul: 'only label the job closed once the customer has paid'); a task (the key) is refused Invoiced without sent:true and Closed without paid:true (jobSetStatus, poLogUpdate), jobInvoiced without either records the QuickBooks number and end date only; the app's own record after a final draft no longer marks Invoiced or files the folders; Today's 'Finish the invoice' says when the final draft is built; Materials invoiced can be made from the saved parts list (materialsInvoicedBuild); permit fees (AtPeace Electric) are read from email and filed to the job found by the customer's name and job site, at cost, never in the markup tier (permitSweep); the saved parts list says which parts were set to 0. // v120 (19 Nov): the money card and the Materials invoiced record put exactly $10,000.00 of parts in the 20 % tier, the same as the invoice (it read 30 % here; Paul: "go ahead"). // v119 (19 Nov, audit of v118): the close-out ADDS the invoice number to the PO Log's QuickBooks cell and never replaces what is there (a job billed on two invoices kept only the last); the close-out is written in plain words and the app is told when something was not done (no PO Log row, folders not filed); an answer whose request id was not copied is still matched to the tap (rows added after it); times on the Final drafts tab are read in the sheet's own time zone (it is set to Pacific); the build is handed the contact name when the company cell is blank; the app's own close-out finds the job folders by the job NUMBER only (a name matches any folder containing it - another job of the same customer), and a second folder with the same name is reported as left behind instead of as filed; a receipt dropped as "the same one" can be put back (heldScanDecide 'undo'). // v118 (19 Nov): Build Final Draft hands Claude the QuickBooks invoice number, customer and email off the PO Log with a request id; the build answers on the price list's 'Final drafts' tab; finalStatus tells the app (building / built / already final / stopped / no answer) and the app closes the PO Log row and files the folders itself, on that call or on the 5-minute timer. A look-alike receipt scan is held (photo kept, nothing counted) and listed under Needs you on Today; heldScanDecide files it or drops it. jobInvoiced leaves a Closed row Closed. A final-draft request that starts Claude sends no email (it only set off the hourly 'Final draft waiting' emails); one that does not start still does. // v117 (19 Nov): Build Final Draft starts its own Claude routine (Script properties INVOICE_FINAL_FIRE_URL / INVOICE_FINAL_FIRE_TOKEN), one start per job per 10 min. v116 (19 Nov): building the initial draft no longer makes the customer PDF - Job details -> Materials invoiced -> 'Make customer PDF' makes it on request, in the job's app folder; the copy's unit prices now multiply out to its amounts and its lines add up to the final draft's parts charge. // v115 (19 Nov, audit): look-alike purchases - never two emailed invoices, never on an account number, never when the parts differ; 'file it anyway' cannot override the same invoice number; the breakdown uses the money card's markup tiers, makes no empty PDF and replaces a same-day one. // v114 (19 Nov): Build initial draft can Save without building; building keeps a 'Materials invoiced' breakdown (cost, markup tier, price) on the price list tab and as a customer-ready PDF in the job folder's 'Materials invoiced (PRO)' subfolder. // v113 (19 Nov): every reference number on a supplier document (order, receipt, transaction no.) is read and kept (Job POs 'Other refs'); a shared number + the same lines is the same purchase whatever the road or date; same number, different lines = a back-order, counted and noted. v112 (19 Nov): a supplier purchase that reaches us by both roads - phone scan and email - is filed once even when the two read different numbers (same supplier, dates within 2 days, every line the same quantity and price); a duplicate scan files no photo either. // v111 (19 Nov): Build initial draft shows each part's unit of measure (from the Materials price list), keeps it on the saved list and in the request Claude builds from. // v110 (18 Nov): a month's pay panel is read only once that month has begun (December's template was showing). // v109 (18 Nov): the hours check starts 1 Nov 2026 (CONFIG.HOURS_CHECK_FROM), and a Vacation Pay cell needs no note - it is the 4% formula. // v108 (18 Nov): the hours check reads the hour sheet's pay panel (Stat Pay / Reimbursement / Vacation Pay, each explained by a cell note, gross under it): stat pay is matched by day in dollars instead of as hours, and a value with no note is listed. // v107 (16 Nov, audit): punchBatch stops taking new punches at 90 s so its answer always beats the phone's 150 s wait. // v106 (16 Nov): punchBatch - a phone sends every punch waiting on it in one request, in tap order, instead of one 10-20 s call each. // v105 (16 Nov): the Today 'Clock-out missing' item carries its entry so the app can open it for the clock-out time. // v104 (12 Nov): the hours check reads the hour sheet's Notes column, so 'Status day' there marks the line as not time worked. // v103 (12 Nov): stat holiday pay actually posts - statPayFor_ read real Date cells as text and found nobody had ever worked; the hours check sends each app row's source so a stat entry can be matched against a stat line on the hour sheet. // v102 (9-10 Nov): price-list units by what the part is; customerFromPo; time off added by hand; last day worked on jobCosts; an existing customer's new job keeps their PO letter; bids ignore surveys and a GC's "not submitting a bid" notice. // v101: BID DEADLINES ON TODAY (Paul, 8 Nov). Every Today build also reads the inbox (read only) for invitations to tender or bid from GCs and the bid platforms and keeps a Bids tab: GC, project, the closing date and time - taken from the newest thing the GC wrote, so a reply moving the close beats the subject line, with the time zone honoured and a missing time left missing - and Sent once our own reply with the bid attached is in the thread. A date typed in the app is never overwritten. Today carries the open bids; bidSave adds one by hand or sets its status (not decided / bidding / sent / not bidding / won / lost), closing and note. // v100: MONEY PER JOB ON TODAY (Paul, 8 Nov). The Today build also works out every job's money: cost so far (hours x each person's pay rate + the supplier POs - the same figures as the Cost tab), what it is worth at your rates (hours x each person's Charged rate, rounded to the half hour like the invoice, the journeyman line raised to match an apprentice's, + materials with the markup tier on the job's material total), the margin, and the quote or budget beside it; for invoiced jobs and jobs paid in the last 90 days, the Amount Invoiced typed on the Cost tab. jobCosts also sends each person's hours, pending hours and cost per job (people). Read only - nothing is written anywhere. // v99: AUDIT FIXES for the follow-up list. A job dragged to a new time (no email) is listed as 'confirm' with detail 'not told' and counted from the move, not from the email about the OLD time; and anyone who can approve hours can log a follow-up, not only admins. // v98: LEADS TO FOLLOW UP ON TODAY (Paul, 8 Nov). The Today build also lists every customer who has gone quiet: a price sent 3+ days ago with no answer, a booking they were asked to confirm 2+ days ago that is still unanswered, someone who said the time does not work or cancelled by email, a job they said yes to that has waited 2+ days to be booked, and an estimate request not priced after 2 days. followUp logs a call, text or email on a new Follow-ups tab and puts the person aside until the next check (2, 3 or 7 days); the count of follow-ups travels with each one. Nothing is sent to a customer by this. // v97: AN ENTRY CAN BE DELETED (Paul, 7 Nov: a 0-hour 'break never ended' entry 'was obviously a mistake'). deleteEntry marks the row Status 'deleted' - the row stays, it comes off every hours total, pay period, job cost and the Today checks like a rejected one, it disappears from the app's lists, and it is written to the Approval Log so 'What we have decided lately' can put it back with one tap. Approvers only; a running (open) entry can be deleted too and stops being the running clock. // v96: NOBODY WAITS ON THE OFFICE. eventInfoMany answers the job details for many bookings in one call (the app fetches the month in the background and opens details at the tap); a 5-minute keepWarm timer, 6 am to 8 pm, keeps the first tap of the day from a 10-20 s cold start - it installs itself on the first bootstrap. // v95: scheduleAddDay - another day on the same job from the Schedule tab: a copy of one booking (same name with (cont'd), address, notes, crew, length) on a new day, the original left where it is, no slot check, no email. // v94: REVIEW FIXES for the block calendar. A drag clears the customer's old Yes / Reschedule links (the old email asked about a time that no longer exists); a repeating event is refused (every instance shares one id); an event with no colour reads as 'none' (booked, nobody asked) instead of 'waiting'; scheduleList says which events repeat; the email sent after a move says Changed, not Booked. // v93: scheduleYear - a whole year's booked hours and bookings per day in one call, for the app's Year view. // v92: THE BLOCK CALENDAR. scheduleMove moves one booking to where it was dropped - no slot check, no bump, no email - and marks it not confirmed (amber); scheduleConfirm sets confirmed / waiting / needs a new time from the app; scheduleList sends each booking's confirm state. See the v92 block above leadEmail. // v91: THE NOV 7 AUDIT FIXES (see the V91 block at the end): a replayed punch is answered before it waits for the lock and a punch waits 25 s, not 15; a break nobody ended counts as ZERO and is flagged on Today instead of eating the shift; a clock-in or break changed on the clock-out review is written to the Edit Log; material claims are posted once per entry even when the phone sends them again days later; the PO Log Estimates tab gets Accepted / Denied / Closed (the words its dropdown allows); a supplier reference that is not a job ('REEL FOR ORDER 3997990') files to 'Needs review' instead of becoming a job folder; Home Hardware sales invoices are read as invoices; the Neo report keeps each item's id across repeat posts; contacts match on the name before ' - ' or ','; Today lists entries to correct and punches that were refused and never landed; the Cost tab on the PO Log is refreshed daily from the timesheet and the supplier POs; the supplier sweep runs every 2 hours. // v90: requestAdd files an emailed estimate request (entryNo "email:<threadId>") only once and answers {duplicate:true} after that, so the inbox sweep can run twice a day without filing the same email twice. // v89: NAMES ON THE CALENDAR, AND AN ESTIMATES TAB (Paul, 7 Nov). Bookings are titled by who they are - "Karen Eastman · R26201 — Replace the panel" - with no APPOINTMENT / ESTIMATE / RETURN in front; retitleCalendar renames the ones already booked. Requests for an estimate (from the website or, through the inbox sweep, by email) wait on a new Estimates tab instead of Requests; estimateSend emails the customer the price with Yes, book it / No thanks, and a yes puts it on Requests as a job to book (its number is minted then). See the ESTIMATES block. // v88: the Today answer also carries the paid-job count and every job in progress with its hours, for the desktop layout (menu on the left, the job pipeline, On the go). Nothing else changed. // v87: THE TODAY SCREEN (Paul, 7 Nov - steps 2 and 3 of the dashboard build). A new action, today, answers "what needs me right now?" for the office: forgotten clock-outs, every day the app and Charles's manual hour sheets are more than half an hour apart (the sheets are READ ONLY - see CONFIG.HOUR_SHEETS), jobs with hours and no invoice that nobody has worked on for two days and that have nothing on the calendar, jobs in progress that were never booked, plus four numbers (jobs in progress, hours that don't match, invoiced and waiting, the crew's pay period). It is built on an hourly timer that installs itself on first use and kept in the cache, so the screen opens on a stored answer; Refresh rebuilds it. todayHide puts an item aside: an hours day until either number changes, a job for two weeks. Nothing is written anywhere except that list of what was put aside. // v86: STEP 1 OF THE DASHBOARD BUILD (Paul, 7 Nov) - two data fixes, nothing on screen moves. (1) A job invoiced on the 1st of a month is archived in THAT month: completedMonthFolder_ read a bare date as midnight UTC, i.e. the evening before in Alberta. (2) ONE JOB, ONE ROW on the Jobs tab: hours are grouped on the job number's five digits and named off the PO Log, so a customer name or a corrected letter no longer splits a job in two (C26170 was "Angelica Alberto" + "The Beauty Bar & Co."). See jobByPo_. // v85: AN APPROVAL CAN BE TAKEN BACK. Paul, 3 Nov, about an employee's request to change their hours: "a log for all the changes we've made, to be able to undo or edit them if we click confirm by accident." Approve and Reject are two buttons a thumb apart deciding somebody else's pay, and the only record was an Activity Log line that cannot put anything back - once an entry said "approved" there was nothing anywhere saying what it had said a second earlier. Every decision now keeps the row's PREVIOUS status, approver, timestamp and rejection note on an "Approval Log" tab, so undo restores exactly that: the request goes back to pending, onto the Requests tab, where it can be read properly, edited and decided again. Two refusals that matter: a decision cannot be undone twice, and it will not undo an entry that someone has DECIDED AGAIN since - that would silently overwrite their decision, so it says what the entry reads now and changes nothing. No hours are ever touched by an undo. // v84: EVERY NAMING DECISION IS WRITTEN DOWN AND CAN BE TAKEN BACK. Paul, 3 Nov: "a log for all the changes we've made, to undo or edit them if we click confirm by accident." Naming a part is one tap that does three things at once - writes a catalogue row, renames a live job's line, and clears the question off the Requests tab - and the only trace was an Activity Log line, which says what happened and cannot put it back. Each decision now gets a row on a "Parts Log" tab carrying what was typed, what it was named and whether the catalogue row was created by THAT decision, which is exactly what an undo needs. Undoing puts the job line back to a question under the words actually typed, and removes the catalogue row only if this decision created it and no other job line has used it since - otherwise it stays and the app says why, because deleting it would strand that other job. A decision can be undone once. // v83: WHAT THE PO LOG KNOWS NOW REACHES THE APP. The details have only ever travelled one way: the app writes a booking's phone, email, address and scope to the PO Log, and nothing has ever read them back. R26195 Paddy is the case in point - the Requests row has the name, the time and the PO and nothing else, while the PO Log row typed by hand has the email, the phone, 83368 RR 201 and the whole scope of work, so the app showed a blank card beside a full sheet row. Every booking now falls back to its own PO Log row for anything it is missing, on the Requests tab and on the Schedule tab's booking sheet. It FILLS GAPS and never overwrites - what the customer themselves typed into the website form stays the truth - and it says which fields came off the sheet. The old fallback only fired when even the customer's NAME was missing, which is why a booking with a name and nothing else got nothing. One read of the PO Log per call, shared by every row. // v82: an approval shows the day and the time and nothing else. The Edit Log keeps its before-and-after as the words a person reads ("Mon Oct 26, 1:00 PM"), but the column was General, so Sheets parsed them back into datetimes and the row came out of getValues() as a Date - whose String() is "Mon Oct 26 2026 13:00:00 GMT-0600 (Mountain Daylight Time)". That is what was on the card. Those cells are now plain text, and anything already coerced is formatted on the way out instead of stringified. ALBERTA NO LONGER CHANGES ITS CLOCKS (permanent daylight time, UTC-6 all year), and since 1 Nov 2026 the zone database labels that permanent -6 "CST" - so a printed abbreviation would now claim Central Standard Time in Peace River. Nothing here hardcodes an offset and nothing should: the zone still gives the right instant, it is only the label that has to go. // v81: THE APP LOOKS FOR THE PART BEFORE IT ASKS ABOUT ONE. Everything that ever reached the Requests tab got there the same way - the name somebody typed did not match a catalogue row CHARACTER FOR CHARACTER - so "15A 1P SQD Breaker" and "Square D CHOM115 1P 120V 15A Circuit Breaker" were two parts, while "2x4x8 Lumber", genuinely new, was asked about just the same. A typed name is now scored against the price list, the field catalogue and THIS JOB'S OWN PO lines, on shared words with anything carrying a digit worth three - 14/2, 15A, 4x4 and 1P are what tell parts apart, "box" is not, and 3-1/2 is no longer the same fraction as 1-1/2. Three outcomes: a near-perfect match IS that part, so the line takes the name we already use and nobody is asked; something close is a question, and the Requests card offers the candidates as one-tap buttons with where each came from; nothing close is simply new, so it is learned into the field catalogue then and there and never mentioned. The price list is deliberately NOT written to - the supplier sweep owns it, because it has the real part number and the real price, and a name typed on a phone beside the invoice's own wording would price the job twice. // v80: THE MATERIALS LIST IS THE INVOICE, not a catalogue. jobParts now sends the inventory's PLAIN NAME beside the supplier's shouting, so the app can lead with "1-gang device box" and put "2-1/2 IN DEEP 1 GANG DEVICE BOX" underneath it in small type; there was only ever the supplier text and no way to show anything shorter. And a part nobody has heard of - typed on the job by whoever is standing there - now reaches the Requests tab: approvalsAll carries the pending ones, and resolveMaterial takes the NAME the office gives it, writes that name to the catalogue AND back onto the usage row (so the invoice and the shelf cannot disagree), keeps what was actually typed as an alias so the next person who types "2104 box" lands on the right part, and refuses to add a second copy of something already in the list. The part is on the job from the moment it is typed; only its name waits. // v79: PAUL'S PHONE CAN BE TOLD WHEN NEO FINDS SOMETHING. Charles chose a push notification over a text, which means no carrier, no Twilio account and nobody's number written down anywhere - but this script cannot send one and never will: VAPID is ECDSA over P-256 and the payload is sealed with ECDH + AES128GCM, and Utilities offers HMAC and RSA. So the sweep that writes the report sends the push as its last step, and this script is the address book: pushSubscribe files a phone (approvers only), pushUnsubscribe turns it off, and the sweep reads the list and reports the dead ones on the inbound key (pushSubs, pushDrop). A subscription is one browser on one phone, keyed by its endpoint, so re-subscribing updates the row instead of making a second one; a phone the push service answers 404 or 410 for is marked gone rather than deleted, so "it stopped telling me" still has an answer on the tab in three months. The endpoint plus the VAPID private key is enough to make that phone buzz, which is why it is admins only and why the tab belongs under the same protection as the rest. // v78: the inbox report remembers WHEN it last ran, separately from what it found. A sweep that finds nothing to answer leaves no row on the Neo Report tab, so neither the tab nor the app could tell "the inbox is clear" from "the sweep has never run" - and the app, which drew no card at all for an empty report, showed a blank Requests tab on the afternoon the feature went live. The sweep time is now kept in script properties by neoReportPost and returned by neoReport as lastSweep, so the card can say which it is. // v77: EVERY edit to an approved entry goes back for approval, an admin's own included. It used to be waved through for admins on the grounds that an admin is the approver, which left their own corrections invisible on the Requests tab - a one-minute test change on 27 Oct appeared nowhere. It now lands pending with its before-and-after on the card; either admin can approve it, so it is a prompt and a record rather than a lock. Only when something actually changed: opening an entry and saving it untouched no longer moves its status, clears its approver or writes an audit row. And a field whose DISPLAYED value did not move is no longer listed as a change - the comparison is to the second while the display is to the minute, so a clock-out nudged by seconds was logging "5:20 PM -> 5:20 PM", which makes the whole comparison look untrustworthy. // v76: NEO'S REPORT. A scheduled task reads what is still sitting in the inbox three times a day, decides what a person actually has to deal with, and posts a one-line summary plus a suggested reply for each on the inbound key (neoReportPost). The app shows it on the Requests tab, where the reply can be edited and sent as PRO on the original thread (neoReply) or saved as a Gmail draft, and each item can be ignored or put off (neoDecide). The "Neo Report" tab is also the memory, which is why the report is stored rather than emailed: an ignored or answered thread stays out of the report until the NEXT message arrives on it - a follow-up from the customer brings it back, because that is new information - a "later" item returns on the very next sweep, and anything the sweep no longer finds and that carries no decision is dropped, so a fresh report always replaces the old one. // v75: an edited entry is refused above 24 hours. Both ends of a shift now carry their own day in the app, which is what was asked for and is unambiguous for a night shift - and it also means a mistyped year could otherwise slide a 2000-hour entry into payroll. Nothing legitimate is one entry longer than a day; the app itself warns above 16 h and asks for a second tap. // v74: every edit to an entry records WHAT CHANGED - one row per changed field on a new "Edit Log" tab (was, now, who, when, and the reason they typed) - and the approvals payload carries the latest one with each pending entry, so the app can show the original beside the updated one. A separate tab rather than another column on the entry, because the per-employee tabs are written a whole row at a time at ENTRY_HEADERS width and adding a column there means migrating every tab and risking every punch write; this costs one sheet read on the approvals call and nothing anywhere else. Times, dates, breaks and hours are stored in the words a person reads, not as ISO strings, so the tab is an audit trail somebody can actually use: edit an entry three times and all three are there. An edit that changes nothing writes no rows, and a failure to write the audit row never costs anybody their correction - the edit stands and the Activity Log says the diff was lost. // v73: the supplier-email sweep stops reporting Google's own hiccups. Its trigger runs hourly and Apps Script mails a daily digest of any failed run, so one dead run on 20 Oct - "We're sorry, a server error occurred", Google's backend, not this script - produced an email the next morning about something the 21:02 run had already put right (every message read is on the Sweep log, so the next run re-reads the same threads and files what the dead one missed). A transient failure is now caught, written to the Activity Log and swallowed; it is only reported once it has failed three runs in a row, which means it is not recovering by itself. Anything that is not a Google wobble - a bug, a missing tab, a permission taken away, execution time exceeded - is still reported on the first failure, because those never self-heal. testSweep() in the editor runs the sweep itself so a developer still sees the real error. // v72: "Schedule a job" can be booked onto a job that is already in progress, and then it KEEPS that job number - a PO number becomes the QuickBooks invoice number, so it is minted once and never re-minted, and the existing PO Log row is re-dated instead (requestSchedule_ has done that for a rebooked job since v51; requestAddManual now writes the number onto the row so it takes the same path). Refused for a job that is closed, invoiced or cancelled, and for an estimate call, which is not booked against a job number at all. // v71: jobParts - what a job actually bought, rolled up one row per part (the same wire across four EECOL invoices is one line reading bought 150 m, 60 logged, 90 left), with the shop count beside it as the separate number it is. Stock flagged to go back to the supplier is not counted as used; a part used on the job that came off the shelf rather than off one of its POs is not in the list, because this list is the POs. Crew get the parts, the supplier and what is left; prices and invoice numbers are admin and bookkeeper only. The app opens its materials screens with this list. // v70: MATCHING, to Charles's rule: if the name, the email OR the phone is already in Google Contacts, that is the person. A name NEARLY the same (every word of the shorter in the longer, sharing a word of five letters or more - "McGregor" against "McGregor Hostetler", a real pair on the PO Log) is reported and nothing is written at all, rather than merged: a duplicate contact is a tidying job, the wrong email on somebody's card is a letter to the wrong person. A bare first name is not enough - there are two Ricks on the log - nothing is created, nothing that has a value is corrected, and only empty fields are filled. A name is compared on what it says rather than character for character, so "McGregor " and "mcgregor" are the same man (the old exact-string test said they were not, which is how a duplicate gets made). A form with no person name on it is looked up under its company, so a second "KFC" is not created. If TWO contacts already match - a duplicated address book, which the log shows for Isaac Laboucan-Aviron - nothing is written at all and both are named, because picking one would be a coin flip and filling both would spread the duplication. A business already in the book under its own name is reported alongside, never written to: the contact person's email does not belong on the company's card unless somebody says so. Every answer now says what it matched on. // v69: the contacts repair is driven by what the Activity Log actually shows. It CREATED one contact from a test form - "Test 1 Appointment", people/c102738742546907694, 9 Oct, from the test sent with Hannah's address - and every other contactAdd in the log says "existing contact", a path that has never been able to write a name. So contactsFixReport() now lists every contact that looks like a test lead with its addresses attached, before anything is changed, and a fix entry can delete a contact (remove: true) as well as rename one. // v68: GOOGLE CONTACTS. Two website-form tests were written in as clients - one sent from Charles's own address became a contact called "Test Test", one sent from the Wagyu address with no name in the form became "PCW" (with no name to use, the code fell back to the company) - and because Gmail shows a sender under the name Contacts holds, their own mail then arrived under those names. Our own addresses are never a client, so a form carrying an admin, bookkeeper, employee or @proes.ca / @pcwagyu.com address is no longer written to Contacts at all, and a name that is plainly a test ("Test", the same word twice, a single letter) does not create one either; both are reported and logged instead, and force: true still gets a real client through. On a contact that already exists the rule is now written down and complete: what is in Contacts wins, we only fill an empty spot, and a NAME is filled only when the contact has none - a name that disagrees is reported, never written. contactsFixReport() and contactsFixApply(), run from the editor, put the two wrong names back; they write the name and nothing else, and leave merging to Google Contacts. // v67: the forgotten-clock-out fix is replay-safe, because the app now keeps it on the phone and sends it again if the answer is lost - the same stop time comes back with the stored hours instead of 'already clocked out', which the app would show as a failure of a fix that actually landed. A clock-out time may be set up to CLOCKOUT_AHEAD_MIN (2 h) ahead of the phone's clock instead of 5 minutes: Paul asked to be able to round the finish up, type 5:30 at 5:20, and the old five-minute window silently pulled it back to 'now' so the entry did not say what he had typed. And Project Name on the PO Log is no longer written by the script: creating a job from a website enquiry used to copy the whole scope paragraph into it, and that column is what the crew now read on the job picker, so it has to be the short name a person gives the job. The scope still goes in Description of Work. // v66: the PROJECT NAME travels with the job list - read off the PO Log once in getPoCustomers_ and sent with every job, and picked up by the Jobs tab off that same read instead of a second one. Also: takeMaterial and logMaterials carry a submission id and the first one is remembered for six hours (onceGuard_), because the app gained write-ahead for them and a lost answer would otherwise put two sets of parts on one job and take the shelf down twice. // v65: leadEmail fetches the ORIGINAL website form email for a lead, so Paul can read what the customer actually wrote rather than only the ball-park's write-up of it. The link is already in every ball-park block, so it works for leads filed months ago, not just new ones. v64: the email to the customer is shown before it is sent, with a suggested sentence Paul can rewrite. Only that paragraph is his - the time, the address, the Yes/Reschedule/Cancel buttons and their one-off tokens are still built by the script, because an edited link is a link that no longer works, and the tokens are minted when it actually sends so a preview can never hand one out twice. v63: after changing a booking the app can record that the customer was rung, or send them the right email for that kind of booking - the confirmation with Yes/No buttons for a booked job, the plainer note for a return visit - and either way it is written on the job's row so there is an answer to "did anyone ring them" weeks later. v62: eventInfo also returns the JOB's request row (jobRequestId) and its quote, so a return visit can correct the customer's details - those are facts about the job, not about one trip to it - while Move and Cancel still act only on the event in front of you. v61: speed - the Requests tab is read ONCE per call and shared by every lookup. Tapping a booking on the Schedule tab was reading it twice on top of the calendar, which on a cold start could pass the app's 30-second timeout and come back as "No answer from the server". v60: a quoted estimate can now be moved (the CALL moves, 15/30/60/120 min - it used to block out the whole estimated job length), relabelled estimate<->appointment where nothing has been spent on it yet, and corrected including the hours and the quoted price range. v59: a RETURN VISIT can now be opened, moved and called off from the Schedule tab, and shows the original website enquiry of the job it continues. Return visits are created as calendar events with no Requests row, so until now they were the one booking the calendar could not act on - which on a quiet fortnight is the only booking there is. Cancelling a return visit does NOT mark the PO Log Cancelled and moving one does not change the job's start date: the job is still open and still gets invoiced under the same number. v58: TWO REAL BUGS. The Schedule tab was reading getDefaultCalendar() - the only place in the script that did - while every booking is created on the admin@proes.ca calendar, so the tab could show almost nothing while the jobs were all there. And "Correct details" in the app has called requestUpdate since v47, an action that was never written; it exists now and writes the Requests row, re-titles the calendar event and carries the contact details to the PO Log. v57: requestList now returns each booking's calendar event id, so a job tapped on the Schedule tab can be moved, cancelled, or have its original website enquiry read - the actions that until now only existed on the Requests tab. v56: contactLookup and contactAdd now exist - the sweeps have been calling them for weeks and they were never built. Google Contacts via the People API (ContactsApp is deprecated); a client is matched on email, then phone, then name, so nobody is added twice, and an existing contact has only its EMPTY fields filled - anything that disagrees is reported, never overwritten. Needs the People API added under Services once, then contactsSelfTest() run from the editor to approve it. v55: a call that sends the inbound key but asks for an action the key does not open now says exactly that, and names the actions it does open. It used to fall through to the sign-in path and answer "Not signed in.", which pointed at the web app's account instead of at the action - the actual fault. v54: MORE SPEED. The master workbook and its tabs are opened once per call instead of once per use (25 call sites, several per action), and the waiting-leads badge counts one column instead of reading the entire Requests tab and Call List - which bootstrap_ did on every app open and every background refresh. v53: SPEED. Working out whose job a calendar booking is used to open the PO Log workbook and read the whole Requests tab ONCE PER BOOKING - six range reads and a cross-file open each - so a day with six jobs on it did that six times before the screen could paint. Both tables are now read once per call and reused. No behaviour change. v52: the time picker opens on a full month - a day with a job on it carries a dot - and tapping a day shows that day's bookings and the start-time field. v51: a job displaced by another booking goes back to the Requests tab with NO time - its PO number, customer and scope intact - where Paul picks a time or takes the next opening, and can ring or email the customer; if the time he picks is taken, that job comes back the same way, one step at a time. Paul can add an emergency call or a job by hand from the Requests tab (after hours and on top of an existing job if he says so), with a day-view calendar to pick from; a manually added JOB gets the next PO number and a full PO Log row, a phone call does not. A rebooked job keeps the PO number it already had. v50: PO Log and price-list columns are found by what they MEAN, not by position or exact spelling - a renamed, mistyped, re-spaced or moved header no longer stops the PO Log being filled or a part being added; anything unresolvable falls back to the old column number, and checkHeaders() shows what resolved where. v49: the INITIAL DRAFT warning goes in the invoice MEMO (PrivateNote), never the customer message, and the initial pass fills BLANK contact fields on the QuickBooks customer from the PO Log row (never overwriting one that has a value). v48: approvalsAll gives the Requests tab every pending approval (hours, time off, allowances); an admin can add time for any employee (approved, employee emailed). v47: a supplier invoice whose reference is not a job number is checked against the PO Log (contact / company name, last digits of a job number) and, if still no job, filed in a folder named after that reference (PCW, a client's name...) in the PO archive; repairJobPOs moves the ones already filed. Typo-tolerant names (one job that close, flagged in the report); a job number is matched on its last 3 digits (a typo in the letter/year in front is fixed; different last digits = a different job, never guessed). v46: Build Initial Draft opens the job's PO lines with editable quantities; the saved list (Invoice lists tab) is what Claude bills, then it fetches the hours. v45: shop consumables (po_ref SHOP / STOCK / none) file to "Shop Supplies" in the PO archive, TOOLS to Tools, PAUL to Paul; repairJobPOs moves the ones already filed. v44: repairJobPOs moves supplier purchases wrongly filed to Stock onto their job (Job POs tab + the PDF into the job-number folder). v43: repairJobNames takes an except list. // v42: a job number typed as the job name (R26184) is turned into the real job - PO# + the PO Log name - at clock-in, clock-out, edit and manual entry; repairJobNames fixes the entries already saved that way. v41: v41: supplier invoices and credit notes file by JOB NUMBER - a job with no company name, or not on the PO Log yet, still gets its own job-number folder and its stock record; I26156 vs C26156 match on the digits. v40: v40: estimate calls pick 15/30/60/120 min and get open times (no more overlapping); clock-out materials come off the shelf; residential supplier invoices file to the job; return visit at any day+time with a confirmed bump chain + Call List; Build Initial Draft starts Claude immediately. v39: Status dropdown removed - the script keeps Status to Estimated / In progress / Invoiced / Closed / Cancelled, and setupPoStatusColours() colours the column by its text. v38: Claude can edit the PO Log (poLogFind / poLogUpdate / poLogAdd on the inbound key), dropdown-safe writes, PO numbers refused as customer names. v37: v37: invoicing in two passes - the job card has Initial draft (every part at cost, no markup, for Paul to correct in QuickBooks) and Final draft (reads his corrections back, rolls the parts up and applies the markup to the same invoice). v36: the slot finder now uses the ball-park working day (Mon-Fri 08:30-18:00, lunch 12:30-13:00 that a job may span, 9 working hours); the customer's form photos and the original-enquiry link go back onto the calendar event; nothing books into the past, and an APPOINTMENT is refused if the slot is taken - the refusal names the clash and offers the next open times. An ESTIMATE call may still sit over a running job (30 min on the phone) but the reply says what it lands on. v35: the customer's appointment email is a branded card with real Yes / No buttons instead of two raw script.google.com URLs in plain text; same links, same tokens, same handler, plus a plain-text part for clients that refuse HTML. The return-visit email uses the same shell. v34: return visits — visitSlots reads Paul's calendar and offers the first openings that fit the hours still needed (weekends, Alberta stats, approved leave and a 30 min travel buffer excluded); visitBook books the one agreed with the customer, re-checking the slot is still free. v33: jobSetStatus writes Status on its own (Invoiced = sent, Closed = paid); jobSetDates fills a BLANK start/end date from the timesheets; fmtDate_ no longer shifts a bare YYYY-MM-DD back a day. v32: job spend = labour (approved + pending) + materials bought, with an optional budget per job. v31: 24 h still-clocked-in email to employee + admins; late and stuck punches emailed + logged; punchStuck action. v30: punches idempotent on tap time, refused punches logged. v29: quotes update the price list (newest price wins), one scan button for receipts + estimates, supplier date formats fixed
     clientIdTail: String(CONFIG.GOOGLE_CLIENT_ID).slice(0, 12) + '…' + String(CONFIG.GOOGLE_CLIENT_ID).slice(-30),
     masterSheetSet: !!CONFIG.MASTER_SPREADSHEET_ID
   })).setMimeType(ContentService.MimeType.JSON);
@@ -249,7 +249,8 @@ var KEY_ACTIONS_ = ['requestAdd', 'jobInvoiced', 'jobSetStatus', 'jobSetDates',
                     'invoiceMaterials',
                     'contactLookup', 'contactAdd',     // v56
                     'neoReportPost',                   // v76 — the inbox sweep posts its report
-                    'pushSubs', 'pushDrop'];           // v79 — and tells the phones that asked
+                    'pushSubs', 'pushDrop',            // v79 — and tells the phones that asked
+                    'qbInvoicesPost'];                 // v127 — QuickBooks invoices as QuickBooks has them (read-only copy)
 
 function doPost(e) {
   var out, t0 = Date.now();
@@ -279,7 +280,8 @@ function doPost(e) {
                        contactAdd: function (u, q) { return withLock_(function(){ return contactAdd_(u, q); }); },
                        neoReportPost: function (u, q) { return withLock_(function(){ return neoReportPost_(u, q); }); },  // v76
                        pushSubs: pushSubs_,                                                 // v79
-                       pushDrop: function (u, q) { return withLock_(function(){ return pushDrop_(u, q); }); } };
+                       pushDrop: function (u, q) { return withLock_(function(){ return pushDrop_(u, q); }); },
+                       qbInvoicesPost: qbInvoicesPost_ };                                   // v127 - locks only its own write
       var result = KEY_FNS_[req.action](keyUser, req.payload || {});
     } else if (req.key) {
       /* v55 - A KEY WAS SENT AND THE CALL STILL DID NOT TAKE THE KEY PATH.
@@ -551,6 +553,9 @@ function dispatch_(action, p, user) {
     case 'materialsInvoicedPdf': return materialsInvoicedPdf_(user, p);                                // v116 - "Make customer PDF"
     case 'materialsInvoicedBuild': return materialsInvoicedBuild_(user, p);                            // v121 - the breakdown from the saved parts list
     case 'permitSweep':        return permitSweep_(user, p);                                          // v121 - permit fees onto their jobs (on demand / dry run)
+    case 'invoiceRoutines':    return invoiceRoutines_(user);                                         // v127 - which Claude routine each invoice button starts
+    case 'invoiceRoutineSet':  return invoiceRoutineSet_(user, p);                                    // v127 - Paul pastes a routine's start address + token (never sent back)
+    case 'jobViewBuild':       requireAdmin_(user); return cvBuild_({ force: true, why: 'asked by ' + user.email });   // v127 - rebuild Claude's read-only job view now
     case 'jobInvoiced':        return withLock_(function(){ return jobInvoiced_(user, p); }); // closes + archives
     case 'jobSetStatus':       return withLock_(function(){ return jobSetStatus_(user, p); }); // Invoiced (sent) <-> Closed (paid)
     case 'jobSetDates':        return withLock_(function(){ return jobSetDates_(user, p); }); // fills a BLANK start/end date only
@@ -4016,6 +4021,13 @@ function todayBuild_() {
       var fdBy = {};
       fdRows_().forEach(function (r) { if (r.result !== 'stopped' && r.po) fdBy[poKeyV_(r.po)] = r; });   // rows are in time order: the newest wins
       draft.forEach(function (d) { var r = fdBy[poKeyV_(d.po)]; if (r) d.final = { at: r.at, inv: r.inv, total: r.total }; });
+      // v127 - QuickBooks' own total, when it was read after the final draft reported in (invoice 195
+      // read $5,401.03 here for a day after it had been changed to $5,427.28, then $5,798.01).
+      var qbi = {}; try { qbi = qbiByDoc_(); } catch (eQ) {}
+      draft.forEach(function (d) {
+        var f = d.final, q = f && qbi[String(f.inv || '').trim()];
+        if (q && q.total != null && (!f.at || String(q.readAt) >= String(f.at))) { f.total = q.total; f.qbAt = q.readAt; }   // both 'yyyy-MM-dd HH:mm', Mountain
+      });
     } catch (eFd) {}
   }
   bill.sort(function (a, b) { return b.idle - a.idle; });           // longest-waiting money first
@@ -4133,7 +4145,8 @@ function todayMoney_(sys, inProg, invoiced, paid, fixes) {
     var d = String((f.entry && f.entry['PO#']) || '').replace(/\D/g, ''); if (d.length !== 5) return;
     (fixByD[d] = fixByD[d] || []).push({ key: f.key, short: f.short, name: f.name });
   });
-  var noRateAll = {};
+  var noRateAll = {}, permitByD = {};
+  try { permitByD = permitCostsByD_(); } catch (ePm) {}                  // v127 - permits at cost again
   var build = function (row, stage) {
     var d = String(row.po).replace(/\D/g, ''), c = byD[d] || { hours: 0, pending: 0, labour: 0, mat: 0, budget: 0, people: {} };
     var people = Object.keys(c.people).map(function (em) {
@@ -4152,11 +4165,15 @@ function todayMoney_(sys, inProg, invoiced, paid, fixes) {
       if (need > have) match = { name: nameOf[top] || 'Journeyman', hours: need - have, rate: topRate, bill: todayR2_((need - have) * topRate) };
     }
     var labourBill = people.reduce(function (s, p) { return s + p.bill; }, 0) + (match ? match.bill : 0);
-    var matCost = todayR2_(c.mat), tier = matCost > 0 ? moneyTier_(matCost) : 0, matBill = matCost > 0 ? todayR2_(matCost * (1 + tier)) : 0;
+    // v127 (Paul, 20 Nov: "pass the permit through") - a permit fee is billed AT COST: it is left out of
+    // the markup tier and added back as it is. matCost/matBill still include it (older app builds draw
+    // one Materials row from them); permit says how much of each is the permit.
+    var matCost = todayR2_(c.mat), pmt = Math.min(matCost, todayR2_(permitByD[d] || 0)), parts = todayR2_(matCost - pmt);
+    var tier = parts > 0 ? moneyTier_(parts) : 0, matBill = todayR2_((parts > 0 ? parts * (1 + tier) : 0) + pmt);
     var cost = todayR2_(c.labour + matCost), worth = todayR2_(labourBill + matBill);
     var o = { po: row.po, name: row.name, project: row.project || '', stage: stage, start: row.start || '', end: row.end || '', qb: row.qb || '',
       hours: todayR1_(c.hours + c.pending), pending: todayR1_(c.pending), labourCost: todayR2_(c.labour), labourBill: todayR2_(labourBill),
-      matCost: matCost, tier: tier, matBill: matBill, cost: cost, worth: worth, people: people, match: match,
+      matCost: matCost, tier: tier, matBill: matBill, permit: pmt, cost: cost, worth: worth, people: people, match: match,
       budget: c.budget || 0, fixes: fixByD[d] || [],
       noRate: people.filter(function (p) { return p.rate <= 0; }).map(function (p) { return p.name; }) };
     if (quotes[d]) o.quote = quotes[d];
@@ -13076,7 +13093,7 @@ function invoiceMaterialsSave_(user, p) {
     return '  ' + it.qty + u + ' x ' + it.desc + (it.sku ? ' [' + it.sku + ']' : '') +
       (it.unit === '' ? ' (no cost on file)' : ' @ $' + it.unit.toFixed(2) + (u ? ' per' + u : '') + ' = $' + line.toFixed(2)) +
       (it.supplier || it.invoice ? '  (' + [it.supplier, it.invoice].filter(String).join(' ') + ')' : '') +
-      (isPermitSku_(it.sku) ? '  (the permit fee)' : '');   // v121
+      (isPermitSku_(it.sku) ? '  (PERMIT FEE - its own line "Electrical permit", at cost, never marked up, never rolled into Materials)' : '');   // v121 / v127
   });
   p._list = 'MATERIALS CONFIRMED BY PAUL IN THE APP - ' + billed.length + ' line(s), parts cost $' + total.toFixed(2) +
     (items.length - billed.length ? ' (' + (items.length - billed.length) + ' PO line(s) set to 0 - not billed)' : '') + ':\n' +
@@ -13129,10 +13146,14 @@ function miLines_(billed) {
       supplier: String(it.supplier || '').trim(), invoice: String(it.invoice || '').trim(),
       uc: uc, lc: uc == null ? null : r2(uc * qty), up: null, lp: null };
   });
-  // v123 - a permit fee (SKU PERMIT) is priced like every other line: the final-draft routine rolls
-  // every non-labour line into the materials line and marks it up, so this record must do the same
-  // or it would not add up to the invoice.
-  var priced = lines.filter(function (l) { return l.lc != null; });
+  // v127 (Paul, 20 Nov: "pass the permit through") - a permit fee (SKU PERMIT) is charged AT COST, as
+  // the pricing rules always said: it is not part of the markup tier and its price is its cost. The
+  // final-draft routine now leaves the permit on its own line at cost too, so this adds up to the
+  // invoice. (v123 had priced it like a part because the old routine could not be changed.)
+  var permits = lines.filter(function (l) { return l.lc != null && isPermitSku_(l.sku); });
+  permits.forEach(function (l) { l.lp = l.lc; l.pt = 0; l.up = miUnit_(l.lp, l.qty); });
+  var pmtCost = r2(permits.reduce(function (a, l) { return a + l.lc; }, 0));
+  var priced = lines.filter(function (l) { return l.lc != null && !isPermitSku_(l.sku); });
   var cost = r2(priced.reduce(function (a, l) { return a + l.lc; }, 0));
   var tier = miTier_(cost), k = 1 + tier / 100;
   priced.forEach(function (l) { l.lp = r2(l.lc * k); });
@@ -13146,7 +13167,7 @@ function miLines_(billed) {
     if (pick) pick.lp = r2(pick.lp + diff);
   }
   priced.forEach(function (l) { l.up = miUnit_(l.lp, l.qty); });
-  return { lines: lines, cost: cost, tier: tier, price: target };
+  return { lines: lines, cost: r2(cost + pmtCost), tier: tier, price: r2(target + pmtCost), permits: pmtCost, partsCost: cost, partsPrice: target };
 }
 /* The shortest unit price (2 to 6 decimals) that multiplies back to the line's amount exactly, so a
  * customer checking quantity x price gets the amount printed beside it. */
@@ -13174,7 +13195,7 @@ function materialsInvoicedSave_(user, po, job, billed) {
     if (oldPdf && miSig_(old) === miSig_(m.lines)) keptPdf = oldPdf;     // rebuilt, prints the same: the PDF still fits
     if (m.lines.length) sh.getRange(sh.getLastRow() + 1, 1, m.lines.length, MI_HEADERS.length).setValues(m.lines.map(function (l) {
       return [now, po, txt_(job), l.qty, txt_(l.uom), txt_(l.desc), asText_(l.sku), txt_(l.supplier), asText_(l.invoice),
-        l.uc == null ? '' : l.uc, l.lc == null ? '' : l.lc, m.tier, l.up == null ? '' : l.up, l.lp == null ? '' : l.lp, user.email, keptPdf];
+        l.uc == null ? '' : l.uc, l.lc == null ? '' : l.lc, l.pt == null ? m.tier : l.pt, l.up == null ? '' : l.up, l.lp == null ? '' : l.lp, user.email, keptPdf];
     }));
   });
   log_(user, 'materialsInvoiced', job, po, m.lines.length + ' line(s), cost $' + m.cost.toFixed(2) + ', markup ' + m.tier + '%, price $' + m.price.toFixed(2) +
@@ -13193,7 +13214,8 @@ function materialsInvoiced_(user, p) {
   if (last >= 2) sh.getRange(2, 1, last - 1, MI_HEADERS.length).getValues().forEach(function (r) {
     if (invlKey_(String(r[1] || '').trim(), String(r[2] || '')) !== want) return;
     builtAt = r[0] instanceof Date ? r[0].toISOString() : String(r[0]); builtBy = String(r[14] || ''); pdf = String(r[15] || '');
-    tier = Number(r[11]) || 0; site = String(r[2] || '');
+    if (!isPermitSku_(r[6]) || tier == null) tier = Number(r[11]) || 0;   // v127 - a permit row carries 0 %: show the parts' tier
+    site = String(r[2] || '');
     lines.push({ qty: Number(r[3]) || 0, uom: String(r[4] || ''), desc: String(r[5] || ''), sku: String(r[6] || ''),
       supplier: String(r[7] || ''), invoice: String(r[8] || ''), uc: n(r[9]), lc: n(r[10]), up: n(r[12]), lp: n(r[13]) });
   });
@@ -13203,8 +13225,10 @@ function materialsInvoiced_(user, p) {
   var list = null;
   try { var im = invoiceMaterials_(user, { po: po, jobSite: job });
         if (im.found) list = { savedAt: im.savedAt, lines: (im.items || []).length, cost: im.partsCost }; } catch (eList) {}
+  var permits = Math.round(lines.filter(function (l) { return isPermitSku_(l.sku); })
+    .reduce(function (a, l) { return a + (l.lc || 0); }, 0) * 100) / 100;                       // v127 - billed at cost
   return { found: lines.length > 0, builtAt: builtAt, builtBy: builtBy, pdfUrl: pdf, tier: tier, jobSite: site, lines: lines,
-    cost: sum('lc'), price: sum('lp'), list: list };
+    cost: sum('lc'), price: sum('lp'), permits: permits, list: list };
 }
 /* v121 - action "materialsInvoicedBuild" { po, jobSite }: make (or bring up to date) the Materials
  * invoiced breakdown from the job's saved parts list, without building anything in QuickBooks.
@@ -14567,6 +14591,7 @@ function eventInfoMany_(user, p) {
 }
 function keepWarm() {
   try { fdSweep_(); } catch (eFd) {}             // v118 - a built final draft is closed out within 5 minutes, day or night
+  try { cvMaybeBuild_(); } catch (eCv) { try { log_({ email: 'system' }, 'jobView', 'keepWarm', '', 'FAILED: ' + (eCv && eCv.message || eCv)); } catch (e2) {} }   // v127 - Claude's read-only job view
   var h = Number(Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/Edmonton', 'H'));
   if (h < 6 || h >= 20) return;   // 6 am to 8 pm; overnight the first tap can take its time
   try { CacheService.getScriptCache().put('warm', String(Date.now()), 600); } catch (e) {}
@@ -15380,16 +15405,27 @@ function heldScanSettle_(ex, user) {
  * it is, and the Sweep log says why.
  *
  * Filed as ONE line on the job's Job POs - so it shows under Supplier's receipts and in Build
- * initial draft's parts list - SKU PERMIT, "Electrical permit - <customer>", qty 1, the fee before
- * GST, the PDF in the job's folder. Never into the price list or the shelf count: a permit is not a
- * part. On the invoice it is treated like the job's other materials (v123): the final-draft routine
- * rolls every non-labour line into the materials line with the markup, and that routine can only be
- * edited by Paul, so the money card and Materials invoiced count the permit the same way and agree
- * with the invoice. (The skill's pricing notes call a permit a pass-through at cost - Paul's call.)
+ * initial draft's parts list - SKU PERMIT, "Electrical permit", qty 1, the fee before GST, the PDF in
+ * the job's folder. Never into the price list or the shelf count: a permit is not a part.
+ * v127 (Paul, 20 Nov: "pass the permit through") - BILLED AT COST, its own line "Electrical permit"
+ * on the invoice, never in the markup tier and never rolled into the Materials line: the money card,
+ * Materials invoiced and both invoice routines (now ones Claude owns and can keep in step) agree.
  * The same invoice number from the same issuer is filed once.
  * ============================================================================================= */
 var PERMIT_SKU_ = 'PERMIT';
 function isPermitSku_(sku) { return String(sku == null ? '' : sku).trim().toUpperCase() === PERMIT_SKU_; }
+
+/* v127 - { five digits of the job number: permit fees on its Job POs }, for the money card. */
+function permitCostsByD_() {
+  var out = {}, sh = plTab_(POS_TAB, POS_HEADERS), last = sh.getLastRow();
+  if (last < 2) return out;
+  sh.getRange(2, 1, last - 1, 10).getValues().forEach(function (r) {
+    if (!isPermitSku_(r[6])) return;
+    var d = String(r[3] || '').replace(/\D/g, ''); if (d.length !== 5) return;
+    out[d] = Math.round(((out[d] || 0) + (Number(r[8]) || 0) * (Number(r[9]) || 0)) * 100) / 100;
+  });
+  return out;
+}
 
 function permitSender_(from) {
   var f = lc_(from), a = /<([^>]+)>/.exec(f), addr = a ? a[1] : f;
@@ -15612,4 +15648,593 @@ function permitSweepRun_(opts) {
 function permitSweep_(user, p) {
   requireAdmin_(user);
   return permitSweepRun_({ days: p && p.days, dryRun: !!(p && p.dryRun) });
+}
+
+/* =============================================================================================
+ * v127 - THE INVOICE BUTTONS' ROUTINES ARE CONNECTED FROM THE APP  (Paul, 20 Nov)
+ *
+ * Build Initial Draft and Build Final Draft each start a Claude routine through its API trigger
+ * (invoiceFire_). The two routines in use were made by hand, and a routine made that way can only
+ * be changed by hand: when the rules changed (a draft never changes the job's status, permits at
+ * cost, a push instead of an email) Claude could not bring them up to date. They are replaced by
+ * two routines Claude made and can keep in step, and their start address and token are pasted here
+ * instead of into the Apps Script editor:
+ *   action "invoiceRoutines"   - admins: what each button is connected to. The token is never sent
+ *                                back - only that one is saved and its last four characters.
+ *   action "invoiceRoutineSet" - admins: { stage: 'initial'|'final', url, token, test } saves the
+ *                                pair after checking its shape; test: true starts the routine with a
+ *                                PING that it answers in one line, changing nothing.
+ * Same Script properties as before (INVOICE_FIRE_URL / _TOKEN, INVOICE_FINAL_FIRE_URL / _TOKEN), so
+ * invoiceFire_ is unchanged and a pair set in the editor still works.
+ * ============================================================================================= */
+var INV_ROUTINE_ = {
+  initial: { url: 'INVOICE_FIRE_URL', tok: 'INVOICE_FIRE_TOKEN', label: 'Build Initial Draft' },
+  final:   { url: 'INVOICE_FINAL_FIRE_URL', tok: 'INVOICE_FINAL_FIRE_TOKEN', label: 'Build Final Draft' },
+  META: 'INVOICE_ROUTINES_META'
+};
+function invRoutineId_(url) { var m = /\/routines\/(trig_[A-Za-z0-9]+)\/fire\b/.exec(String(url || '')); return m ? m[1] : ''; }
+function invRoutineMeta_() {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(INV_ROUTINE_.META) || '{}') || {}; } catch (e) { return {}; }
+}
+function invoiceRoutines_(user) {
+  requireAdmin_(user);
+  var props = PropertiesService.getScriptProperties(), meta = invRoutineMeta_(), out = {};
+  ['initial', 'final'].forEach(function (k) {
+    var c = INV_ROUTINE_[k], url = props.getProperty(c.url) || '', tok = props.getProperty(c.tok) || '', m = meta[k] || {};
+    out[k] = { label: c.label, connected: !!(url && tok), routine: invRoutineId_(url), tokenEnds: tok ? tok.slice(-4) : '',
+               savedAt: m.at || '', savedBy: m.by || '', tested: m.tested || null };
+  });
+  try { out.jobView = cvState_(); } catch (e) {}
+  return out;
+}
+function invoiceRoutineSet_(user, p) {
+  requireAdmin_(user);
+  p = p || {};
+  var k = p.stage === 'final' ? 'final' : p.stage === 'initial' ? 'initial' : '';
+  if (!k) throw new Error('Say which button: initial or final.');
+  var c = INV_ROUTINE_[k], props = PropertiesService.getScriptProperties();
+  var url = String(p.url || '').trim(), tok = String(p.token || '').replace(/\s+/g, '');
+  if (url || tok) {
+    if (!/^https:\/\/api\.anthropic\.com\/v1\/claude_code\/routines\/trig_[A-Za-z0-9]+\/fire$/.test(url))
+      throw new Error('That is not a routine start address. It looks like https://api.anthropic.com/v1/claude_code/routines/trig_…/fire');
+    if (!/^sk-ant-[A-Za-z0-9_\-]{20,}$/.test(tok))
+      throw new Error('That is not a routine token. It starts with sk-ant- and is shown once, when the API trigger is added.');
+    props.setProperty(c.url, url);
+    props.setProperty(c.tok, tok);
+    var meta = invRoutineMeta_();
+    meta[k] = { at: Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/Edmonton', 'yyyy-MM-dd HH:mm'), by: user.email, tested: null };
+    props.setProperty(INV_ROUTINE_.META, JSON.stringify(meta));
+    log_(user, 'invoiceRoutineSet', c.label, '', 'connected to ' + invRoutineId_(url) + ' (token ending ' + tok.slice(-4) + ')');
+  }
+  var out = invoiceRoutines_(user);
+  if (p.test) out.test = invoiceRoutinePing_(user, k);
+  return out;
+}
+function invoiceRoutinePing_(user, k) {
+  var c = INV_ROUTINE_[k], props = PropertiesService.getScriptProperties();
+  var url = props.getProperty(c.url), tok = props.getProperty(c.tok);
+  if (!url || !tok) return { ok: false, note: 'Nothing is saved for this button yet.' };
+  var code = 0, body = '';
+  try {
+    var res = UrlFetchApp.fetch(url, { method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      headers: { 'Authorization': 'Bearer ' + tok, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'experimental-cc-routine-2026-04-01' },
+      payload: JSON.stringify({ text: 'PING - connection test from the timesheet app (' + c.label + ' button). Change nothing. Reply with one line.' }) });
+    code = res.getResponseCode(); body = res.getContentText();
+  } catch (e) { return { ok: false, note: 'Claude could not be reached: ' + e.message }; }
+  var ok = code >= 200 && code < 300, j = {};
+  try { j = JSON.parse(body); } catch (e) {}
+  var meta = invRoutineMeta_(); meta[k] = meta[k] || {};
+  meta[k].tested = { at: Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/Edmonton', 'yyyy-MM-dd HH:mm'), ok: ok, code: code };
+  props.setProperty(INV_ROUTINE_.META, JSON.stringify(meta));
+  log_(user, 'invoiceRoutinePing', c.label, '', ok ? 'started' : ('refused ' + code));
+  return { ok: ok, code: code, sessionUrl: j.claude_code_session_url || '',
+    note: ok ? 'Claude started. It only answers "connected" and changes nothing.'
+         : (code === 401 || code === 403) ? 'Refused (' + code + '): the token does not belong to that routine. Copy both again from its API trigger.'
+         : code === 404 ? 'Not found (404): that routine does not exist, or was deleted.'
+         : 'Refused (' + code + ').' };
+}
+
+/* =============================================================================================
+ * v127 - QUICKBOOKS INVOICES AS QUICKBOOKS HAS THEM  (action "qbInvoicesPost", inbound key)
+ *
+ * Apps Script has no way into QuickBooks; Claude has. The invoice routines, and a small read-only
+ * routine a few times a day, post the invoices exactly as QuickBooks returns them - the downloaded
+ * query result as it is, so nothing is copied out by hand - and they are kept on the 'QB invoices'
+ * tab, one row per invoice, newest read wins. The job view compares the app's lines with these.
+ * payload: { invoices: [ <QuickBooks Invoice objects> ] } or { download: <the query download> },
+ *          by: who posted it. Nothing in QuickBooks is changed by any of this.
+ * ============================================================================================= */
+var QBI_TAB = 'QB invoices';
+var QBI_HEADERS = ['Read at', 'Invoice #', 'QuickBooks id', 'Customer', 'Invoice date', 'Stage', 'Before GST', 'GST', 'Total',
+  'Balance', 'Email status', 'Sent at', 'Private note', 'Customer memo', 'Lines', 'Changed in QuickBooks', 'Posted by'];
+function qbiSheet_() {
+  var sh = masterSheet_(QBI_TAB);
+  if (sh.getLastRow() === 0) sh.getRange(1, 1, 1, QBI_HEADERS.length).setValues([QBI_HEADERS]).setFontWeight('bold');
+  return sh;
+}
+function qbiNum_(v) { if (v === '' || v == null) return null; var n = Number(v); return isFinite(n) ? n : null; }
+var QBI_LABOUR_ITEMS_ = ['23', '85'];          // Labor - Red Seal Journeyman, Labor - Electrician's Apprentice (1)
+function qbiIsPermitLine_(l) { return /permit/i.test(String((l && l.desc) || '')); }
+/* initial draft (the at-cost pass, still to be corrected) or final draft (parts rolled up and marked up). */
+function qbiStage_(memo, lines) {
+  if (/initial draft/i.test(memo)) return 'initial draft';
+  var parts = (lines || []).filter(function (l) {
+    return l.item != null && QBI_LABOUR_ITEMS_.indexOf(String(l.itemId || '')) < 0 && !qbiIsPermitLine_(l); }).length;
+  return parts >= 2 ? 'draft - memo cleared, parts still one per line' : 'final draft';
+}
+function qbInvoicesPost_(user, p) {
+  p = p || {};
+  var list = Array.isArray(p.invoices) ? p.invoices
+           : (p.download && p.download.query_response && Array.isArray(p.download.query_response.Invoice)) ? p.download.query_response.Invoice : [];
+  if (!list.length) return { saved: 0, note: 'no invoices in the payload' };
+  if (list.length > 1000) throw new Error('Too many invoices in one post (' + list.length + '); send at most 1000.');
+  var tz = Session.getScriptTimeZone() || 'America/Edmonton', now = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH:mm');
+  var by = String(p.by || user.email || '').slice(0, 80), r2 = function (n) { return Math.round(n * 100) / 100; };
+  var fresh = [];
+  list.forEach(function (inv) {
+    if (!inv || typeof inv !== 'object') return;
+    var doc = String(inv.DocNumber == null ? '' : inv.DocNumber).trim(), id = String(inv.Id == null ? '' : inv.Id).trim();
+    if (!doc && !id) return;
+    var lines = (Array.isArray(inv.Line) ? inv.Line : []).filter(function (l) { return l && l.DetailType !== 'SubTotalLineDetail'; }).map(function (l) {
+      var o = { n: l.LineNum == null ? null : l.LineNum, desc: String(l.Description == null ? '' : l.Description).slice(0, 2000), amt: qbiNum_(l.Amount) };
+      if (l.DetailType === 'SalesItemLineDetail') {
+        var s = l.SalesItemLineDetail || {}, ir = s.ItemRef || {};
+        o.item = String(ir.name || ir.value || ''); o.itemId = String(ir.value || ''); o.qty = qbiNum_(s.Qty); o.rate = qbiNum_(s.UnitPrice);
+      } else o.kind = String(l.DetailType || '');
+      return o;
+    });
+    var tot = qbiNum_(inv.TotalAmt), tax = inv.TxnTaxDetail ? qbiNum_(inv.TxnTaxDetail.TotalTax) : null;
+    var note = String(inv.PrivateNote || ''), memo = String((inv.CustomerMemo && inv.CustomerMemo.value) || '');
+    fresh.push({ id: id, doc: doc, row: [now, txt_(doc), txt_(id), txt_(String((inv.CustomerRef && inv.CustomerRef.name) || '')), dstr_(inv.TxnDate),
+      qbiStage_(note + ' ' + memo, lines), (tot != null && tax != null) ? r2(tot - tax) : '', tax == null ? '' : tax, tot == null ? '' : tot,
+      inv.Balance == null ? '' : qbiNum_(inv.Balance), String(inv.EmailStatus || ''),
+      String((inv.DeliveryInfo && inv.DeliveryInfo.DeliveryTime) || ''), txt_(note.slice(0, 500)), txt_(memo.slice(0, 500)),
+      JSON.stringify(lines).slice(0, 49000), String((inv.MetaData && inv.MetaData.LastUpdatedTime) || ''), txt_(by)] });
+  });
+  var added = 0, updated = 0;
+  withLock_(function () {
+    var sh = qbiSheet_(), last = sh.getLastRow(), W = QBI_HEADERS.length;
+    var all = last >= 2 ? sh.getRange(2, 1, last - 1, W).getValues() : [];
+    var byId = {}, byDoc = {};
+    all.forEach(function (r, i) { var id = String(r[2] || '').trim(), doc = String(r[1] || '').trim(); if (id) byId[id] = i; if (doc && byDoc[doc] === undefined) byDoc[doc] = i; });
+    fresh.forEach(function (f) {
+      var i = f.id && byId[f.id] !== undefined ? byId[f.id] : (!f.id && f.doc && byDoc[f.doc] !== undefined ? byDoc[f.doc] : -1);
+      if (i >= 0) { all[i] = f.row; updated++; }
+      else { all.push(f.row); if (f.id) byId[f.id] = all.length - 1; if (f.doc) byDoc[f.doc] = all.length - 1; added++; }
+    });
+    // newest invoice number first, so a person reading the tab finds the live ones at the top
+    all.sort(function (a, b) { return (Number(String(b[1]).replace(/\D/g, '')) || 0) - (Number(String(a[1]).replace(/\D/g, '')) || 0); });
+    if (all.length) {
+      sh.getRange(2, 2, all.length, 2).setNumberFormat('@');
+      sh.getRange(2, 1, all.length, W).setValues(all);
+    }
+  });
+  try { PropertiesService.getScriptProperties().setProperty('cv_dirty', String(Date.now())); } catch (e) {}
+  log_(user, 'qbInvoicesPost', by, '', fresh.length + ' invoice(s): ' + added + ' new, ' + updated + ' updated');
+  return { saved: fresh.length, added: added, updated: updated, readAt: now };
+}
+/* { invoice number: what QuickBooks said, as last posted }. */
+function qbiByDoc_() {
+  var sh = qbiSheet_(), last = sh.getLastRow(), out = {};
+  if (last < 2) return out;
+  sh.getRange(2, 1, last - 1, QBI_HEADERS.length).getValues().forEach(function (r) {
+    var doc = String(r[1] == null ? '' : r[1]).trim(); if (!doc || out[doc]) return;
+    var lines = []; try { lines = JSON.parse(String(r[14] || '[]')) || []; } catch (e) {}
+    var n = function (v) { return qbiNum_(v); };
+    out[doc] = { readAt: r[0] instanceof Date ? Utilities.formatDate(r[0], Session.getScriptTimeZone() || 'America/Edmonton', 'yyyy-MM-dd HH:mm') : String(r[0] || ''),
+      doc: doc, id: String(r[2] || ''), customer: String(r[3] || ''), date: dstr_(r[4]), stage: String(r[5] || ''),
+      sub: n(r[6]), gst: n(r[7]), total: n(r[8]), balance: n(r[9]), email: String(r[10] || ''), sentAt: String(r[11] || ''),
+      note: String(r[12] || ''), memo: String(r[13] || ''), lines: lines, changedAt: String(r[15] || '') };
+  });
+  return out;
+}
+
+/* =============================================================================================
+ * v127 - THE JOB VIEW: A READ-ONLY DOOR FOR CLAUDE  (Paul, 20 Nov: "the timesheet app to be the
+ * single source for job information")
+ *
+ * Claude outside this build could read the raw tabs, QuickBooks, Drive and Gmail, but not the app's
+ * own job screens. Asked whether Paddy Harrison's permit fee (AtPeace 26045) was on invoice 195 with
+ * the materials, it could see the invoice and not the job's material lines with their prices and the
+ * permit line. Three tabs on the timesheet workbook now carry what the job screens show, worked out
+ * from the same sheets by the same rules (the parts list's grouping, the markup tiers, permits at
+ * cost, the half-hour rounding and the journeyman line raised to match the apprentice):
+ *   Job view        one row per job on the PO Log (newest first): the PO Log row; the QuickBooks
+ *                   invoice - number, initial or final draft, total, sent, paid; hours and labour at
+ *                   the charged rates; the parts cost, markup tier and price; permit fees at cost and
+ *                   whether the permit is on the invoice; and the rows of the other two tabs that
+ *                   hold the job.
+ *   Job view lines  every material line: the supplier's receipts and invoices, permit fees, parts
+ *                   added by hand on the parts list, parts used from shop stock, then the lines of
+ *                   the job's QuickBooks invoice - cost, markup, price to the customer, and whether
+ *                   each is on the QuickBooks invoice.
+ *   Job view hours  every shift per person per day, approved or pending, at the charged rate, then
+ *                   each person's total rounded to the half hour as the invoice bills it.
+ * QuickBooks figures are QuickBooks' own, from the 'QB invoices' tab (qbInvoicesPost).
+ * READ ONLY: nothing reads these tabs back. An edit on them changes nothing in the app and is
+ * overwritten. Pay rates are not on them. Hours clocked with no job number (shop, PCW) are not either.
+ * FAST: Claude reads a sheet; nothing is worked out while it waits. keepWarm looks every 5 minutes
+ * and rebuilds when one of the three workbooks changed or a post came in (hourly regardless, every
+ * 3 hours at night), and a tab is rewritten only when what it says changed.
+ * ============================================================================================= */
+var CV_ = { JOBS: 'Job view', LINES: 'Job view lines', HOURS: 'Job view hours',
+  GAP_MS: 4 * 60000, DAY_AGE_MS: 60 * 60000, NIGHT_AGE_MS: 3 * 3600000 };
+var CV_JOB_HEADERS = ['PO', 'Customer', 'Company', 'Project', 'Job address', 'Status (PO Log)', 'Start', 'End',
+  'QuickBooks invoice #', 'Invoice stage', 'Invoice total (with GST)', 'Invoice before GST', 'Sent to customer', 'Paid',
+  'QuickBooks read at', 'Hours approved', 'Hours pending', 'Labour at charged rates', 'Parts cost on receipts',
+  'Parts cost on the parts list', 'Markup %', 'Parts price to customer', 'Permit fees (at cost)', 'Permit on the QuickBooks invoice?',
+  'Parts list saved', 'Receipt parts not on the parts list', 'Rows in "Job view lines"', 'Rows in "Job view hours"', 'Notes'];
+var CV_LINE_HEADERS = ['PO', 'Customer', 'Kind', 'Date', 'From', 'Document #', 'SKU / item', 'Description', 'Qty', 'Unit',
+  'Qty used on the job (this part, all receipts)', 'Unit cost', 'Cost', 'Price source', 'Qty on the parts list', 'Markup %',
+  'Unit price to customer', 'Price to customer', 'On the QuickBooks invoice?', 'Note'];
+var CV_HOUR_HEADERS = ['PO', 'Customer', 'Date', 'Employee', 'Clock in', 'Clock out', 'Hours', 'Status', 'Charged rate',
+  'At the charged rate', 'Note'];
+
+function cvState_() {
+  var st = {}; try { st = JSON.parse(PropertiesService.getScriptProperties().getProperty('cv_state') || '{}') || {}; } catch (e) {}
+  return { builtAt: st.atText || '', changedAt: st.changedText || '', jobs: st.jobs || 0, lines: st.lines || 0, hours: st.hours || 0, ms: st.ms || 0 };
+}
+function cvStamps_() {
+  var out = {};
+  [CONFIG.MASTER_SPREADSHEET_ID, CONFIG.PO_SPREADSHEET_ID, CONFIG.PRICELIST_SPREADSHEET_ID].forEach(function (id) {
+    try { out[id] = DriveApp.getFileById(id).getLastUpdated().getTime(); } catch (e) { out[id] = -1; }
+  });
+  return out;
+}
+/* Called by keepWarm every 5 minutes. */
+function cvMaybeBuild_() {
+  var props = PropertiesService.getScriptProperties(), now = Date.now(), st = {};
+  try { st = JSON.parse(props.getProperty('cv_state') || '{}') || {}; } catch (e) {}
+  if (st.at && now - st.at < CV_.GAP_MS) return { skipped: 'built ' + Math.round((now - st.at) / 1000) + ' s ago' };
+  var h = Number(Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/Edmonton', 'H'));
+  var maxAge = (h >= 6 && h < 22) ? CV_.DAY_AGE_MS : CV_.NIGHT_AGE_MS;
+  var stamps = cvStamps_(), why = !st.at ? 'first build' : (now - st.at >= maxAge) ? 'due' : props.getProperty('cv_dirty') ? 'posted' : '';
+  if (!why) Object.keys(stamps).forEach(function (id) { if (stamps[id] < 0 || !st.seen || stamps[id] > (st.seen[id] || 0)) why = 'changed'; });
+  if (!why) return { skipped: 'nothing changed' };
+  return cvBuild_({ stamps: stamps, why: why });
+}
+/* Builds the three tabs. { force, stamps, why }. One build at a time (the cache, not the script lock -
+ * a punch must never wait behind this). */
+function cvBuild_(opts) {
+  opts = opts || {};
+  var cache = CacheService.getScriptCache();
+  if (cache.get('cv_building') && !opts.force) return { busy: true };
+  cache.put('cv_building', '1', 300);
+  var t0 = Date.now(), tz = Session.getScriptTimeZone() || 'America/Edmonton';
+  try {
+    var pre = opts.stamps || cvStamps_();
+    var dirtyAt = PropertiesService.getScriptProperties().getProperty('cv_dirty');
+    var r = cvCompute_();
+    var at = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH:mm');
+    var wrote = [];
+    if (cvWrite_(CV_.JOBS, 'READ-ONLY COPY of the PRO timesheet app\'s job screens: one row per job on the PO Log, newest first. ' +
+        'Content last changed ' + at + ' Mountain; the app re-checks it every 5 minutes and rewrites it when anything differs. ' +
+        'QuickBooks figures are QuickBooks\' own, as read at the time in column O. A job\'s material lines and its hours are in the tabs ' +
+        '"Job view lines" and "Job view hours" at the rows given in columns AA and AB. Edits made here are overwritten and never reach the app.',
+        CV_JOB_HEADERS, r.jobs, [1, 7, 8, 9, 15, 25])) wrote.push(CV_.JOBS);
+    if (cvWrite_(CV_.LINES, 'READ-ONLY. Every material line of each job: the supplier\'s receipts and invoices, permit fees (billed at cost, ' +
+        'no markup, their own line "Electrical permit"), parts added by hand on the parts list, parts used from shop stock, and then the lines ' +
+        'of the job\'s QuickBooks invoice as QuickBooks has them. Price to customer = cost plus the job\'s markup tier (one tier on the parts ' +
+        'total: 43% under $1,000, 36% to $5,000, 30% to $10,000, 20% above). A part bought on several receipts at one price is billed together: ' +
+        'its price is on the first of those rows. Content last changed ' + at + ' Mountain.',
+        CV_LINE_HEADERS, r.lines, [1, 4, 6, 7])) wrote.push(CV_.LINES);
+    if (cvWrite_(CV_.HOURS, 'READ-ONLY. Every shift on each job, per person per day, approved or pending, at the person\'s charged rate; then ' +
+        'each person\'s total rounded to the half hour, as the invoice bills it, and the journeyman line raised to match the apprentice\'s ' +
+        'hours (Paul\'s invoice rule). Pay rates are not here. Content last changed ' + at + ' Mountain.',
+        CV_HOUR_HEADERS, r.hours, [1, 3, 5, 6])) wrote.push(CV_.HOURS);
+    SpreadsheetApp.flush();
+    var seen = {};
+    Object.keys(pre).forEach(function (id) { seen[id] = pre[id]; });
+    if (wrote.length) { try { seen[CONFIG.MASTER_SPREADSHEET_ID] = DriveApp.getFileById(CONFIG.MASTER_SPREADSHEET_ID).getLastUpdated().getTime(); } catch (e) {} }
+    var props = PropertiesService.getScriptProperties(), prev = {};
+    try { prev = JSON.parse(props.getProperty('cv_state') || '{}') || {}; } catch (e) {}
+    var st = { at: Date.now(), atText: at, changedText: wrote.length ? at : (prev.changedText || at), seen: seen, ms: Date.now() - t0,
+               jobs: r.jobs.length, lines: r.lines.length, hours: r.hours.length, why: opts.why || (opts.force ? 'asked' : '') };
+    props.setProperty('cv_state', JSON.stringify(st));
+    if (dirtyAt && props.getProperty('cv_dirty') === dirtyAt) props.deleteProperty('cv_dirty');   // a post during the build keeps it set
+    return { built: true, wrote: wrote, jobs: st.jobs, lines: st.lines, hours: st.hours, ms: st.ms, at: at };
+  } finally { cache.remove('cv_building'); }
+}
+/* One tab: row 1 the note, row 2 the headers, then the rows. Written only when they changed. */
+function cvWrite_(name, note, headers, rows, textCols) {
+  var W = headers.length, sh = masterSheet_(name);
+  var body = rows.map(function (r) {
+    var o = r.slice(0, W); while (o.length < W) o.push('');
+    return o.map(function (v) { return v == null ? '' : (typeof v === 'string' ? txt_(v) : v); });
+  });
+  var sig = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, JSON.stringify([headers, body]), Utilities.Charset.UTF_8));
+  var props = PropertiesService.getScriptProperties(), pk = 'cv_sig_' + name.replace(/\W+/g, '_');
+  if (props.getProperty(pk) === sig && sh.getLastRow() === body.length + 2) return false;
+  var noteRow = [note]; while (noteRow.length < W) noteRow.push('');
+  var all = [noteRow, headers].concat(body);
+  if (sh.getMaxColumns() < W) sh.insertColumnsAfter(sh.getMaxColumns(), W - sh.getMaxColumns());
+  if (sh.getMaxRows() < all.length) sh.insertRowsAfter(sh.getMaxRows(), all.length - sh.getMaxRows());
+  if (body.length) (textCols || []).forEach(function (c) { sh.getRange(3, c, body.length, 1).setNumberFormat('@'); });
+  sh.getRange(1, 1, all.length, W).setValues(all);
+  var last = sh.getLastRow();
+  if (last > all.length) sh.getRange(all.length + 1, 1, last - all.length, Math.max(W, sh.getLastColumn())).clearContent();
+  if (sh.getFrozenRows() !== 2) {
+    sh.setFrozenRows(2);
+    sh.getRange(2, 1, 1, W).setFontWeight('bold');
+    sh.getRange(1, 1).setFontStyle('italic').setWrap(false);
+  }
+  props.setProperty(pk, sig);
+  return true;
+}
+/* Everything the three tabs say, worked out from the sheets the job screens read. */
+function cvCompute_() {
+  var sys = { email: 'system', role: 'admin', permissions: defaultPermissions_('admin') };
+  var tz = Session.getScriptTimeZone() || 'America/Edmonton';
+  var r2 = function (n) { return Math.round((Number(n) || 0) * 100) / 100; };
+  var money = function (n) { return n == null || n === '' ? '' : r2(n); };
+  var dig = function (v) { var d = String(v == null ? '' : v).replace(/\D/g, ''); return d.length === 5 ? d : ''; };
+  var nm = function (s) { return lc_(s).replace(/\s+/g, ' '); };
+  var hm = function (iso) { if (!iso) return ''; var d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : Utilities.formatDate(d, tz, 'h:mm a'); };
+  var dayOf = function (iso) { if (!iso) return ''; var d = new Date(iso); return isNaN(d.getTime()) ? dstr_(iso) : Utilities.formatDate(d, tz, 'yyyy-MM-dd'); };
+  var fm = function (n) { return '$' + r2(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); };
+
+  // 1. the jobs: every PO Log row carrying a job number and a customer (cancelled ones are not jobs)
+  var t = poLogOpen_(), last = t.sh.getLastRow(), width = t.sh.getLastColumn();
+  var heads = t.sh.getRange(t.headerRow, 1, 1, width).getValues()[0].map(function (h) { return lc_(h); });
+  var ci = function (name) { return heads.indexOf(name); };
+  var rows = last > t.headerRow ? t.sh.getRange(t.headerRow + 1, 1, last - t.headerRow, width).getDisplayValues() : [];
+  var jobs = {}, order = [], byName = {};
+  rows.forEach(function (r) {
+    var g = function (n) { var i = ci(n); return i < 0 ? '' : String(r[i] == null ? '' : r[i]).trim(); };
+    var po = g('po number'), d = dig(po);
+    if (!d || !/^[A-Za-z]{0,2}[\s\-]?\d{5}$/.test(po)) return;
+    var contact = g('contact person'), company = g('company name');
+    if (!contact && !company) return;
+    if (/^cancell?ed$/i.test(g('status'))) return;
+    if (jobs[d]) { jobs[d].notes.push('Two PO Log rows carry this number; the first is shown.'); return; }
+    var j = jobs[d] = { d: d, po: po.toUpperCase().replace(/[\s\-]/g, ''), contact: contact, company: company, project: g('project name'),
+      address: g('job address'), status: g('status'), start: g('start date'), end: g('end date'), qb: g('po number in quickbooks'),
+      recs: [], used: {}, list: null, mi: null, shifts: [], notes: [] };
+    order.push(d);
+    [contact, company].forEach(function (n) { var k = nm(n); if (k) (byName[k] = byName[k] || []).push(j); });
+  });
+  var jobOf = function (po, site) {
+    var d = dig(po); if (d) return jobs[d] || null;                  // a number not on the PO Log is not in this view
+    var s = String(site == null ? '' : site).trim(), sd = /^[A-Za-z]{0,2}[\s\-]?\d{5}$/.test(s) ? dig(s) : '';
+    if (sd) return jobs[sd] || null;
+    var hits = byName[nm(s)] || [];
+    if (hits.length === 1) return hits[0];
+    var open = hits.filter(function (j) { return /in progress/i.test(j.status); });
+    return open.length === 1 ? open[0] : null;
+  };
+
+  // 2. the crew and their CHARGED rates (never the pay rates)
+  var allEmps = listEmployees_(sys).employees, rate = {}, role = {}, nameOf = {}, top = '', topRate = 0;
+  allEmps.forEach(function (e) {
+    var em = lc_(e.email), cr = Number(e.permissions && e.permissions.chargeRate) || 0;
+    rate[em] = cr; role[em] = e.role; nameOf[em] = e.name;
+    if (e.active && cr > topRate) { topRate = cr; top = em; }
+  });
+
+  // 3. every shift with a job number
+  var pidx = null; try { pidx = poJobIndex_(); } catch (e) {}
+  allEmps.filter(function (e) { return e.role !== 'bookkeeper'; }).forEach(function (emp) {
+    listEntries_(sys, { email: emp.email, days: 3650, maxRows: 20000 }).entries.forEach(function (e) {
+      var h = Number(e.Hours) || 0;
+      if (!h || e.Status === 'rejected' || e.Status === 'deleted') return;
+      var hit = jobByPo_(pidx, String(e['PO#'] || '').trim()); if (!hit) return;
+      var j = jobs[dig(hit.po) || dig(hit.key)]; if (!j) return;
+      j.shifts.push({ date: dstr_(e.Date) || dayOf(e.ClockIn), email: lc_(emp.email), name: nameOf[lc_(emp.email)] || emp.name,
+        in: e.ClockIn || '', out: e.ClockOut || '', hours: h, status: String(e.Status || ''), notes: String(e.Notes || '').replace(/\s+/g, ' ').slice(0, 120) });
+    });
+  });
+
+  // 4. units of measure off the price list, as the parts list shows them
+  var uBySku = {}, uByDesc = {};
+  try { matRows_().rows.forEach(function (r) {
+    var u = String(r[M_UNIT-1] || '').trim(); if (!u) return;
+    var sk = String(r[M_SKU-1] || '').trim().toUpperCase(); if (sk && !uBySku[sk]) uBySku[sk] = u;
+    var ds = lc_(r[M_DESC-1]); if (ds && !uByDesc[ds]) uByDesc[ds] = u;
+  }); } catch (e) {}
+  var uomOf = function (sku, desc) { return uBySku[String(sku || '').trim().toUpperCase()] || uByDesc[lc_(desc)] || matUnit_(desc, ''); };
+
+  // 5. the supplier's receipts and invoices (Job POs), the parts used (Job usage), the saved parts lists
+  //    (Invoice lists) and the priced breakdowns (Materials invoiced)
+  var tabRows = function (name, headers) {
+    var sh = plTab_(name, headers), n = sh.getLastRow();
+    return n >= 2 ? sh.getRange(2, 1, n - 1, headers.length).getValues() : [];
+  };
+  tabRows(POS_TAB, POS_HEADERS).forEach(function (r) {
+    var j = jobOf(r[3], r[2]); if (!j) return;
+    j.recs.push({ date: dstr_(r[1]), supplier: String(r[4] || '').trim(), invoice: String(r[5] || '').trim(), sku: String(r[6] || '').trim(),
+      desc: String(r[7] || '').trim(), qty: Number(r[8]) || 0, unit: r[9] === '' || r[9] == null ? null : Number(r[9]), by: String(r[10] || '').trim() });
+  });
+  tabRows(USE_TAB, USE_HEADERS).forEach(function (r) {
+    var j = jobOf(r[3], r[2]); if (!j) return;
+    if (lc_(r[9]).indexOf('to return') === 0) return;                   // going back to the supplier, not into the job
+    var k = String(r[4] || '').trim().toUpperCase() || lc_(r[5]); if (!k) return;
+    var x = j.used[k] || (j.used[k] = { qty: 0, sku: String(r[4] || '').trim(), desc: String(r[5] || '').trim(), price: null, last: '' });
+    x.qty += Number(r[6]) || 0;
+    if (Number(r[7])) x.price = Number(r[7]);
+    var dd = dstr_(r[1]); if (dd > x.last) x.last = dd;
+  });
+  var stamp = function (v) { return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd HH:mm') : String(v || ''); };
+  tabRows(INVL_TAB, INVL_HEADERS).forEach(function (r) {
+    var j = jobOf(r[1], r[2]); if (!j) return;
+    var L = j.list || (j.list = { savedAt: '', items: [] });
+    L.savedAt = stamp(r[0]);
+    L.items.push({ sku: String(r[3] || '').trim(), desc: String(r[4] || '').trim(), qty: Number(r[5]) || 0,
+      unit: r[6] === '' || r[6] == null ? null : Number(r[6]), uom: String(r[12] || '').trim() });
+  });
+  tabRows(MI_TAB, MI_HEADERS).forEach(function (r) {
+    var j = jobOf(r[1], r[2]); if (!j) return;
+    var M = j.mi || (j.mi = { builtAt: '', lines: [] });
+    M.builtAt = stamp(r[0]);
+    M.lines.push({ sku: String(r[6] || '').trim(), desc: String(r[5] || '').trim(), qty: Number(r[3]) || 0,
+      uc: r[9] === '' ? null : Number(r[9]), lc: r[10] === '' ? null : Number(r[10]), pt: r[11] === '' ? null : Number(r[11]),
+      up: r[12] === '' ? null : Number(r[12]), lp: r[13] === '' ? null : Number(r[13]) });
+  });
+  var qbi = {}; try { qbi = qbiByDoc_(); } catch (e) {}
+  var fd = {}; try { fdRows_().forEach(function (x) { if (x.result !== 'stopped' && x.po && dig(x.po)) fd[dig(x.po)] = x; }); } catch (e) {}
+
+  // 6. one job at a time
+  var JOBS = [], LINES = [], HOURS = [];
+  order.sort(function (a, b) { return Number(b) - Number(a); });
+  order.forEach(function (d) {
+    var j = jobs[d], who = j.contact || j.company, notes = j.notes.slice();
+    var partKey = function (sku, desc) { return String(sku || '').trim().toUpperCase() || lc_(desc); };
+    var grpKey = function (sku, desc, unit) { return partKey(sku, desc) + '|' + (unit == null ? '' : Math.round(Number(unit) * 100) / 100); };
+
+    // the QuickBooks invoice(s): the numbers on the PO Log row, else one whose memo names the job
+    var nums = String(j.qb || '').split(/[^A-Za-z0-9\-]+/).filter(String), invs = [];
+    nums.forEach(function (n) { if (qbi[n]) invs.push(qbi[n]); });
+    if (!nums.length) Object.keys(qbi).forEach(function (n) {
+      var q = qbi[n]; if (String(q.note + ' ' + q.memo).toUpperCase().indexOf(j.po) >= 0) { invs.push(q); nums.push(n); }
+    });
+    var qbLines = [];
+    invs.forEach(function (q) { (q.lines || []).forEach(function (l) { qbLines.push({ q: q, l: l }); }); });
+    var finalish = invs.some(function (q) { return /^final/.test(q.stage); });
+    var initialish = invs.some(function (q) { return /^(initial|draft)/.test(q.stage); });
+
+    // the saved parts list and the breakdown, by the parts list's own grouping (part + unit price)
+    var listBy = {}, miBy = {};
+    if (j.list) j.list.items.forEach(function (it) { var k = grpKey(it.sku, it.desc, it.unit); var x = listBy[k] || (listBy[k] = { qty: 0, item: it, seen: false }); x.qty += it.qty; });
+    if (j.mi) j.mi.lines.forEach(function (l) { miBy[grpKey(l.sku, l.desc, l.uc)] = l; });
+    var miParts = j.mi ? j.mi.lines.filter(function (l) { return !isPermitSku_(l.sku); }) : [];
+    var listCost = j.list ? r2(j.list.items.filter(function (it) { return it.qty > 0 && !isPermitSku_(it.sku) && it.unit != null; })
+      .reduce(function (a, it) { return a + it.unit * it.qty; }, 0)) : null;
+    var recParts = j.recs.filter(function (x) { return !isPermitSku_(x.sku); }), permits = j.recs.filter(function (x) { return isPermitSku_(x.sku); });
+    var recCost = r2(recParts.reduce(function (a, x) { return a + (x.unit == null ? 0 : x.unit * x.qty); }, 0));
+    var tierCost = listCost != null ? listCost : recCost, tierPct = tierCost > 0 ? Math.round(moneyTier_(tierCost) * 100) : 0;
+    if (j.mi && miParts.length && miParts[0].pt != null) tierPct = miParts[0].pt;
+    var partsPrice = listCost != null ? r2(listCost * (1 + tierPct / 100)) : (recCost > 0 ? r2(recCost * (1 + tierPct / 100)) : 0);
+    if (j.mi && miParts.length) partsPrice = r2(miParts.reduce(function (a, l) { return a + (l.lp || 0); }, 0));
+    var permitCost = r2(permits.reduce(function (a, x) { return a + (x.unit == null ? 0 : x.unit * x.qty); }, 0));
+
+    var noInv = !nums.length ? 'no invoice yet' : !invs.length ? 'invoice #' + nums.join(', ') + ' is not in the QuickBooks copy yet' : '';
+    var onInvPart = function (gk, cost) {
+      if (noInv) return noInv;
+      var L = listBy[gk];
+      if (initialish) {
+        var hit = qbLines.filter(function (x) { return x.l.item != null && QBI_LABOUR_ITEMS_.indexOf(String(x.l.itemId || '')) < 0 && x.l.amt != null && cost != null && Math.abs(x.l.amt - cost) < 0.005; })[0];
+        if (hit) return 'yes - its own line on #' + hit.q.doc + ' (' + fm(hit.l.amt) + ', at cost)';
+        if (L && L.qty > 0) return 'on the parts list (' + L.qty + '), not found as its own line on #' + nums.join(', ') + ' - it may have been changed in QuickBooks';
+      }
+      if (!j.list) return 'unknown - the invoice was not built from a parts list saved in the app';
+      if (!L) return 'NO - not on the parts list the invoice was built from' + (j.list.savedAt ? ' (saved ' + j.list.savedAt + ')' : '');
+      if (!(L.qty > 0)) return 'NO - set to 0 on the parts list';
+      return finalish ? 'yes - in the Materials line on #' + nums.join(', ') : 'yes - on the parts list the invoice was built from';
+    };
+    var onInvPermit = function (cost) {
+      if (noInv) return noInv;
+      var hit = qbLines.filter(function (x) { return qbiIsPermitLine_(x.l); });
+      if (hit.length) {
+        var h0 = hit[0];
+        return 'yes - its own line "' + h0.l.desc + '" on #' + h0.q.doc + ', ' + fm(h0.l.amt) +
+          (cost != null && Math.abs((h0.l.amt || 0) - cost) < 0.005 ? ' (at cost)' : ' (the permit cost ' + fm(cost) + ')');
+      }
+      var onList = j.list && j.list.items.some(function (it) { return isPermitSku_(it.sku) && it.qty > 0; });
+      return 'NO - there is no permit line on #' + nums.join(', ') + (onList && finalish ? ' (it was on the parts list, so an older build may have put it inside the Materials line)' : '');
+    };
+
+    // LINES: receipts (parts), permits, parts added by hand, parts used from stock, then QuickBooks
+    var lineStart = LINES.length + 3, firstOfGroup = {};
+    var src = function (by) { var road = jmRoad_(by); return road === 'email' ? 'supplier invoice (emailed)' : road === 'permit' ? 'permit invoice (emailed)' : 'receipt scanned in the app'; };
+    recParts.slice().sort(function (a, b) { return (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) || (a.supplier + a.invoice < b.supplier + b.invoice ? -1 : 1); })
+      .forEach(function (x) {
+        var gk = grpKey(x.sku, x.desc, x.unit), L = listBy[gk], U = j.used[partKey(x.sku, x.desc)], mi = miBy[gk];
+        var cost = x.unit == null ? null : r2(x.unit * x.qty), row = LINES.length + 3, first = firstOfGroup[gk];
+        if (L) L.seen = true;
+        var price = '', unitPrice = '', note = '';
+        if (first) note = 'billed together with row ' + first + ' (same part, same price)';
+        else {
+          firstOfGroup[gk] = row;
+          if (mi && mi.lp != null) { price = r2(mi.lp); unitPrice = mi.up == null ? '' : mi.up; }
+          else if (L && L.qty > 0 && x.unit != null) { price = r2(L.qty * x.unit * (1 + tierPct / 100)); unitPrice = r2(x.unit * (1 + tierPct / 100)); }
+        }
+        LINES.push([j.po, who, 'part', x.date, x.supplier, x.invoice, x.sku, x.desc, x.qty, uomOf(x.sku, x.desc), U ? r2(U.qty) : '',
+          x.unit == null ? '' : x.unit, cost == null ? '' : cost, x.unit == null ? 'no price on the receipt' : src(x.by),
+          j.list ? (L ? L.qty : 'not on the list') : '', tierPct, unitPrice, price, onInvPart(gk, L && x.unit != null ? r2(L.qty * x.unit) : cost), note]);
+      });
+    permits.forEach(function (x) {
+      var cost = x.unit == null ? null : r2(x.unit * x.qty), L = listBy[grpKey(x.sku, x.desc, x.unit)];
+      if (L) L.seen = true;
+      LINES.push([j.po, who, 'permit', x.date, x.supplier, x.invoice, x.sku, x.desc, x.qty, 'each', '',
+        x.unit == null ? '' : x.unit, cost == null ? '' : cost, src(x.by), j.list ? (L ? L.qty : 'not on the list') : '',
+        0, x.unit == null ? '' : x.unit, cost == null ? '' : cost, onInvPermit(cost), 'Billed at cost, no markup, on its own line "Electrical permit".']);
+    });
+    if (j.list) Object.keys(listBy).forEach(function (k) {
+      var L = listBy[k]; if (L.seen || !(L.qty > 0)) return;
+      var it = L.item, cost = it.unit == null ? null : r2(it.unit * L.qty), mi = miBy[k];
+      LINES.push([j.po, who, 'added on the parts list', '', '', '', it.sku, it.desc, L.qty, it.uom || uomOf(it.sku, it.desc), '',
+        it.unit == null ? '' : it.unit, cost == null ? '' : cost, it.unit == null ? 'no cost on file' : 'typed on the parts list', L.qty,
+        isPermitSku_(it.sku) ? 0 : tierPct, mi && mi.up != null ? mi.up : '', mi && mi.lp != null ? r2(mi.lp) : (cost == null ? '' : r2(cost * (1 + (isPermitSku_(it.sku) ? 0 : tierPct) / 100))),
+        isPermitSku_(it.sku) ? onInvPermit(cost) : onInvPart(k, cost), 'Not on any receipt filed to this job.']);
+    });
+    var recKeys = {}; j.recs.forEach(function (x) { recKeys[partKey(x.sku, x.desc)] = 1; });
+    Object.keys(j.used).forEach(function (k) {
+      if (recKeys[k]) return;
+      var U = j.used[k], onList = j.list && j.list.items.some(function (it) { return partKey(it.sku, it.desc) === k && it.qty > 0; });
+      LINES.push([j.po, who, 'used from shop stock', U.last, '', '', U.sku, U.desc, '', uomOf(U.sku, U.desc), r2(U.qty),
+        U.price == null ? '' : U.price, U.price == null ? '' : r2(U.price * U.qty), U.price == null ? '' : 'price list', '', '', '', '',
+        onList ? 'see "added on the parts list"' : (noInv || 'NO - not on the parts list (it is billed only if added there)'), 'Logged at clock-out; no receipt for it on this job.']);
+    });
+    invs.forEach(function (q) {
+      (q.lines || []).forEach(function (l) {
+        LINES.push([j.po, who, 'QuickBooks invoice line', q.date, 'QuickBooks', '#' + q.doc, l.item || l.kind || '', l.desc, l.qty == null ? '' : l.qty, '',
+          '', '', '', '', '', '', l.rate == null ? '' : l.rate, l.amt == null ? '' : l.amt, 'this IS the invoice (' + q.stage + ', read ' + q.readAt + ')', '']);
+      });
+    });
+    var lineEnd = LINES.length + 2;
+
+    // HOURS: every shift, then each person's total rounded to the half hour, and the journeyman match
+    var hourStart = HOURS.length + 3, per = {};
+    j.shifts.sort(function (a, b) { return (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) || (a.name < b.name ? -1 : 1); }).forEach(function (s) {
+      var cr = rate[s.email] || 0, counts = s.status === 'approved' || s.status === 'pending';
+      HOURS.push([j.po, who, s.date, s.name, hm(s.in), hm(s.out), r2(s.hours), s.status, cr || '', cr ? r2(s.hours * cr) : '',
+        counts ? s.notes : ('not counted (' + s.status + ')' + (s.notes ? ' - ' + s.notes : ''))]);
+      if (!counts) return;
+      var p = per[s.email] || (per[s.email] = { name: s.name, approved: 0, pending: 0 });
+      if (s.status === 'approved') p.approved += s.hours; else p.pending += s.hours;
+    });
+    var labour = 0, hrsA = 0, hrsP = 0, need = 0, have = 0;
+    Object.keys(per).forEach(function (em) {
+      var p = per[em], h = p.approved + p.pending, bh = Math.round(h * 2) / 2, cr = rate[em] || 0;
+      hrsA += p.approved; hrsP += p.pending; labour += bh * cr;
+      if (em === top) have = bh; else if (role[em] === 'employee' && bh > need) need = bh;
+      HOURS.push([j.po, who, 'total', p.name, '', '', r2(h), p.pending ? 'approved ' + r2(p.approved) + ' + pending ' + r2(p.pending) : 'approved',
+        cr || '', cr ? r2(bh * cr) : '', 'billed as ' + bh + ' h (each person\'s job total rounded to the half hour, as the invoice does)' + (cr ? '' : ' - NO charged rate set, so $0')]);
+    });
+    if (top && topRate > 0 && need > have && Object.keys(per).length) {
+      labour += (need - have) * topRate;
+      HOURS.push([j.po, who, 'added', nameOf[top] || 'Journeyman', '', '', r2(need - have), 'invoice rule', topRate, r2((need - have) * topRate),
+        'the journeyman line is raised to match the apprentice\'s ' + need + ' h (Paul\'s invoice rule)']);
+    }
+    var hourEnd = HOURS.length + 2;
+
+    // the job's own row
+    var q0 = invs.length ? invs[invs.length - 1] : null;
+    var sent = invs.map(function (q) {
+      var s = q.sentAt ? dayOf(q.sentAt) : (q.email === 'EmailSent' ? 'yes (QuickBooks says emailed)' : '');
+      return (invs.length > 1 ? '#' + q.doc + ': ' : '') + (s ? (q.sentAt ? 'yes, ' + s : s) : 'no');
+    }).join('; ');
+    var paid = invs.map(function (q) {
+      var s = q.total > 0 && q.balance != null && q.balance <= 0.005 ? 'yes' : (q.total > 0 && q.balance != null && q.balance < q.total - 0.005) ? 'part - ' + fm(q.balance) + ' still owing' : 'no';
+      return (invs.length > 1 ? '#' + q.doc + ': ' : '') + s;
+    }).join('; ');
+    var permitOn = !permits.length ? 'no permit filed to this job' : onInvPermit(permitCost);
+    var notOnList = j.list ? Object.keys(firstOfGroup).filter(function (k) { var L = listBy[k]; return !L; }).length : '';
+    if (fd[d] && q0 && fd[d].total != null && q0.total != null && Math.abs(fd[d].total - q0.total) > 0.005 && String(fd[d].inv) === q0.doc)
+      notes.push('The final draft reported ' + fm(fd[d].total) + ' on ' + fd[d].at + '; QuickBooks now says ' + fm(q0.total) + ' (changed since).');
+    if (q0 && finalish && j.mi && miParts.length) {
+      var qbParts = qbLines.filter(function (x) { return x.l.item != null && QBI_LABOUR_ITEMS_.indexOf(String(x.l.itemId || '')) < 0 && !qbiIsPermitLine_(x.l); })
+        .reduce(function (a, x) { return a + (x.l.amt || 0); }, 0);
+      if (Math.abs(qbParts - partsPrice) > 0.05) notes.push('QuickBooks bills ' + fm(qbParts) + ' for parts; the app\'s breakdown says ' + fm(partsPrice) + '.');
+    }
+    if (j.list && j.mi && j.list.savedAt > j.mi.builtAt) notes.push('The parts list was saved after the Materials invoiced breakdown was made.');
+    JOBS.push([j.po, j.contact, j.company, j.project, j.address, j.status, j.start, j.end, nums.join(', '),
+      invs.map(function (q) { return (invs.length > 1 ? '#' + q.doc + ': ' : '') + q.stage; }).join('; ') || (nums.length ? 'not read yet' : 'none yet'),
+      invs.length === 1 ? money(q0.total) : invs.map(function (q) { return '#' + q.doc + ' ' + fm(q.total); }).join('; '),
+      invs.length === 1 ? money(q0.sub) : invs.map(function (q) { return '#' + q.doc + ' ' + fm(q.sub); }).join('; '),
+      sent, paid, invs.map(function (q) { return q.readAt; }).join('; '), r2(hrsA), r2(hrsP), r2(labour), recCost,
+      listCost == null ? '' : listCost, tierCost > 0 ? tierPct : '', partsPrice || '', permits.length ? permitCost : '', permitOn,
+      j.list ? j.list.savedAt : 'not saved', notOnList, lineEnd >= lineStart ? lineStart + '-' + lineEnd : 'none',
+      hourEnd >= hourStart ? hourStart + '-' + hourEnd : 'none', notes.join(' ')]);
+  });
+  return { jobs: JOBS, lines: LINES, hours: HOURS };
 }

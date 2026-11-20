@@ -2538,6 +2538,14 @@ function adminView(){
       </div>
     </div>
     <div class="card">
+      <h3>Claude</h3>
+      <p class="small muted">The routines the invoice buttons start, and Claude's read-only copy of the job screens.</p>
+      <div class="btnrow">
+        <button class="secondary" onclick="openInvRoutines()">🔌 Invoice buttons</button>
+        <button class="secondary" onclick="jobViewNow(this)">🔄 Refresh Claude's job view</button>
+      </div>
+    </div>
+    <div class="card">
       <h3>Materials</h3>
       <p class="small muted">Free-typed field entries waiting to be matched against supplier receipts.</p>
       <div class="btnrow">
@@ -3150,7 +3158,7 @@ function bidSaveTap(){
  *   cost          - hours x each person's pay rate + the supplier POs (the Cost tab's own figures)
  *   at your rates - hours x each person's Charged rate (Team), rounded to the half hour like the
  *                   invoice, the journeyman line raised to match the apprentice, + materials with the
- *                   markup tier on the job's material total. No travel, km or permits.
+ *                   markup tier on the job's material total; a permit fee at cost (v154). No travel or km.
  *   invoiced      - the Amount Invoiced typed on the Cost tab; when it is blank the card uses the
  *                   figure at your rates and marks it ~ so nobody mistakes it for the invoice.
  * The bar is the money: grey is cost, green the margin on top of it, red what cost went past it. */
@@ -3194,7 +3202,7 @@ function todayMoneyCard(){
   const more=list.length>6?`<a href="#" class="small" style="color:var(--accent2);display:block;margin-top:8px" onclick="S.moneyAll=!S.moneyAll;render();return false">${S.moneyAll?'Show fewer':'Show all '+list.length}</a>`:'';
   const empty=tab==='wip'&&t.empty?`<div class="small muted" style="margin-top:6px">${t.empty} job${t.empty===1?'':'s'} in progress with nothing spent yet.</div>`:'';
   return `<div class="card money">
-    <div class="row between"><h3 style="margin:0">Money per job</h3><span class="small muted">Before tax · no travel or permits</span></div>
+    <div class="row between"><h3 style="margin:0">Money per job</h3><span class="small muted">Before tax · permits at cost · no travel</span></div>
     <div class="seg">${seg}</div>
     <div class="msum">${sum}</div>${note}
     ${list.length?`<div class="mhdr"><span>Job</span><span>${tab==='wip'?'At your rates':'Invoiced'} · margin</span></div>${rows}${more}
@@ -3211,7 +3219,10 @@ function openMoney(k){
       <td>${p.rate?`${fm$(p.bill)}<div class="small muted">${p.billHours} h × $${p.rate}</div>`:'<span class="muted">no rate</span>'}</td></tr>`).join('');
   const match=j.match?`<tr><td>${esc(j.match.name)} - to match the apprentice<div class="small muted">Your invoice rule: the journeyman line is at least the apprentice's</div></td>
       <td>+${j.match.hours} h</td><td>-</td><td>${fm$(j.match.bill)}<div class="small muted">${j.match.hours} h × $${j.match.rate}</div></td></tr>`:'';
-  const mats=`<tr><td>Materials<div class="small muted">Supplier POs on this job${j.matCost>0?` · ${Math.round(j.tier*100)}% markup tier`:''}</div></td><td></td><td>${fm$(j.matCost)}</td><td>${fm$(j.matBill)}</td></tr>`;
+  // v154 - the permit fee on its own row, at cost (matCost / matBill include it; older offices send no permit)
+  const pm=Number(j.permit||0), mc=Math.round((j.matCost-pm)*100)/100, mb=Math.round((j.matBill-pm)*100)/100;
+  const mats=`<tr><td>Materials<div class="small muted">Supplier POs on this job${mc>0?` · ${Math.round(j.tier*100)}% markup tier`:''}</div></td><td></td><td>${fm$(mc)}</td><td>${fm$(mb)}</td></tr>`+
+    (pm?`<tr><td>Permit fee<div class="small muted">Billed at cost, no markup</div></td><td></td><td>${fm$(pm)}</td><td>${fm$(pm)}</td></tr>`:'');
   const res = j.stage==='wip'
     ? `Margin so far: <b class="${j.margin<0?'neg':'pos'}">${fm$(j.margin)}</b>${j.pct!=null?' ('+moneyPct_(j.pct)+')':''} - what the work comes to at your rates, less what it has cost.`
     : (j.invoiced!=null
@@ -3229,7 +3240,7 @@ function openMoney(k){
       ${pp}${match}${mats}
       <tr class="tot"><td>Total</td><td>${j.hours} h</td><td>${fm$(j.cost)}</td><td>${fm$(j.worth)}</td></tr></table>
     <div class="mres">${res}</div>${q}${b}
-    <p class="small muted">Cost is pay rates × hours plus the supplier POs, the same as the Cost tab. At your rates is each person's charged rate, rounded to the half hour like the invoice, plus materials with the markup. Travel, km and permits aren't in it. Pending hours count.</p>
+    <p class="small muted">Cost is pay rates × hours plus the supplier POs, the same as the Cost tab. At your rates is each person's charged rate, rounded to the half hour like the invoice, plus materials with the markup and any permit fee at cost. Travel and km aren't in it. Pending hours count.</p>
     ${j.qb?miQuickBox(jk):''}
     <div class="row" style="gap:8px"><button class="secondary grow" onclick="closeSheet()">Close</button><button class="grow" onclick="openJobAll('${jk}')">Open the job</button></div>`);
   if(j.qb) miQuickLoad(jk);
@@ -3557,6 +3568,7 @@ function openTodayDraft(k){
     ${it.final
       ? `<p>The <b>final draft is built</b>${fdWhen(it.final.at)?' ('+esc(fdWhen(it.final.at))+')':''}. Send it from QuickBooks when you are ready: the job turns <b>Invoiced</b> once it has gone out, and <b>Closed</b> once it is paid.</p>`
       : `<p>If it is still the initial draft at cost, correct it in QuickBooks, then build the final draft. Nothing is sent to the customer by either. The job turns <b>Invoiced</b> once the invoice has gone out, and <b>Closed</b> once it is paid.</p>`}
+    ${it.final&&it.final.qbAt&&it.final.total!=null?`<p class="small">Total in QuickBooks <b>$${Number(it.final.total).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2})}</b> with GST, as QuickBooks had it at ${esc(fdWhen(it.final.qbAt)||it.final.qbAt)}.</p>`:''}
     <p class="small muted" style="margin-top:-4px">QuickBooks is checked at 7 am, noon and 6 pm. Sent it and don't want to wait? Use the button at the bottom.</p>
     <button ${it.final?'class="secondary" ':''}style="width:100%;margin-top:6px" data-fd="${esc(fdKey(it.po,it.name))}" onclick="reqInvoice('${pk}','final',this)">✅ Build final draft</button>
     <p class="small muted" data-fdnote="${esc(fdKey(it.po,it.name))}" style="margin:6px 0 0"></p>
@@ -3922,15 +3934,18 @@ function jobInvHtml(r, ref){
   }
   const noCost=(r.lines||[]).filter(l=>l.lp==null).length;
   const isP=l=>String(l.sku||'').trim().toUpperCase()==='PERMIT';
+  // v154 - a permit fee is billed at cost, outside the markup tier (Paul, 20 Nov: "pass the permit through")
+  const pmt=Math.round((r.lines||[]).filter(isP).reduce((a,l)=>a+(l.lc||0),0)*100)/100;
+  const parts=Math.round((Number(r.cost||0)-pmt)*100)/100;
   const stale=!!(L && L.savedAt && r.builtAt && new Date(L.savedAt).getTime() > new Date(r.builtAt).getTime()+60000);
   const pdf = r.pdfUrl
     ? `<a href="${esc(r.pdfUrl)}" target="_blank" style="text-decoration:none"><button class="secondary" style="width:100%;margin-top:8px">📄 Open the customer PDF</button></a>
        <button class="ghost" style="width:100%;margin-top:2px;padding:6px" onclick="jobInvPdf('${k}',this)">Make it again</button>`
     : `<button class="secondary" style="width:100%;margin-top:8px" onclick="jobInvPdf('${k}',this)">📄 Make customer PDF</button>`;
-  return `<p class="small muted" style="margin:0 0 6px">Made ${esc(day(r.builtAt))} · markup <b>${esc(r.tier)}%</b> on ${f(r.cost)} cost → <b>${f(r.price)}</b> to the customer (before tax).</p>
+  return `<p class="small muted" style="margin:0 0 6px">Made ${esc(day(r.builtAt))} · markup <b>${esc(r.tier)}%</b> on ${f(parts)} of parts${pmt?` + ${f(pmt)} permit at cost`:''} → <b>${f(r.price)}</b> to the customer (before tax).</p>
     ${stale&&admin?`<div class="banner" style="background:var(--needs-bg);color:var(--needs-ink);margin:0 0 6px">The parts list was changed ${esc(day(L.savedAt))}, after this was made. <a href="#" style="color:inherit;font-weight:700" onclick="jobInvBuild('${k}',this);return false">Bring it up to date</a></div>`:''}
     ${(r.lines||[]).map(l=>`<div class="row between small" style="margin-top:4px;gap:8px">
-      <span>${esc(l.qty)}${l.uom?' '+esc(l.uom):''} × ${esc(l.desc)}${isP(l)?' <span class="muted">· permit fee</span>':''}${l.supplier||l.invoice?` <span class="muted">${esc([l.supplier,l.invoice].filter(Boolean).join(' '))}</span>`:''}</span>
+      <span>${esc(l.qty)}${l.uom?' '+esc(l.uom):''} × ${esc(l.desc)}${isP(l)?' <span class="muted">· at cost, no markup</span>':''}${l.supplier||l.invoice?` <span class="muted">${esc([l.supplier,l.invoice].filter(Boolean).join(' '))}</span>`:''}</span>
       <span style="white-space:nowrap;text-align:right"><span class="muted">${f(l.lc)} →</span> <b>${f(l.lp)}</b></span></div>`).join('')}
     <div class="row between small" style="margin-top:6px;border-top:1px solid var(--line);padding-top:4px"><b>Total</b><span><span class="muted">${f(r.cost)} →</span> <b>${f(r.price)}</b></span></div>
     ${pdf}
@@ -4405,7 +4420,7 @@ function renderInvoiceList(){
       ${it.added
         ? `<input id="ild${i}" placeholder="Part description" value="${esc(it.desc||'')}" oninput="invListTotals()" style="margin:0 0 6px">`
         : `<div><b>${esc(it.desc)}</b>${it.fresh?' <span class="small" style="color:var(--needs-ink);font-weight:700">· new since you saved</span>':''}</div>
-           <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}${it.uom?' '+esc(it.uom):''}`:''}${String(it.sku||'').toUpperCase()==='PERMIT'?' · the permit fee':''}</div>
+           <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}${it.uom?' '+esc(it.uom):''}`:''}${String(it.sku||'').toUpperCase()==='PERMIT'?' · billed at cost, no markup':''}</div>
            ${it.dup?`<div class="small" style="color:var(--needs-ink);font-weight:700">⚠ Maybe one purchase counted twice — ${esc(it.dup)}</div>`:''}
            ${it.boughtWas!=null?`<div class="small" style="color:var(--needs-ink);font-weight:700">⚠ ${it.boughtWas} bought when this list was saved, ${it.bought} now — check the quantity</div>`:''}`}
       <div class="row" style="align-items:center;gap:8px;margin-top:4px">
@@ -9417,6 +9432,65 @@ async function saveAllowCfg(btn){
     if(S.config) S.config.allowances=r.cfg;
     closeSheet(); toast('Saved ✓');
   }catch(e){ toast(e.message); btn.disabled=false; btn.textContent='Save'; }
+}
+/* v154 - WHICH CLAUDE ROUTINE EACH INVOICE BUTTON STARTS (Paul, 20 Nov). The routines are Claude's own
+   now, so Claude can keep their rules up to date; their start address and token are pasted here once,
+   on the routine's API trigger. The office keeps the token and never shows it again - only its last
+   four characters. Test starts the routine with a PING it answers in one line, changing nothing. */
+async function openInvRoutines(){
+  if(!S.online) return toast('Needs a connection.');
+  navPush(); navSelf(()=>openInvRoutines());
+  sheet(`<h2>🔌 Invoice buttons</h2><p class="center" style="margin:22px 0"><span class="spin"></span></p>`);
+  const mine=S._sheet;
+  try{
+    const r=await api('invoiceRoutines',{});
+    if(S._sheet!==mine) return;
+    invRoutinesPaint(r);
+  }catch(e){ if(S._sheet===mine) sheet(`<h2>🔌 Invoice buttons</h2><p class="bad">${esc(e.message)}</p><button class="secondary" style="width:100%" onclick="closeSheet()">Close</button>`); }
+}
+function invRoutinesPaint(r, msg){
+  const one=k=>{ const x=r[k]||{}, t=x.tested;
+    return `<div class="card" style="margin:8px 0">
+      <h3 style="margin-top:0">${esc(x.label||k)}</h3>
+      <p class="small">${x.connected?`✅ Connected to <b>${esc(x.routine||'a routine')}</b> · token ending <b>…${esc(x.tokenEnds)}</b>${x.savedAt?` · saved ${esc(x.savedAt)}${x.savedBy?' by '+esc(x.savedBy):''}`:''}`:'⚠️ Not connected yet.'}</p>
+      ${t?`<p class="small muted" style="margin-top:-4px">Last test ${esc(t.at)}: ${t.ok?'Claude started':'refused ('+esc(t.code)+')'}</p>`:''}
+      <label>Start address (URL)</label>
+      <input id="ir_url_${k}" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.anthropic.com/v1/claude_code/routines/trig_…/fire">
+      <label>Token</label>
+      <input id="ir_tok_${k}" type="password" autocomplete="new-password" spellcheck="false" placeholder="sk-ant-…">
+      <div class="row" style="gap:8px;margin-top:8px">
+        <button class="grow" onclick="invRoutineSave('${k}',this,false)">Save</button>
+        <button class="secondary grow" onclick="invRoutineSave('${k}',this,true)">Save and test</button>
+      </div>
+      ${x.connected?`<button class="ghost" style="width:100%;margin-top:4px" onclick="invRoutineSave('${k}',this,true,true)">Test the one saved</button>`:''}
+    </div>`; };
+  const jv=r.jobView||{};
+  sheet(`<h2>🔌 Invoice buttons</h2>
+    <p class="small muted">Each button starts a Claude routine. On that routine's page in Claude, add an API trigger, then paste its address and token here. The token stays in the office script and is never shown again.</p>
+    ${msg?`<div class="banner" style="margin:6px 0">${msg}</div>`:''}
+    ${one('initial')}${one('final')}
+    <p class="small muted">Claude's read-only job view: ${jv.builtAt?`checked ${esc(jv.builtAt)}, last changed ${esc(jv.changedAt||jv.builtAt)} · ${esc(jv.jobs)} jobs`:'not built yet'}.</p>
+    <div class="row" style="gap:8px">${(S._navStack||[]).length?'<button class="secondary grow" onclick="navBack()">← Back</button>':''}<button class="secondary grow" onclick="closeSheet()">Close</button></div>`);
+}
+async function invRoutineSave(k, btn, test, onlyTest){
+  const url=onlyTest?'':((document.getElementById('ir_url_'+k)||{}).value||'').trim();
+  const token=onlyTest?'':((document.getElementById('ir_tok_'+k)||{}).value||'').trim();
+  if(!onlyTest && (!url||!token)) return toast('Paste both the address and the token.');
+  const label=btn.textContent; btn.disabled=true; btn.innerHTML='<span class="spin"></span>';
+  try{
+    const r=await api('invoiceRoutineSet',{stage:k, url, token, test:!!test},{timeout:90000});
+    const t=r.test;
+    invRoutinesPaint(r, t ? (t.ok?'✅ '+esc(t.note):'⚠️ '+esc(t.note)) : '✅ Saved.');
+  }catch(e){ toast(e.message); btn.disabled=false; btn.textContent=label; }
+}
+/* v154 - rebuild Claude's read-only job view now (it rebuilds itself within 5 minutes of any change). */
+async function jobViewNow(btn){
+  if(!S.online) return toast('Needs a connection.');
+  const label=btn.textContent; btn.disabled=true; btn.innerHTML='<span class="spin"></span> Refreshing…';
+  try{ const r=await api('jobViewBuild',{},{timeout:180000});
+    toast(r.busy?'It is being refreshed already.':`Claude's job view is up to date: ${r.jobs} jobs${r.wrote&&r.wrote.length?'':' (nothing had changed)'}.`);
+  }catch(e){ toast(e.message); }
+  btn.disabled=false; btn.textContent=label;
 }
 /* Alberta general holiday pay: average daily wage, 5-of-9 eligibility, posted as approved
    entries on the holiday itself. Safe to run twice — it skips anyone already posted. */
