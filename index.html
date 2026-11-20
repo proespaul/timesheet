@@ -3876,17 +3876,15 @@ function jobInvHtml(r, ref){
   }
   const noCost=(r.lines||[]).filter(l=>l.lp==null).length;
   const isP=l=>String(l.sku||'').trim().toUpperCase()==='PERMIT';
-  const pmt=Math.round((r.lines||[]).filter(isP).reduce((a,l)=>a+(l.lc||0),0)*100)/100;
-  const parts=Math.round((Number(r.cost||0)-pmt)*100)/100;
   const stale=!!(L && L.savedAt && r.builtAt && new Date(L.savedAt).getTime() > new Date(r.builtAt).getTime()+60000);
   const pdf = r.pdfUrl
     ? `<a href="${esc(r.pdfUrl)}" target="_blank" style="text-decoration:none"><button class="secondary" style="width:100%;margin-top:8px">📄 Open the customer PDF</button></a>
        <button class="ghost" style="width:100%;margin-top:2px;padding:6px" onclick="jobInvPdf('${k}',this)">Make it again</button>`
     : `<button class="secondary" style="width:100%;margin-top:8px" onclick="jobInvPdf('${k}',this)">📄 Make customer PDF</button>`;
-  return `<p class="small muted" style="margin:0 0 6px">Made ${esc(day(r.builtAt))} · markup <b>${esc(r.tier)}%</b> on ${f(parts)} of parts${pmt?` + ${f(pmt)} permit at cost`:''} → <b>${f(r.price)}</b> to the customer (before tax).</p>
+  return `<p class="small muted" style="margin:0 0 6px">Made ${esc(day(r.builtAt))} · markup <b>${esc(r.tier)}%</b> on ${f(r.cost)} cost → <b>${f(r.price)}</b> to the customer (before tax).</p>
     ${stale&&admin?`<div class="banner" style="background:var(--needs-bg);color:var(--needs-ink);margin:0 0 6px">The parts list was changed ${esc(day(L.savedAt))}, after this was made. <a href="#" style="color:inherit;font-weight:700" onclick="jobInvBuild('${k}',this);return false">Bring it up to date</a></div>`:''}
     ${(r.lines||[]).map(l=>`<div class="row between small" style="margin-top:4px;gap:8px">
-      <span>${esc(l.qty)}${l.uom?' '+esc(l.uom):''} × ${esc(l.desc)}${isP(l)?' <span class="muted">· at cost, no markup</span>':''}${l.supplier||l.invoice?` <span class="muted">${esc([l.supplier,l.invoice].filter(Boolean).join(' '))}</span>`:''}</span>
+      <span>${esc(l.qty)}${l.uom?' '+esc(l.uom):''} × ${esc(l.desc)}${isP(l)?' <span class="muted">· permit fee</span>':''}${l.supplier||l.invoice?` <span class="muted">${esc([l.supplier,l.invoice].filter(Boolean).join(' '))}</span>`:''}</span>
       <span style="white-space:nowrap;text-align:right"><span class="muted">${f(l.lc)} →</span> <b>${f(l.lp)}</b></span></div>`).join('')}
     <div class="row between small" style="margin-top:6px;border-top:1px solid var(--line);padding-top:4px"><b>Total</b><span><span class="muted">${f(r.cost)} →</span> <b>${f(r.price)}</b></span></div>
     ${pdf}
@@ -4205,7 +4203,7 @@ function renderInvoiceList(){
       ${it.added
         ? `<input id="ild${i}" placeholder="Part description" value="${esc(it.desc||'')}" oninput="invListTotals()" style="margin:0 0 6px">`
         : `<div><b>${esc(it.desc)}</b>${it.fresh?' <span class="small" style="color:var(--needs-ink);font-weight:700">· new since you saved</span>':''}</div>
-           <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}${it.uom?' '+esc(it.uom):''}`:''}${String(it.sku||'').toUpperCase()==='PERMIT'?' · billed at cost, no markup':''}</div>`}
+           <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}${it.uom?' '+esc(it.uom):''}`:''}${String(it.sku||'').toUpperCase()==='PERMIT'?' · the permit fee':''}</div>`}
       <div class="row" style="align-items:center;gap:8px;margin-top:4px">
         <button class="secondary" style="width:44px;padding:8px 0" onclick="invStep(${i},-1)">−</button>
         <input id="ilq${i}" type="number" min="0" step="any" inputmode="decimal" value="${it.qty}" oninput="invListTotals()" style="width:84px;margin:0;text-align:center">
