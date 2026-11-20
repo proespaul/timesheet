@@ -88,6 +88,29 @@
     max-height:92vh; overflow:auto; padding-bottom:calc(18px + var(--safe))}
   .chip{display:inline-block; background:var(--panel2); border:1px solid var(--line); border-radius:999px;
     padding:8px 14px; margin:4px 4px 0 0; font-size:.9rem}
+  /* v152 - Receipts vs clock-out (Job details). Orange = needs you, green = matches - as on Today. */
+  .jm-sum{display:flex; flex-wrap:wrap; gap:6px; margin:0 0 10px}
+  .jm-pill{display:inline-block; padding:4px 10px; border-radius:999px; font-size:.78rem; font-weight:700; border:1px solid var(--line); background:var(--panel2); color:var(--text)}
+  .jm-pill.ok{background:rgba(22,163,74,.10); color:#15803d; border-color:rgba(22,163,74,.28)}
+  .jm-pill.need{background:var(--needs-bg); color:var(--needs-ink); border-color:var(--needs-line)}
+  .jm-pill.ask{background:var(--needs); color:#fff; border-color:var(--needs)}
+  .jm-q{background:var(--needs-bg); border:1px solid var(--needs-line); border-left:4px solid var(--needs); border-radius:12px; padding:12px; margin:0 0 10px; font-size:.92rem}
+  .jm-q h4{margin:0 0 6px; color:var(--needs-ink); font-size:.98rem}
+  .jm-q .docs{margin:6px 0; font-size:.86rem; line-height:1.55}
+  .jm-q .btnrow>button{flex:1 1 140px; padding:11px 10px; font-size:.9rem}
+  .jm-h{font-size:.74rem; font-weight:800; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); margin:14px 0 2px}
+  .jm-row{display:flex; justify-content:space-between; gap:10px; align-items:flex-start; padding:8px 0; border-bottom:1px solid var(--line)}
+  .jm-row:last-child{border-bottom:none}
+  .jm-row .nm{min-width:0; flex:1; font-size:.92rem}
+  .jm-row .nm b{font-weight:600}
+  .jm-row .sub, .jm-done .sub{font-size:.78rem; color:var(--muted); margin-top:1px}
+  .jm-row .fig{text-align:right; white-space:nowrap; font-size:.88rem}
+  .jm-row .fig .bad{color:var(--needs-ink); font-weight:800}
+  .jm-row .fig .good{color:var(--good); font-weight:800}
+  .jm-hint{font-size:.78rem; color:var(--accent2); margin-top:2px}
+  .jm-done{font-size:.86rem; padding:8px 0; border-bottom:1px solid var(--line); display:flex; gap:10px; justify-content:space-between; align-items:center}
+  .jm-done:last-child{border-bottom:none}
+  .jm-done button{padding:8px 12px; font-size:.82rem; flex:none}
   .chip.sel{background:var(--accent); border-color:var(--accent); color:#fff}
   .chip.on{background:var(--accent); border-color:var(--accent); color:#fff; cursor:pointer}
   #fuHow .chip,#fuDays .chip{cursor:pointer}
@@ -3975,22 +3998,165 @@ async function openJobAll(pk){
   sheet(`<h2>${title}</h2>
     <p class="small muted" style="margin-top:-4px">${ref.po?('PO '+esc(ref.po)):''}</p>
     ${sec('jdDays','📆','Day by day')}
+    ${sec('jdMatch','🔁','Receipts vs clock-out')}
     ${sec('jdMats','📦','Supplier\'s receipts')}
     ${canSeePrices()?sec('jdInv','🧾','Materials invoiced'):''}
     ${sec('jdPics','📷','Job photos')}
     <div class="row" style="gap:8px;margin-top:6px">${(S._navStack||[]).length?'<button class="secondary grow" onclick="navBack()">← Back</button>':''}<button class="secondary grow" onclick="closeSheet()">Close</button></div>`);
   const mine=S._sheet;
-  const put=(id,html)=>{ if(S._sheet!==mine) return; const el=document.getElementById(id); if(el) el.innerHTML=html; };
-  const fail=(id,e)=>put(id,`<p class="small" style="color:var(--bad)">Could not load this — ${esc(e&&e.message||'no answer')}</p>`);
-  apiBg('jobEntries',{jobSite:ref.jobSite, po:ref.po||''})
-    .then(r=>put('jdDays', jobDaysHtml(r&&r.rows))).catch(e=>fail('jdDays',e));
-  apiBg('jobMaterials',{jobSite:ref.jobSite, poNumber:ref.po||'', withFolder:1})
-    .then(r=>put('jdMats', jobMatsHtml(r))).catch(e=>fail('jdMats',e));
-  if(canSeePrices()) apiBg('materialsInvoiced',{jobSite:ref.jobSite, po:ref.po||''})
-    .then(r=>put('jdInv', jobInvHtml(r, ref))).catch(e=>fail('jdInv',e));
-  apiBg('jobMedia',{jobSite:ref.jobSite})
-    .then(r=>put('jdPics', jobPhotosHtml(r))).catch(e=>fail('jdPics',e));
+  // v152 - each section paints at once from the phone's copy, then from the office's answer (jdLoad)
+  jdLoad(mine,'jdDays', jdKey(ref,'days'),  ()=>apiBg('jobEntries',{jobSite:ref.jobSite, po:ref.po||''}), r=>jobDaysHtml(r&&r.rows));
+  jdLoad(mine,'jdMatch',jdKey(ref,'match'), ()=>apiBg('jobMatch',{jobSite:ref.jobSite, poNumber:ref.po||''}), r=>jobMatchHtml(r, ref));
+  jdLoad(mine,'jdMats', jdKey(ref,'mats'),  ()=>apiBg('jobMaterials',{jobSite:ref.jobSite, poNumber:ref.po||'', withFolder:1}), r=>jobMatsHtml(r));
+  if(canSeePrices()) jdLoad(mine,'jdInv', jdKey(ref,'inv'), ()=>apiBg('materialsInvoiced',{jobSite:ref.jobSite, po:ref.po||''}), r=>jobInvHtml(r, ref));
+  jdLoad(mine,'jdPics', jdKey(ref,'pics'),  ()=>apiBg('jobMedia',{jobSite:ref.jobSite}), r=>jobPhotosHtml(r));
 }
+
+/* v152 - RECEIPTS VS CLOCK-OUT (office script v125; Paul, 20 Nov: "the materials log and the suppliers
+   list should know to communicate with each other and know whether one is the same or different").
+   Each part once: what the receipts say was bought against what was logged at clock-out (or taken in
+   the app). What does not add up comes first. A part on two receipts that look like one purchase, or a
+   clock-out that went in twice, is a question with two answers - and either answer can be taken back
+   under Answered. Nothing is merged or dropped without a tap. */
+function jdKey(ref, part){ return 'jd|'+part+'|'+(ref.po||'')+'|'+lc(ref.jobSite); }
+function jmDay(s){ if(!s) return ''; s=String(s); const d=/T\d/.test(s)?new Date(s):new Date(s.slice(0,10)+'T12:00');
+  return isNaN(d)?s:d.toLocaleDateString([],{month:'short',day:'numeric'}); }
+function jmDocLine(d){
+  const day=jmDay(d.date);
+  return `${d.road==='email'?'✉️':'📷'} ${esc(d.supplier||'')} <b>${esc(d.invoice||'no number')}</b> · ${d.road==='email'?'emailed':'scanned'} ${esc(day)}`+
+    (d.url?` · <a href="${esc(d.url)}" target="_blank" style="color:var(--accent2)">open</a>`:'');
+}
+function jobMatchHtml(r, ref){
+  const L=(r&&r.lines)||[], P=(r&&r.pairs)||[], T=(r&&r.twice)||[], D=(r&&r.done)||[];
+  if(!L.length && !D.length) return '<p class="muted small" style="margin:0">No receipts filed and nothing logged at clock-out for this job yet.</p>';
+  const can=!!(r&&r.canDecide), c=(r&&r.counts)||{};
+  const q=x=>String(Math.round((Number(x)||0)*1000)/1000);
+  const qu=(x,u)=>q(x)+(u?' '+esc(u):'');
+  const day=jmDay;
+  const money=n=>'$'+(Math.round((Number(n)||0)*100)/100).toFixed(2);
+  const ask=(k,label,dec,primary)=>`<button class="${primary?'':'secondary'}" onclick="jmDecide('${k}','${dec}',this)">${label}</button>`;
+  const open=P.filter(p=>!p.decision), open2=T.filter(t=>!t.decision);
+  let h=`<p class="small muted" style="margin:0 0 8px">Each part once — <b>bought</b> on the receipts against <b>logged</b> at clock-out.</p>`;
+  const pill=(n,txt,kind)=>n?`<span class="jm-pill ${kind}">${n} ${txt}</span>`:'';
+  h+=`<div class="jm-sum">${pill(open.length+open2.length,'to answer','ask')}${pill(c.more,'logged more than bought','need')}`+
+     `${pill(c.receipt,'receipt only','need')}${pill(c.used,'clock-out only','need')}${pill(c.ok,'match','ok')}</div>`;
+
+  // the questions
+  open.forEach(p=>{
+    const k=reg({ref, key:p.key});
+    const each=p.lines.map(l=>{
+      const ln=L.find(x=>x.key===l.key)||{}, nm=ln.name||l.desc, now=ln.bought!=null?ln.bought:l.qty*2;
+      const extra=l.keepPrice!=null?` <span class="muted">(${money(l.qty*l.keepPrice)} at cost)</span>`:'';
+      return `<div><b>${q(l.qty)} × ${esc(nm)}</b>${extra} — counted <b>${q(now)}</b> now, <b>${q(now-l.qty)}</b> if it is one purchase.</div>`; }).join('');
+    h+=`<div class="jm-q">
+      <h4>⚠ One purchase on two receipts?</h4>
+      <div class="small">${p.whole?'Everything':'A line'} on ${esc(p.drop.invoice||'one copy')} is also on ${esc(p.keep.invoice||'the other')}${p.shared?` — both show number ${esc(p.shared)}`:''}:</div>
+      <div class="docs">${jmDocLine(p.keep)}<br>${jmDocLine(p.drop)}</div>
+      ${each}
+      <div class="small muted" style="margin-top:4px">Until it is answered, the parts list for the invoice counts both.</div>
+      ${can?`<div class="btnrow">${ask(k,'Same purchase — count once','same',true)}${ask(k,'Two purchases — keep both','different')}</div>
+        <div class="small muted" style="margin-top:6px">Same purchase keeps ${esc(p.keep.invoice||'the first')} and sets ${esc(p.drop.invoice||'the copy')} aside: the parts list, the job's cost and the stock count drop by the same amount. Undo is under Answered.</div>`
+        :'<div class="small muted" style="margin-top:6px">The office answers this one.</div>'}
+    </div>`;
+  });
+  open2.forEach(t=>{
+    const k=reg({ref, key:t.key});
+    h+=`<div class="jm-q">
+      <h4>⚠ A clock-out that went in twice?</h4>
+      <div class="small">${esc(empName(t.who))}'s ${esc(day(t.date))} clock-out${t.again?` (sent again ${esc(day(t.again))})`:''} logged ${t.parts.length===1?'this':'these'} more than once:</div>
+      <div class="docs">${t.parts.map(x=>`• ${esc(x.item)} — ${x.qtys.map(q).join(' + ')}`).join('<br>')}</div>
+      <div class="small muted">The stock count already took ${t.parts.length===1?'it':'each one'} once.</div>
+      ${can?`<div class="btnrow">${ask(k,'Same — count once','same',true)}${ask(k,'Two uses — keep both','different')}</div>
+        <div class="small muted" style="margin-top:6px">Count once dismisses the earlier line${t.parts.length===1?'':'s'} in the Materials Log. Undo is under Answered.</div>`
+        :'<div class="small muted" style="margin-top:6px">The office answers this one.</div>'}
+    </div>`;
+  });
+
+  // the parts, worst first
+  const who=c0=>c0.src==='app'?'taken in the app':esc(empName(c0.who));
+  const subB=l=>l.buys.map(b=>`${esc(b.supplier)} ${esc(b.invoice||'')} · ${esc(day(b.date))}${b.qty<0?' · returned '+q(-b.qty):''}`).join('<br>');
+  const subU=l=>{ const by={}; l.claims.forEach(c0=>{ const k=who(c0)+' · '+day(c0.date); by[k]=(by[k]||0)+c0.qty; });
+    return Object.keys(by).map(k=>`${k}${Object.keys(by).length>1?' ('+q(by[k])+')':''}`).join('<br>'); };
+  const notes=l=>(l.why.includes('pending')?`<div class="jm-hint">The name is still waiting to be matched (Admin → Review flagged materials)</div>`:'')+
+    (l.like?`<div class="jm-hint">Probably the receipt's <b>${esc(l.like.name)}</b> (${qu(l.like.bought,l.like.unit)} bought) under another name</div>`:'')+
+    (l.likeOf?`<div class="jm-hint">Probably logged as <b>${esc(l.likeOf.name)}</b> (${qu(l.likeOf.used,l.likeOf.unit)})</div>`:'')+
+    (l.why.includes('dup')?`<div class="jm-hint" style="color:var(--needs-ink)">On two receipts — see the question above</div>`:'')+
+    (l.why.includes('twice')?`<div class="jm-hint" style="color:var(--needs-ink)">Part of a clock-out that went in twice — see above</div>`:'');
+  const row=(l,fig,sub)=>`<div class="jm-row"><div class="nm"><b>${esc(l.name)}</b>${sub?`<div class="sub">${sub}</div>`:''}${notes(l)}</div><div class="fig">${fig}</div></div>`;
+  const group=(title,list,fn)=>list.length?`<div class="jm-h">${title}</div>`+list.map(fn).join(''):'';
+  const more=L.filter(l=>l.state==='check'&&l.why.includes('more'));
+  const rec=L.filter(l=>l.state==='check'&&l.why.includes('receipt'));
+  const usd=L.filter(l=>l.state==='check'&&l.why.includes('used'));
+  const ok=L.filter(l=>l.state==='ok');
+  const info=L.filter(l=>l.state==='info');
+  h+=group('Logged more than bought', more, l=>row(l,
+    `<div>logged <span class="bad">${qu(l.used,l.unit)}</span></div><div class="small muted">bought ${qu(l.bought,l.unit)}</div>`,
+    subU(l)+(l.buys.length?'<br>'+subB(l):'')));
+  h+=group('On a receipt, not logged at clock-out', rec, l=>row(l, `<div>bought <b>${qu(l.bought,l.unit)}</b></div>`, subB(l)));
+  h+=group('Logged at clock-out, no receipt on this job', usd, l=>row(l,
+    `<div>logged <b>${qu(l.used,l.unit)}</b></div><div class="small muted">from stock?</div>`, subU(l)));
+  h+=group('Match', ok, l=>row(l,
+    `<div><span class="good">✓</span> ${qu(l.bought,l.unit)}</div>${l.why.includes('left')?`<div class="small muted">${qu(l.bought-l.used,l.unit)} not logged</div>`:''}`,
+    ''));
+  h+=group('Nothing to compare', info, l=>row(l, `<div class="small muted">${l.permit?'permit fee':l.why.includes('returned')?'returned':'0 on the receipt'}</div>`, subB(l)));
+
+  // the answers, newest first, each one can be taken back
+  if(D.length){
+    h+=`<div class="jm-h">Answered</div>`;
+    D.forEach(d=>{
+      const k=reg({ref, key:d.key});
+      const what=String(d.what||'').replace(/^(Same purchase|Two purchases|Counted once|Both kept):\s*/i,'').replace(/\b\d{4}-\d{2}-\d{2}\b/g, m=>day(m));
+      const title=d.decision==='same'?'✓ Counted once':(d.kind==='log'?'Kept both':'Two purchases');
+      const btn=!can?'':d.decision==='same'?`<button class="secondary" onclick="jmDecide('${k}','undo',this)">Undo</button>`
+                                         :`<button class="secondary" onclick="jmDecide('${k}','same',this)">Change</button>`;
+      h+=`<div class="jm-done"><div><b>${title}</b> <span class="muted">· ${esc(empName(d.by))} ${esc(day(d.at))}</span><div class="sub">${esc(what)}</div></div>${btn}</div>`;
+    });
+  }
+  return h;
+}
+/* An answer: the question changes at the tap, the office's answer replaces it, a refusal puts it back. */
+async function jmDecide(k, decision, btn){
+  const x=dereg(k); if(!x||!x.ref) return;
+  if(!S.online) return toast('You need signal for this.');
+  const box=btn.closest('.jm-q,.jm-done'), keep=box?box.innerHTML:'';
+  const say={same:'Counting it once…', different:'Keeping both…', undo:'Taking it back…'}[decision]||'Saving…';
+  if(box) box.innerHTML=`<div class="small" style="padding:4px 0"><span class="spin"></span> ${say}</div>`;
+  try{
+    const r=await api('jobMatchDecide',{jobSite:x.ref.jobSite, poNumber:x.ref.po||'', key:x.key, decision},{timeout:60000});
+    const el=document.getElementById('jdMatch'); if(el) el.innerHTML=jobMatchHtml(r, x.ref);
+    DB.setCache(jdKey(x.ref,'match'), r).catch(()=>{});
+    toast(r&&r.note?r.note:'Saved.', 7000);
+    // the receipts below, and the job's numbers, moved with it
+    apiBg('jobMaterials',{jobSite:x.ref.jobSite, poNumber:x.ref.po||'', withFolder:1}).then(m=>{
+      const e2=document.getElementById('jdMats'); if(e2) e2.innerHTML=jobMatsHtml(m);
+      DB.setCache(jdKey(x.ref,'mats'), m).catch(()=>{}); }).catch(()=>{});
+  }catch(e){
+    if(box&&box.isConnected) box.innerHTML=keep;
+    toast(/unknown action/i.test(e.message)?'The office needs its latest script for this — try again in a few minutes.':e.message, 8000);
+  }
+}
+/* v152 - every Job details section paints at the tap from the copy kept on the phone the last time
+   this job was opened, then repaints when the office answers (Paul: information should come up at
+   the tap, not load). Never opened before: the spinner, as before. No answer: the copy stays, and
+   says it is the old one. */
+function jdLoad(mine, id, ck, call, render){
+  const put=html=>{ if(S._sheet!==mine) return; const el=document.getElementById(id); if(el) el.innerHTML=html; };
+  let fresh=false, shown=false;
+  DB.getCache(ck).then(c=>{ if(c!=null && !fresh){ try{ put(render(c)); shown=true; }catch(e){} } }).catch(()=>{});
+  call().then(r=>{ fresh=true; put(render(r)); DB.setCache(ck, r).catch(()=>{}); })
+    .catch(e=>{ fresh=true;
+      if(!shown) put(`<p class="small" style="color:var(--bad)">Could not load this — ${esc(e&&e.message||'no answer')}</p>`);
+      else if(S._sheet===mine){ const el=document.getElementById(id);
+        if(el) el.insertAdjacentHTML('afterbegin','<p class="small" style="color:var(--needs-ink);margin:0 0 6px">No answer from the office — this is the copy from the last time.</p>'); } });
+}
+/* v152 - from the parts list to the question, without losing quantities typed and not saved. */
+function invToJob(){
+  if(!invList) return;
+  invListRead();
+  if(invSnap_(invList)!==invList.snap && !confirm('Leave without saving your changes to the parts list?')) return;
+  const ref=invList.ref; invList=null; openJobAll(reg(ref));
+}
+
 
 /* 3.6: one tap → a structured request lands in admin@proes.ca's inbox, where Claude's
    hourly sweep picks it up and runs the QuickBooks invoice build (POs + markup + hours). */
@@ -4172,7 +4338,7 @@ async function openInvoiceList(pk){
   const mine=S._sheet;
   try{
     const [m,saved]=await Promise.all([
-      apiBg('jobMaterials',{jobSite:ref.jobSite, poNumber:ref.po||''}),
+      apiBg('jobMaterials',{jobSite:ref.jobSite, poNumber:ref.po||'', withDups:1}),
       apiBg('invoiceMaterials',{po:ref.po||'', jobSite:ref.jobSite}).catch(()=>null)]);
     if(S._sheet!==mine) return;
     const byKey={}, order=[];
@@ -4194,12 +4360,18 @@ async function openInvoiceList(pk){
       // (saved.zeros); anything else new comes up at what was bought, marked "new since you saved".
       const zero={}; (saved.zeros||[]).forEach(x=>zero[sk(x)]=1); const knowsZeros=Array.isArray(saved.zeros);
       items.forEach(it=>{ const x=prev[sk(it)];
-        if(x){ it.qty=x.qty; x._used=1; if(x.uom) it.uom=x.uom; }
+        if(x){ it.qty=x.qty; x._used=1; if(x.uom) it.uom=x.uom;
+          if(x.bought!=null && Math.abs(Number(x.bought)-it.bought)>0.0005) it.boughtWas=Number(x.bought); }   // v152
         else if(knowsZeros && !zero[sk(it)]){ it.fresh=true; }          // keeps qty = bought
         else it.qty=0; });
       (saved.items||[]).filter(x=>!x._used&&x.bought==null).forEach(x=>items.push({sku:x.sku||'',desc:x.desc,unit:x.unit,uom:x.uom||'ea',bought:null,qty:x.qty,supplier:'',invoice:'',src:[],added:true}));
     }
-    invList={ref, items, savedAt: saved&&saved.found?saved.savedAt:''};
+    // v152 - a part on two receipts that look like one purchase is counted twice here until it is answered
+    const dupBy={};
+    (m.dups||[]).forEach(d=>(d.lines||[]).forEach(l=>{ const k=String(l.sku||'').trim().toUpperCase()||String(l.desc||'').trim().toLowerCase();
+      (dupBy[k]=dupBy[k]||[]).push(`${l.qty} on both ${d.drop.invoice||'a scan'} and ${d.keep.invoice||'a scan'}`); }));
+    items.forEach(it=>{ const k=String(it.sku||'').trim().toUpperCase()||String(it.desc||'').trim().toLowerCase(); if(dupBy[k]) it.dup=dupBy[k].join('; '); });
+    invList={ref, items, savedAt: saved&&saved.found?saved.savedAt:'', dups:(m.dups||[]).length};
     invList.snap=invSnap_(invList);
     renderInvoiceList();
   }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
@@ -4226,7 +4398,9 @@ function renderInvoiceList(){
       ${it.added
         ? `<input id="ild${i}" placeholder="Part description" value="${esc(it.desc||'')}" oninput="invListTotals()" style="margin:0 0 6px">`
         : `<div><b>${esc(it.desc)}</b>${it.fresh?' <span class="small" style="color:var(--needs-ink);font-weight:700">· new since you saved</span>':''}</div>
-           <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}${it.uom?' '+esc(it.uom):''}`:''}${String(it.sku||'').toUpperCase()==='PERMIT'?' · the permit fee':''}</div>`}
+           <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}${it.uom?' '+esc(it.uom):''}`:''}${String(it.sku||'').toUpperCase()==='PERMIT'?' · the permit fee':''}</div>
+           ${it.dup?`<div class="small" style="color:var(--needs-ink);font-weight:700">⚠ Maybe one purchase counted twice — ${esc(it.dup)}</div>`:''}
+           ${it.boughtWas!=null?`<div class="small" style="color:var(--needs-ink);font-weight:700">⚠ ${it.boughtWas} bought when this list was saved, ${it.bought} now — check the quantity</div>`:''}`}
       <div class="row" style="align-items:center;gap:8px;margin-top:4px">
         <button class="secondary" style="width:44px;padding:8px 0" onclick="invStep(${i},-1)">−</button>
         <input id="ilq${i}" type="number" min="0" step="any" inputmode="decimal" value="${it.qty}" oninput="invListTotals()" style="width:84px;margin:0;text-align:center">
@@ -4239,6 +4413,9 @@ function renderInvoiceList(){
       </div></div>`).join('');
   sheet(`<h2 style="margin-bottom:2px">${esc(L.ref.jobSite)} — parts to bill</h2>
     <p class="small muted" style="margin-top:0">${L.ref.po?('PO '+esc(L.ref.po)+' · '):''}Set how many of each part to put on the invoice. 0 = leave it off. Claude bills exactly this list at cost, then adds the hours.${L.savedAt?' <b>Pre-filled from your last save.</b>':''}</p>
+    ${L.dups?`<div class="jm-q" style="margin:4px 0 10px"><b>⚠ ${L.dups===1?'A part may be':L.dups+' parts may be'} on two receipts for one purchase.</b>
+      <div class="small">The quantity below counts both copies until it is answered.</div>
+      <button class="secondary" style="width:100%;margin-top:8px" onclick="invToJob()">Answer it in Job details</button></div>`:''}
     ${rows||'<p class="muted small">No supplier POs are filed against this job. Add parts below, or save with none for a labour-only draft.</p>'}
     <datalist id="ilUoms"><option value="ea"><option value="m"><option value="ft"><option value="roll"><option value="box"><option value="kit"><option value="pkg"></datalist>
     <button class="secondary" style="width:100%;margin-top:8px" onclick="invAdd()">＋ Add a part</button>
