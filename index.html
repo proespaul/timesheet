@@ -135,6 +135,7 @@
   .suggest{background:var(--panel2); border:1px solid var(--line); border-radius:12px; margin-top:-2px; overflow:hidden}
   .suggest div{padding:12px 14px; border-bottom:1px solid var(--line)}
   .suggest div:last-child{border-bottom:none}
+  .suggest .il-on, .suggest .il-sg:active{background:var(--line)}   /* v156 - Add a part: the suggestion picked with the arrow keys, or under the thumb */
   .toast{position:fixed; bottom:calc(84px + var(--safe)); left:50%; transform:translateX(-50%);
     background:var(--navy); color:#fff; padding:12px 18px; border-radius:14px; z-index:60;
     max-width:90%; text-align:center; box-shadow:0 8px 24px rgba(31,56,100,.3)}
@@ -1935,6 +1936,7 @@ function signOut(){
   if (S.session) { try{ api('logout',{sessionToken:S.session.token}).catch(()=>{}); }catch(e){} } // best-effort server invalidation (async — .catch stops an unhandled rejection)
   S.idToken=null; S.session=null; S.me=null; S.booted=false;
   saveSession_(null);
+  S.priceAll=null; try{ DB.setCache('priceAll', null).catch(()=>{}); }catch(e){}   // v156 - the costs leave the phone with the admin
   try{ google.accounts.id.disableAutoSelect(); }catch(e){}
   render();
   initAuth();
@@ -4356,6 +4358,7 @@ async function openInvoiceList(pk){
   const ref=dereg(pk); if(!ref) return;
   if(!S.online) return toast('You need signal to load the parts.');
   navPush(); navSelf(()=>openInvoiceList(pk));
+  loadPriceAll();   // v156 - the price list for Add a part's suggestions, fetched while the POs load
   sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center" style="margin:22px 0"><span class="spin"></span> Loading the POs…</p>`);
   const mine=S._sheet;
   try{
@@ -4376,17 +4379,22 @@ async function openInvoiceList(pk){
     // pre-fill from an earlier save: same part + price keeps Paul's quantity; his extra lines come back too
     if(saved&&saved.found){
       const sk=it=>(String(it.sku||'').trim().toUpperCase()||String(it.desc||'').trim().toLowerCase())+'|'+(it.unit==null?'':Math.round(it.unit*100)/100);
-      const prev={}; (saved.items||[]).forEach(x=>prev[sk(x)]=x);
+      // v156 - a PO line takes back only a PO line's saved quantity. A part added by hand now carries its
+      // price-list SKU, so it can share a key with a PO line (more of the same wire, off the shelf); it used
+      // to overwrite that line's quantity here and then vanish. Added lines always come back as their own.
+      const prev={}; (saved.items||[]).forEach(x=>{ if(x.bought!=null) prev[sk(x)]=x; });
       // v148 - a part bought AFTER the list was saved (a late receipt, a permit fee) used to come up at 0,
       // exactly like one Paul had left off on purpose. The office now says which ones he set to 0
       // (saved.zeros); anything else new comes up at what was bought, marked "new since you saved".
-      const zero={}; (saved.zeros||[]).forEach(x=>zero[sk(x)]=1); const knowsZeros=Array.isArray(saved.zeros);
+      // v156 - only PO lines set to 0 count as "left off on purpose" (office script v130 says which; an added
+      // part set to 0 must not hide a PO line bought later with the same SKU and price)
+      const zero={}; (saved.zeros||[]).forEach(x=>{ if(x.bought!==null) zero[sk(x)]=1; }); const knowsZeros=Array.isArray(saved.zeros);
       items.forEach(it=>{ const x=prev[sk(it)];
         if(x){ it.qty=x.qty; x._used=1; if(x.uom) it.uom=x.uom;
           if(x.bought!=null && Math.abs(Number(x.bought)-it.bought)>0.0005) it.boughtWas=Number(x.bought); }   // v152
         else if(knowsZeros && !zero[sk(it)]){ it.fresh=true; }          // keeps qty = bought
         else it.qty=0; });
-      (saved.items||[]).filter(x=>!x._used&&x.bought==null).forEach(x=>items.push({sku:x.sku||'',desc:x.desc,unit:x.unit,uom:x.uom||'ea',bought:null,qty:x.qty,supplier:'',invoice:'',src:[],added:true}));
+      (saved.items||[]).filter(x=>!x._used&&x.bought==null).forEach(x=>items.push({sku:x.sku||'',desc:x.desc,unit:x.unit,uom:x.uom||'ea',bought:null,qty:x.qty,supplier:'',invoice:'',src:[],added:true,pickedDesc:x.sku?x.desc:null}));
     }
     // v152 - a part on two receipts that look like one purchase is counted twice here until it is answered
     const dupBy={};
@@ -4403,7 +4411,9 @@ function invListRead(){
   invList.items.forEach((it,i)=>{
     const q=document.getElementById('ilq'+i); if(q) it.qty=Math.max(0,Number(q.value)||0);
     if(it.added){ const d=document.getElementById('ild'+i), u=document.getElementById('ilu'+i);
-      if(d) it.desc=d.value.trim(); if(u) it.unit=u.value===''?null:Math.max(0,Number(u.value)||0); }
+      if(d) it.desc=d.value.trim(); if(u) it.unit=u.value===''?null:Math.max(0,Number(u.value)||0);
+      // v156 - a name typed over a part picked from the price list is no longer that part: it drops the SKU
+      if(it.sku && it.pickedDesc!=null && it.desc!==it.pickedDesc){ it.sku=''; it.pickedDesc=null; } }
     const m=document.getElementById('ilm'+i); if(m) it.uom=m.value.trim();   // v138 - unit of measure, editable
   });
 }
@@ -4418,7 +4428,8 @@ function renderInvoiceList(){
   const L=invList; if(!L) return;
   const rows=L.items.map((it,i)=>`<div class="list-item" style="padding:8px 0">
       ${it.added
-        ? `<input id="ild${i}" placeholder="Part description" value="${esc(it.desc||'')}" oninput="invListTotals()" style="margin:0 0 6px">`
+        ? `<input id="ild${i}" placeholder="Type to search the price list — e.g. 15A breaker" autocomplete="off" value="${esc(it.desc||'')}" oninput="invListTotals();ilSug(${i})" onfocus="ilSug(${i})" onblur="ilSugHide(${i})" onkeydown="ilSugKey(event,${i})" style="margin:0 0 6px">
+           <div id="ilsg${i}"></div>${ilFromHtml_(it,i)}`
         : `<div><b>${esc(it.desc)}</b>${it.fresh?' <span class="small" style="color:var(--needs-ink);font-weight:700">· new since you saved</span>':''}</div>
            <div class="small muted">${esc(it.src.join(' · '))}${it.bought!=null?` · bought ${it.bought}${it.uom?' '+esc(it.uom):''}`:''}${String(it.sku||'').toUpperCase()==='PERMIT'?' · billed at cost, no markup':''}</div>
            ${it.dup?`<div class="small" style="color:var(--needs-ink);font-weight:700">⚠ Maybe one purchase counted twice — ${esc(it.dup)}</div>`:''}
@@ -4453,7 +4464,126 @@ function renderInvoiceList(){
 function invStep(i,d){ invListRead(); const it=invList.items[i]; it.qty=Math.max(0,Math.round((Number(it.qty)+d)*1000)/1000);
   const q=document.getElementById('ilq'+i); if(q) q.value=it.qty; invListTotals(); }
 function invAdd(){ invListRead(); invList.items.push({sku:'',desc:'',unit:null,uom:'ea',bought:null,qty:1,supplier:'',invoice:'',src:[],added:true}); renderInvoiceList();
-  const i=invList.items.length-1; setTimeout(()=>{ const d=document.getElementById('ild'+i); if(d) d.focus(); },50); }
+  const i=invList.items.length-1; loadPriceAll(); setTimeout(()=>{ const d=document.getElementById('ild'+i); if(d) d.focus(); },50); }
+/* v156 - ADD A PART SEARCHES THE PRICE LIST (Paul, 21 Nov: "when i start typing the part, i want it to show me
+   the material that matches with the material list like the search bar so that i can just add it from the
+   inventory"). As the name is typed, the closest parts on the Materials price list drop down under the box,
+   ranked like the v96 search bar (the words typed found in the name, the name starting with them, a typo in a
+   word forgiven). A size typed has to be that size: 14/3 never offers 14/2, 1/2" never offers 1-1/2". Each
+   shows our SKU, how many are on the shelf and the newest cost. Tapping one fills the name, the SKU, the unit
+   and the cost - all still editable - and puts the cursor in the count. A part that is not on the price list
+   is typed and costed by hand, as before. Picking a part only puts it on this list; the shelf count is not
+   touched. The whole price list is kept on the phone (admins and the bookkeeper - it carries costs) so the
+   suggestions come up as the letters are typed; it refreshes in the background when the parts list opens,
+   at most every 10 minutes. Until it has arrived the office is asked instead. */
+let ilHits={}, ilSel={}, ilT=null;
+async function loadPriceAll(force){
+  if(!canPrice()) return;
+  if(!S.priceAll){ try{ const c=await DB.getCache('priceAll'); if(c&&Array.isArray(c.list)){ S.priceAll=c.list; S.priceAllAt=c.ts||0; } }catch(e){} }
+  if(!S.online) return;
+  if(!force && S.priceAll && (Date.now()-(S.priceAllAt||0)) < CUST_TTL) return;
+  if(S.priceAllLoading) return S.priceAllLoading;
+  S.priceAllLoading=(async()=>{
+    try{
+      const r=await apiBg('priceList',{all:1});
+      // an office older than script v130 answers with the first 60 only (no `all`): that is not kept
+      if(r && r.all && Array.isArray(r.items)){ S.priceAll=r.items; S.priceAllAt=Date.now(); ilNotesRefresh_(); await DB.setCache('priceAll',{list:S.priceAll, ts:S.priceAllAt}); }
+    }catch(e){ /* keep what we had - the office search fills in */ }
+    finally{ S.priceAllLoading=null; }
+  })();
+  return S.priceAllLoading;
+}
+function ilUom_(u){ const s=String(u||'').trim().toLowerCase(); if(!s) return '';
+  if(/^(ea|each|pc|pcs|piece|pieces)$/.test(s)) return 'ea'; if(/^(ft|foot|feet)$/.test(s)) return 'ft';
+  if(/^(m|metre|metres|meter|meters)$/.test(s)) return 'm'; return s.slice(0,12); }
+/* "15 amp", "15amp" and "15A" are one rating; so are "1/2 in" and 1/2". */
+function ilNorm_(s){ return String(s||'').toLowerCase()
+  .replace(/(\d)\s*(amps?|a)\b/g,'$1a').replace(/(\d)\s*(volts?|v)\b/g,'$1v').replace(/(\d)\s*(watts?|w)\b/g,'$1w')
+  .replace(/(\d)\s*(inch(es)?|in)\b/g,'$1"'); }
+/* every size typed (a word with a digit in it) must be in the name as that size, not inside a bigger one */
+function ilSizeOk_(qt, hay){ return qt.filter(w=>/[0-9]/.test(w)).every(w=>
+  new RegExp('(^|[^0-9/.-])'+w.replace(/[.*+?^${}()|[\]\\\/-]/g,'\\$&')+'($|[^0-9/.])').test(hay)); }
+function ilFind(q, list){
+  const ql=String(q||'').trim(); if(ql.length<2) return [];
+  const qn=ilNorm_(ql), qt=npTokens(qn), qk=ql.toUpperCase(), out=[];
+  (list||[]).forEach(p=>{ const d=String(p.desc||''); if(!d) return;
+    const sku=String(p.sku||''), exact=sku && sku.toUpperCase()===qk;
+    const hay=ilNorm_(d)+' '+sku.toLowerCase();
+    if(!exact && !ilSizeOk_(qt, hay)) return;
+    let sc=exact?100:npScore(qn, hay);
+    if(sc>0) out.push({p, sc: sc+(Number(p.onHand)>0?2:0)}); });      // on the shelf: a small nudge up
+  out.sort((a,b)=>b.sc-a.sc);
+  return out.slice(0,6).map(x=>x.p);
+}
+function ilPl_(sku){ const k=String(sku||'').trim().toUpperCase(); if(!k) return null;
+  return (S.priceAll||[]).find(x=>String(x.sku||'').trim().toUpperCase()===k)||null; }
+/* under a part picked from the price list: where it came from and what is on the shelf */
+function ilFromHtml_(it, i){
+  if(!it.sku) return '';
+  const pl=ilPl_(it.sku), u=pl?(ilUom_(pl.unit)||'ea'):'';
+  return `<div class="small muted" id="ilsk${i}" style="margin:-2px 0 4px">From the price list · ${esc(it.sku)}${pl?(Number(pl.onHand)>0?` · ${esc(String(pl.onHand))} ${esc(u)} on hand`:' · none on hand'):''}${String(it.sku).toUpperCase()==='PERMIT'?' · billed at cost, no markup':''}</div>`;
+}
+/* the price list arrived after the parts list was drawn: the shelf counts go in under the parts in place,
+   without redrawing the list under a thumb that may be typing */
+function ilNotesRefresh_(){
+  if(!invList) return;
+  invList.items.forEach((it,i)=>{ if(!it.added||!it.sku) return; const el=document.getElementById('ilsk'+i);
+    if(el){ const h=ilFromHtml_(it,i); if(h) el.outerHTML=h; } });
+}
+function ilSug(i){
+  const it=invList&&invList.items[i], box=document.getElementById('ilsg'+i), inp=document.getElementById('ild'+i);
+  if(!it||!box||!inp) return;
+  if(!it.sku){ const n=document.getElementById('ilsk'+i); if(n) n.remove(); }   // typed over: no longer that part
+  const q=inp.value.trim(); ilSel[i]=-1; clearTimeout(ilT);
+  if(q.length<2){ ilHits[i]=[]; box.innerHTML=''; return; }
+  if(S.priceAll&&S.priceAll.length) return ilShow_(i, ilFind(q, S.priceAll), q);
+  // the whole list is not on the phone yet (the very first time, or an office not updated yet): ask the office
+  box.innerHTML='<div class="suggest"><div class="small muted"><span class="spin"></span> Looking in the price list…</div></div>';
+  ilT=setTimeout(async()=>{
+    let list=[];
+    try{ const r=await apiBg('priceList',{q:ilNorm_(q), limit:40}); list=(r&&r.items)||[]; }catch(e){}
+    const inp2=document.getElementById('ild'+i); if(!inp2 || inp2.value.trim()!==q) return;   // typed on since
+    if(S.priceAll&&S.priceAll.length) list=S.priceAll;                                     // it arrived meanwhile
+    if(document.activeElement===inp2) ilShow_(i, ilFind(q, list), q);
+  },300);
+}
+function ilShow_(i, hits, q){
+  const box=document.getElementById('ilsg'+i); if(!box) return;
+  const was=!!box.innerHTML; ilHits[i]=hits;
+  box.innerHTML=hits.length
+    ? `<div class="suggest">${hits.map((p,j)=>ilSugRow_(p,j,i)).join('')}</div>`
+    : `<div class="suggest"><div class="small muted">Nothing on the price list matches “${esc(q)}” — type the name and the cost yourself.</div></div>`;
+  // on a phone the keyboard covers the bottom half: bring the box to the top so the list shows under it
+  if(!was && hits.length && window.innerWidth<700){ const inp=document.getElementById('ild'+i); if(inp) try{ inp.scrollIntoView({block:'start', behavior:'smooth'}); }catch(e){} }
+}
+function ilSugRow_(p, j, i){
+  const u=ilUom_(p.unit)||'ea', price=Number(p.price), sku=String(p.sku||'').trim().toUpperCase();
+  const onList=sku && (invList.items||[]).some((x,k)=>k!==i && x.qty>0 && String(x.sku||'').trim().toUpperCase()===sku);
+  return `<div class="il-sg" id="ilsg${i}_${j}" onmousedown="event.preventDefault()" onclick="ilPick(${i},${j})" style="cursor:pointer;display:flex;gap:10px;justify-content:space-between;align-items:baseline">
+      <span><b>${esc(p.desc)}</b><span class="small muted" style="display:block">${esc(p.sku||'')}${Number(p.onHand)>0?` · ${esc(String(p.onHand))} ${esc(u)} on hand`:' · none on hand'}${onList?' · <span style="color:var(--needs-ink);font-weight:700">already on this list</span>':''}</span></span>
+      <span style="font-weight:800;white-space:nowrap">${price>0?'$'+price.toFixed(2)+'<span class="small muted" style="font-weight:400"> / '+esc(u)+'</span>':'<span class="small muted" style="font-weight:400">no cost</span>'}</span>
+    </div>`;
+}
+function ilSugHide(i){ setTimeout(()=>{ const inp=document.getElementById('ild'+i), b=document.getElementById('ilsg'+i);
+  if(b && document.activeElement!==inp){ b.innerHTML=''; ilHits[i]=[]; } },250); }
+function ilSugKey(e, i){
+  const hits=ilHits[i]||[]; if(!hits.length) return;
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){ e.preventDefault(); const n=hits.length;
+    let s=(ilSel[i]==null?-1:ilSel[i])+(e.key==='ArrowDown'?1:-1); if(s<0) s=n-1; if(s>=n) s=0; ilSel[i]=s;
+    hits.forEach((_,j)=>{ const el=document.getElementById('ilsg'+i+'_'+j); if(el) el.classList.toggle('il-on', j===s); }); }
+  else if(e.key==='Enter' && ilSel[i]>=0){ e.preventDefault(); ilPick(i, ilSel[i]); }
+  else if(e.key==='Escape'){ e.preventDefault(); e.stopPropagation(); const b=document.getElementById('ilsg'+i); if(b) b.innerHTML=''; ilHits[i]=[]; }
+}
+function ilPick(i, j){
+  const it=invList&&invList.items[i], p=(ilHits[i]||[])[j]; if(!it||!p) return;
+  invListRead();
+  it.desc=String(p.desc||'').trim(); it.sku=String(p.sku||'').trim(); it.pickedDesc=it.desc;
+  const price=Number(p.price); it.unit=price>0?Math.round(price*100)/100:null;
+  const u=ilUom_(p.unit); if(u) it.uom=u;
+  ilHits[i]=[]; ilSel[i]=-1;
+  renderInvoiceList();
+  setTimeout(()=>{ const q=document.getElementById('ilq'+i); if(q) try{ q.focus(); q.select(); }catch(e){} },60);
+}
 function invSnap_(L){ return JSON.stringify((L.items||[]).map(it=>[it.desc,it.qty,it.uom||'',it.unit])); }
 /* v141 - leave the parts list: back to where it was opened from (or close). Unsaved changes ask first. */
 function invLeave(){
