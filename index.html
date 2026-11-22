@@ -4382,7 +4382,8 @@ async function openInvoiceList(pk){
       // v156 - a PO line takes back only a PO line's saved quantity. A part added by hand now carries its
       // price-list SKU, so it can share a key with a PO line (more of the same wire, off the shelf); it used
       // to overwrite that line's quantity here and then vanish. Added lines always come back as their own.
-      const prev={}; (saved.items||[]).forEach(x=>{ if(x.bought!=null) prev[sk(x)]=x; });
+      const addedSaved=x=>x.bought==null && !x.supplier && !x.invoice;   // v157 - a PO line always carries its supplier
+      const prev={}; (saved.items||[]).forEach(x=>{ if(!addedSaved(x)) prev[sk(x)]=x; });
       // v148 - a part bought AFTER the list was saved (a late receipt, a permit fee) used to come up at 0,
       // exactly like one Paul had left off on purpose. The office now says which ones he set to 0
       // (saved.zeros); anything else new comes up at what was bought, marked "new since you saved".
@@ -4394,14 +4395,14 @@ async function openInvoiceList(pk){
           if(x.bought!=null && Math.abs(Number(x.bought)-it.bought)>0.0005) it.boughtWas=Number(x.bought); }   // v152
         else if(knowsZeros && !zero[sk(it)]){ it.fresh=true; }          // keeps qty = bought
         else it.qty=0; });
-      (saved.items||[]).filter(x=>!x._used&&x.bought==null).forEach(x=>items.push({sku:x.sku||'',desc:x.desc,unit:x.unit,uom:x.uom||'ea',bought:null,qty:x.qty,supplier:'',invoice:'',src:[],added:true,pickedDesc:x.sku?x.desc:null}));
+      (saved.items||[]).filter(x=>!x._used&&addedSaved(x)).forEach(x=>items.push({sku:x.sku||'',desc:x.desc,unit:x.unit,uom:x.uom||'ea',bought:null,qty:x.qty,supplier:'',invoice:'',src:[],added:true,pickedDesc:x.sku?x.desc:null}));
     }
     // v152 - a part on two receipts that look like one purchase is counted twice here until it is answered
     const dupBy={};
     (m.dups||[]).forEach(d=>(d.lines||[]).forEach(l=>{ const k=String(l.sku||'').trim().toUpperCase()||String(l.desc||'').trim().toLowerCase();
       (dupBy[k]=dupBy[k]||[]).push(`${l.qty} on both ${d.drop.invoice||'a scan'} and ${d.keep.invoice||'a scan'}`); }));
     items.forEach(it=>{ const k=String(it.sku||'').trim().toUpperCase()||String(it.desc||'').trim().toLowerCase(); if(dupBy[k]) it.dup=dupBy[k].join('; '); });
-    invList={ref, items, savedAt: saved&&saved.found?saved.savedAt:'', dups:(m.dups||[]).length};
+    invList={ref, items, savedAt: saved&&saved.found?saved.savedAt:'', dups:(m.dups||[]).length, used:m.used||[]};
     invList.snap=invSnap_(invList);
     renderInvoiceList();
   }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
@@ -4452,6 +4453,7 @@ function renderInvoiceList(){
     ${rows||'<p class="muted small">No supplier POs are filed against this job. Add parts below, or save with none for a labour-only draft.</p>'}
     <datalist id="ilUoms"><option value="ea"><option value="m"><option value="ft"><option value="roll"><option value="box"><option value="kit"><option value="pkg"></datalist>
     <button class="secondary" style="width:100%;margin-top:8px" onclick="invAdd()">＋ Add a part</button>
+    <p class="small muted" style="margin:4px 0 0">A part added from the price list comes off the shelf count when you save — once, however often you save. Lower it or set it to 0 and it goes back.</p>
     <div class="card row between" style="margin:10px 0"><b>Parts</b><b id="ilTot"></b></div>
     <div class="row" style="margin-top:6px;gap:8px">
       <button class="secondary grow" onclick="invLeave()">${(S._navStack||[]).length?'← Back':'Cancel'}</button>
@@ -4472,8 +4474,10 @@ function invAdd(){ invListRead(); invList.items.push({sku:'',desc:'',unit:null,u
    word forgiven). A size typed has to be that size: 14/3 never offers 14/2, 1/2" never offers 1-1/2". Each
    shows our SKU, how many are on the shelf and the newest cost. Tapping one fills the name, the SKU, the unit
    and the cost - all still editable - and puts the cursor in the count. A part that is not on the price list
-   is typed and costed by hand, as before. Picking a part only puts it on this list; the shelf count is not
-   touched. The whole price list is kept on the phone (admins and the bookkeeper - it carries costs) so the
+   is typed and costed by hand, as before. v157 (Paul, 21 Nov: "we can take it out of the inventory but ensure
+   that it still shows the parts even if the inventory says we dont have it"): saving the list takes a picked
+   part off the shelf count, once (office script v131); every part shows whatever the shelf says, even zero or
+   below. The whole price list is kept on the phone (admins and the bookkeeper - it carries costs) so the
    suggestions come up as the letters are typed; it refreshes in the background when the parts list opens,
    at most every 10 minutes. Until it has arrived the office is asked instead. */
 let ilHits={}, ilSel={}, ilT=null;
@@ -4515,13 +4519,22 @@ function ilFind(q, list){
   out.sort((a,b)=>b.sc-a.sc);
   return out.slice(0,6).map(x=>x.p);
 }
+/* v157 - what the shelf says, including a count that has gone below zero (the part still shows and still bills) */
+function ilShelf_(onHand, u){ const n=Number(onHand)||0;
+  return n>0 ? `${esc(String(n))} ${esc(u)} on hand` : n<0 ? `shelf count ${esc(String(n))} ${esc(u)} (behind)` : 'none on hand'; }
+/* v157 - this job's Job usage rows for a SKU: what the parts list already took, and what the crew logged at clock-out */
+function ilUsed_(sku){ const k=String(sku||'').trim().toUpperCase(); let list=0, crew=0;
+  ((invList&&invList.used)||[]).forEach(r=>{ if(String(r.sku||'').trim().toUpperCase()!==k) return; const st=String(r.status||'').toLowerCase();
+    if(st.indexOf('to return')===0) return; if(st==='parts list') list+=Number(r.qty)||0; else crew+=Number(r.qty)||0; });
+  return {list:Math.round(list*1000)/1000, crew:Math.round(crew*1000)/1000}; }
 function ilPl_(sku){ const k=String(sku||'').trim().toUpperCase(); if(!k) return null;
   return (S.priceAll||[]).find(x=>String(x.sku||'').trim().toUpperCase()===k)||null; }
 /* under a part picked from the price list: where it came from and what is on the shelf */
 function ilFromHtml_(it, i){
   if(!it.sku) return '';
   const pl=ilPl_(it.sku), u=pl?(ilUom_(pl.unit)||'ea'):'';
-  return `<div class="small muted" id="ilsk${i}" style="margin:-2px 0 4px">From the price list · ${esc(it.sku)}${pl?(Number(pl.onHand)>0?` · ${esc(String(pl.onHand))} ${esc(u)} on hand`:' · none on hand'):''}${String(it.sku).toUpperCase()==='PERMIT'?' · billed at cost, no markup':''}</div>`;
+  const permit=String(it.sku).toUpperCase()==='PERMIT', us=ilUsed_(it.sku);
+  return `<div class="small muted" id="ilsk${i}" style="margin:-2px 0 4px">From the price list · ${esc(it.sku)}${pl?' · '+ilShelf_(pl.onHand,u):''}${permit?' · billed at cost, no markup':''}${!permit&&us.list?` · ${esc(String(us.list))} ${esc(u||it.uom||'')} already taken off the shelf for this list`:''}${!permit&&us.crew?`<span style="display:block;color:var(--needs-ink);font-weight:700">⚠ ${esc(String(us.crew))} ${esc(u||it.uom||'')} also logged at clock-out on this job — check it is not counted twice</span>`:''}</div>`;
 }
 /* the price list arrived after the parts list was drawn: the shelf counts go in under the parts in place,
    without redrawing the list under a thumb that may be typing */
@@ -4560,7 +4573,7 @@ function ilSugRow_(p, j, i){
   const u=ilUom_(p.unit)||'ea', price=Number(p.price), sku=String(p.sku||'').trim().toUpperCase();
   const onList=sku && (invList.items||[]).some((x,k)=>k!==i && x.qty>0 && String(x.sku||'').trim().toUpperCase()===sku);
   return `<div class="il-sg" id="ilsg${i}_${j}" onmousedown="event.preventDefault()" onclick="ilPick(${i},${j})" style="cursor:pointer;display:flex;gap:10px;justify-content:space-between;align-items:baseline">
-      <span><b>${esc(p.desc)}</b><span class="small muted" style="display:block">${esc(p.sku||'')}${Number(p.onHand)>0?` · ${esc(String(p.onHand))} ${esc(u)} on hand`:' · none on hand'}${onList?' · <span style="color:var(--needs-ink);font-weight:700">already on this list</span>':''}</span></span>
+      <span><b>${esc(p.desc)}</b><span class="small muted" style="display:block">${esc(p.sku||'')} · ${ilShelf_(p.onHand,u)}${onList?' · <span style="color:var(--needs-ink);font-weight:700">already on this list</span>':''}</span></span>
       <span style="font-weight:800;white-space:nowrap">${price>0?'$'+price.toFixed(2)+'<span class="small muted" style="font-weight:400"> / '+esc(u)+'</span>':'<span class="small muted" style="font-weight:400">no cost</span>'}</span>
     </div>`;
 }
@@ -4584,6 +4597,24 @@ function ilPick(i, j){
   renderInvoiceList();
   setTimeout(()=>{ const q=document.getElementById('ilq'+i); if(q) try{ q.focus(); q.select(); }catch(e){} },60);
 }
+/* v157 - what the save did to the shelf, in one sentence; and the phone's copy of the counts brought up to date */
+function ilShelfMsg_(r){ const sh=r&&r.shelf; if(!sh) return '';
+  if(sh.error) return ' ⚠ The shelf count was not changed: '+sh.error;
+  const f=o=>`${o.qty} ${o.unit||''} ${o.desc}`.replace(/\s+/g,' ').trim();
+  let m=''; if((sh.taken||[]).length) m+=' Taken off the shelf: '+sh.taken.map(f).join(', ')+'.';
+  if((sh.back||[]).length) m+=' Put back on the shelf: '+sh.back.map(f).join(', ')+'.';
+  if((sh.behind||[]).length) m+=' The shelf count is now below zero for '+sh.behind.map(o=>o.desc).join(', ')+' — billed anyway.';
+  return m; }
+function ilShelfAfter_(r){
+  const sh=r&&r.shelf; if(!sh||sh.error||!((sh.taken||[]).length||(sh.back||[]).length)) return;
+  const by={}; (sh.taken||[]).concat(sh.back||[]).forEach(o=>by[String(o.sku).toUpperCase()]=o.now);
+  (S.priceAll||[]).forEach(x=>{ const k=String(x.sku||'').toUpperCase(); if(by[k]!=null) x.onHand=by[k]; });
+  if(invList){ const L=invList;   // this list's own takes, so the notes under the parts read right without reopening
+    (sh.taken||[]).forEach(o=>L.used.push({sku:o.sku, qty:o.qty, status:'parts list'}));
+    (sh.back||[]).forEach(o=>L.used.push({sku:o.sku, qty:-o.qty, status:'parts list'}));
+    L.items.forEach((it,i)=>{ if(it.added&&it.sku){ const el=document.getElementById('ilsk'+i); if(el){ const h=ilFromHtml_(it,i); if(h) el.outerHTML=h; } } }); }
+  if(S.priceAll) try{ DB.setCache('priceAll',{list:S.priceAll, ts:S.priceAllAt||Date.now()}).catch(()=>{}); }catch(e){}
+}
 function invSnap_(L){ return JSON.stringify((L.items||[]).map(it=>[it.desc,it.qty,it.uom||'',it.unit])); }
 /* v141 - leave the parts list: back to where it was opened from (or close). Unsaved changes ask first. */
 function invLeave(){
@@ -4602,7 +4633,7 @@ async function invListSaveOnly(){
     if(r&&r.built===false){
       L.savedAt=r.savedAt||new Date().toISOString(); L.snap=invSnap_(L);
       const sv=document.getElementById('ilSaved'); if(sv) sv.textContent='Saved ✓ '+new Date(L.savedAt).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})+' · build the draft when you are ready';
-      toast(`Saved ${r.lines} part line(s) — $${Number(r.partsCost||0).toFixed(2)} at cost. Nothing built yet.`);
+      ilShelfAfter_(r); toast(`Saved ${r.lines} part line(s) — $${Number(r.partsCost||0).toFixed(2)} at cost. Nothing built yet.`+ilShelfMsg_(r), 9000);
     } else toast('Saved — but the office is still on the old version and started the draft too.');
   }catch(e){ toast(e.message); }
   btn.disabled=false; btn.textContent='💾 Save';
@@ -4615,10 +4646,10 @@ async function invListSave(){
   btn.disabled=true; btn.textContent='Sending…';
   try{
     const r=await api('invoiceMaterialsSave',{po:L.ref.po||'', jobSite:L.ref.jobSite, items, build:true},{timeout:90000});
-    invList=null; closeSheet();
-    toast(r&&r.fired
+    ilShelfAfter_(r); invList=null; closeSheet();
+    toast((r&&r.fired
       ? `Saved ${r.lines} part line(s) ($${Number(r.partsCost||0).toFixed(2)} at cost). Claude started on it — the draft should be in QuickBooks in about 5–10 minutes.`
-      : `Saved ${r.lines} part line(s). Initial draft requested.` + (r&&r.note?' ('+r.note+')':''), 8000);
+      : `Saved ${r.lines} part line(s). Initial draft requested.` + (r&&r.note?' ('+r.note+')':''))+ilShelfMsg_(r), 9000);
   }catch(e){
     if (e && e.kind === 'network'){ invList=null; closeSheet(); toast('The office was slow to answer, but the list has most likely been saved and sent — watch for the "Initial draft ready" email before trying again.', 8000); return; }
     toast(e.message); btn.disabled=false; btn.textContent='🧾 Build initial draft';
