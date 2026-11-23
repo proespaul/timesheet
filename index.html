@@ -6919,23 +6919,40 @@ function dictate(btnId, targetId){
        entry is closed on the phone first and the correction is written to the queue BEFORE the
        network is tried, like a punch: the person can clock in for today immediately, signal or
        no signal, and the office gets the fix when the phone can reach it. */
+/* v158 - THE ALL-GREY CALENDAR (Paul, 23 Nov). The day box is clamped to the open shift: from its
+   clock-in day to today. Once a new shift has started, that is min = max = today - a calendar with one
+   day on it and every other day grey, the 20th included, and no way to the day actually being looked
+   for. A shift that started today has no day to choose, so the box is dropped and the time is today's;
+   an earlier day is not this shift at all, so the sheet says so and goes to Add time (with ← Back). */
 function openForgotFix(){
   const e=S.openEntry; if(!e) return;
   const inD=new Date(e.ClockIn);
   const inDay=localDateStr(inD), today=localDateStr(new Date());
+  const oneDay = inDay>=today;   // started today: the day box could only ever offer today
+  let defT='17:00';               // a shift that started today cannot have stopped later than now
+  if (oneDay){ const t5=new Date(today+'T17:00'); if (t5>new Date() || t5<=inD) defT=fmtHM(new Date().toISOString()); }
+  navSelf(()=>openForgotFix());
   sheet(`<h2>Forgot to clock out?</h2>
-    <p class="small muted">You clocked in <b>${fmtDay(e.ClockIn)} at ${fmtTime(e.ClockIn)}</b>${e['Customer/Job Site']?` on <b>${esc(e['Customer/Job Site'])}</b>`:''} and never clocked out.</p>
-    <label>When did you actually stop working?</label>
+    <p class="small muted">You clocked in <b>${oneDay?'today':fmtDay(e.ClockIn)} at ${fmtTime(e.ClockIn)}</b>${e['Customer/Job Site']?` on <b>${esc(e['Customer/Job Site'])}</b>`:''} and never clocked out.</p>
+    ${oneDay
+      ? `<label>What time did you actually stop working today?</label>
+    <input id="ffTime" type="time" value="${esc(defT)}">`
+      : `<label>When did you actually stop working?</label>
     <div class="row">
       <div class="grow"><label style="margin-top:0">Day</label>
         <input id="ffDate" type="date" value="${esc(inDay)}" min="${esc(inDay)}" max="${esc(today)}"></div>
       <div class="grow"><label style="margin-top:0">Time</label>
         <input id="ffTime" type="time" value="17:00"></div>
-    </div>
-    <p class="small muted">The entry closes then and goes to Paul for approval — you can clock in for today straight away, even with no signal.</p>
+    </div>`}
+    <p class="small muted">The entry closes then and goes to Paul for approval — you can clock in ${oneDay?'again':'for today'} straight away, even with no signal.</p>
     <button style="width:100%;margin-top:12px" onclick="submitForgotFix(this)">Fix it</button>
-    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel — I really am still working</button>`);
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Cancel — I really am still working</button>
+    <p class="small muted" style="margin:18px 0 0">${oneDay
+      ? 'Looking for an earlier day? This shift started today, so an earlier day is not in it.'
+      : `A day before ${esc(fmtDay(e.ClockIn))} is not in this shift.`} Put that day's hours in with Add time.</p>
+    <button class="secondary" style="width:100%;margin-top:6px" onclick="ffAddTime_()">➕ Add time for an earlier day</button>`);
 }
+function ffAddTime_(){ navPush(); openManual(); }   // v158 - Add time opens over this sheet, ← Back returns to it
 async function submitForgotFix(btn){
   const e=S.openEntry; if(!e) return;
   const tv=val('ffTime'); if(!tv) return toast('Pick the time you stopped.');
@@ -6943,7 +6960,7 @@ async function submitForgotFix(btn){
   const dv=val('ffDate') || localDateStr(inD);
   const out=new Date(dv+'T'+tv);
   if(isNaN(out)) return toast('Pick the day and the time you stopped.');
-  if(out<=inD) return toast(`That is before you clocked in (${fmtDay(e.ClockIn)} ${fmtTime(e.ClockIn)}) — check the day.`);
+  if(out<=inD) return toast(`That is before you clocked in (${fmtDay(e.ClockIn)} ${fmtTime(e.ClockIn)}) — check the ${document.getElementById('ffDate')?'day':'time'}.`);
   if(out.getTime() > Date.now()+5*60000) return toast('That is still in the future — pick when you actually stopped.');
   const gross=(out-inD)/3600000;
   if(gross>16) return toast(`That would be ${gross.toFixed(1)} hours on one entry — pick the day and time you actually stopped.`, 6000);
@@ -7234,6 +7251,12 @@ async function submitPicker(){
    instead of silently padding the day. */
 let coState=null, coSubmittedId=null, coJobResults=[], coTickT=null;
 const LONG_REVIEW_MIN = 15;
+/* v158 - THE 72-HOUR ENTRY (Paul, 23 Nov). The review's Clock in and Clock out boxes are bare times with
+   no day on them, and Submit wrote the shift exactly as they read: a shift left running from Friday went
+   in as Friday 8:00 to Monday 8:05. Past this many hours Submit asks which day the person really stopped,
+   with a day box that spans the whole shift (coAskRunaway_). The same 16 hours as the forgotten-clock-out
+   fix and the "Still clocked in" nudge. */
+const RUNAWAY_SHIFT_H = 16;
 /* v75 - how far ahead of the phone's own clock a TYPED clock-out time may be. Paul asked to be
    able to round the finish up (type 5:30 at 5:20); the app used to refuse anything more than
    five minutes ahead and the server quietly clamped it back to "now" as well. Two hours covers
@@ -7266,7 +7289,7 @@ function startClockOutReview(){
     inAt: S.openEntry.ClockIn,
     stopAt,                          // confirm moment — only used to notice a review left open too long
     outAt: stopAt,                   // v43: follows the clock (coTick_) until Submit, unless typed over
-    inEdited: false, outEdited: false, jobEdited: false, longReviewOk: false,
+    inEdited: false, outEdited: false, jobEdited: false, longReviewOk: false, runawayOk: false,   // v158 - runawayOk: the 16-hour question was answered
     jobSite: S.openEntry['Customer/Job Site']||'',
     poNumber: S.openEntry['PO#']||'',
     company: S.openEntry.Company||'',
@@ -7684,10 +7707,91 @@ async function submitClockOut(){
     coUpdateWorked();
     return;
   }
-  // v43 — a review left open for a long time (phone put down mid-form) must not quietly add
-  // that time to the day: ask which time is right. A typed time is already an answer.
-  if (!c.outEdited && !c.longReviewOk && Date.now()-new Date(c.stopAt).getTime() > LONG_REVIEW_MIN*60000){ coAskLongReview_(); return; }
+  return coAsk_();
+}
+/* v158 - THE QUESTIONS ASKED BEFORE A CLOCK-OUT IS WRITTEN, in one place. Every answer comes back here,
+   so neither question can commit around the other - coLongReview_ used to commit straight away, past
+   the 16-hour question.
+   (1) v43: a review left open for a long time (phone put down mid-form) must not quietly add that time
+       to the day: which time is right? A typed time is already an answer.
+   (2) v158: a shift past RUNAWAY_SHIFT_H hours: which day did you really stop?
+   When the shift is past 16 hours even at the earlier of (1)'s two times, (2) is asked first: the day
+   and time it asks for answer (1) as well. Otherwise (1) is asked, and its answer goes on to (2). */
+function coAsk_(){
+  const c=coState; if(!c) return;
+  const longQ = !c.outEdited && !c.longReviewOk && Date.now()-new Date(c.stopAt).getTime() > LONG_REVIEW_MIN*60000;
+  const at = longQ ? c.stopAt : c.outAt;
+  if (!c.runawayOk && (new Date(at)-new Date(c.inAt))/3600000 > RUNAWAY_SHIFT_H) return coAskRunaway_(at);
+  if (longQ) return coAskLongReview_();
   return coCommit_();
+}
+/* v158 - which day did you really stop? The day box runs from the clock-in day to today: the whole shift
+   and nothing outside it. A shift that started today has no day to choose, so it asks for the time only
+   (the dead one-day calendar of openForgotFix). The day starts on the clock-in day, as in the forgotten-
+   clock-out fix; the time is the one typed on the review if there was one, otherwise it is left empty to
+   be picked - so tapping straight through can never write the runaway shift again. */
+function coAskRunaway_(at){
+  const c=coState; if(!c) return;
+  const inDay=localDateStr(new Date(c.inAt)), today=localDateStr(new Date());
+  const oneDay = inDay>=today;
+  const h=(new Date(at)-new Date(c.inAt))/3600000;
+  const day = iso => localDateStr(new Date(iso))===today ? 'today' : fmtDay(iso);
+  const timeBox = `<input id="coRunTime" type="time" value="${c.outEdited?esc(fmtHM(c.outAt)):''}" oninput="coRunawayShow_()" onchange="coRunawayShow_()">`;
+  sheet(`<div class="center">
+      <div style="font-size:2.2rem">⏰</div>
+      <h2>${esc(h.toFixed(1).replace(/\.0$/,''))} hours on one shift?</h2>
+      <p>You clocked in <b>${esc(day(c.inAt))} at ${esc(fmtTime(c.inAt))}</b> and are clocking out <b>${esc(day(at))} at ${esc(fmtTime(at))}</b> — all of it on this one entry.</p>
+    </div>
+    ${oneDay
+      ? `<label>What time did you really stop?</label>
+    ${timeBox}`
+      : `<label>Which day did you really stop?</label>
+    <div class="row">
+      <div class="grow"><label style="margin-top:0">Day</label>
+        <input id="coRunDay" type="date" value="${esc(inDay)}" min="${esc(inDay)}" max="${esc(today)}" onchange="coRunawayShow_()"></div>
+      <div class="grow"><label style="margin-top:0">Time</label>
+        ${timeBox}</div>
+    </div>`}
+    <div class="small muted" id="coRunSum" style="margin-top:6px"></div>
+    <button style="width:100%;margin-top:12px" onclick="coRunawayAnswer_()">Clock out then</button>
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="renderClockOutReview()">← Back to the review</button>`);
+  if (S._sheet) S._sheet.onclick = null;   // a stray tap on the backdrop must not throw the review away
+  coRunawayShow_();
+}
+function coRunawayOut_(){
+  const c=coState; if(!c) return null;
+  const tv=val('coRunTime'); if(!tv) return null;
+  const out=new Date((val('coRunDay')||localDateStr(new Date(c.inAt)))+'T'+tv);
+  return isNaN(out) ? null : out;
+}
+/* The answer, worked out as it is picked - the review's bare boxes never said what they added up to. */
+function coRunawayShow_(){
+  const box=document.getElementById('coRunSum'), c=coState; if(!box||!c) return;
+  const out=coRunawayOut_();
+  if (!out){ box.textContent = document.getElementById('coRunDay') ? 'Check the day, then pick the time you stopped.' : 'Pick the time you stopped.'; return; }
+  const ms=out-new Date(c.inAt), bmin=Number(c.breakMin)||0;
+  if (ms<=0){ box.innerHTML='<span style="color:var(--bad)">That is before you clocked in.</span>'; return; }
+  const o=out.toISOString(), sameDay=localDateStr(out)===localDateStr(new Date(c.inAt));
+  box.innerHTML = `${esc(fmtDay(c.inAt))} ${esc(fmtTime(c.inAt))} to ${sameDay?'':esc(fmtDay(o))+' '}${esc(fmtTime(o))}`+
+    ` → <b>${Math.max(0, ms/3600000 - bmin/60).toFixed(2)} hrs</b>${bmin?` after a ${bmin} min break`:''}`+
+    (ms>24*3600000?' <span style="color:var(--bad)">⚠ more than a day</span>':'');
+}
+function coRunawayAnswer_(){
+  const c=coState; if(!c) return;
+  const hasDay=!!document.getElementById('coRunDay');
+  if (hasDay && !val('coRunDay')) return toast('Pick the day you stopped.');
+  if (!val('coRunTime')) return toast('Pick the time you stopped.');
+  const out=coRunawayOut_(); if(!out) return toast('Pick the day and the time you stopped.');
+  const inD=new Date(c.inAt), ms=out-inD;
+  if (ms<=0) return toast(`That is before you clocked in (${fmtDay(c.inAt)} ${fmtTime(c.inAt)}) — check the ${hasDay?'day':'time'}.`);
+  const ahead=out.getTime()-Date.now();
+  if (ahead > CLOCKOUT_AHEAD_MIN*60000) return toast(`That is ${Math.round(ahead/60000)} min ahead of this phone's clock — pick when you actually stopped.`, 6000);
+  // Nothing real is one entry of more than a day - the office refuses an edit like that too (editEntry_).
+  if (ms > 24*3600000) return toast(`That is still ${(ms/3600000).toFixed(1)} hours on one entry — pick the day you really stopped. Days after it go in with Add time.`, 7000);
+  const bmin=Number(c.breakMin)||0;
+  if (bmin*60000 > ms) return toast(`Your ${bmin} min break is longer than that — check the time, or go back to the review.`, 6000);
+  c.outAt=out.toISOString(); c.outEdited=true; c.runawayOk=true;
+  coAsk_();
 }
 function coAskLongReview_(){
   const c=coState; if(!c) return;
@@ -7707,7 +7811,7 @@ function coLongReview_(useNow){
   c.longReviewOk = true;
   if (useNow) c.outAt = new Date().toISOString();
   else { c.outAt = c.stopAt; c.outEdited = true; }
-  coCommit_();
+  coAsk_();   // v158 - chained: the time picked goes on to the 16-hour question, not straight to the office
 }
 /* Everything after the review is accepted: close the sheet, paint clocked-out, send. */
 async function coCommit_(){
