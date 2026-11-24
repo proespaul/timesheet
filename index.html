@@ -469,6 +469,14 @@
     justify-content:center; font-size:.76rem; color:var(--muted); cursor:pointer; background:repeating-linear-gradient(135deg,transparent 0 8px,rgba(148,163,184,.08) 8px 16px)}
   .tl .gap b{color:var(--accent2); margin-left:4px}
   .tl .hr, .tl .hl, .tl .now{pointer-events:none}
+  .blkty{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px}
+  .blkty button{background:var(--panel2); color:var(--navy); border:1.5px solid transparent; border-radius:12px; padding:8px 4px; font-weight:600;
+    font-size:.78rem; display:flex; flex-direction:column; align-items:center; gap:2px; width:auto; min-height:58px}
+  .blkty button span{font-size:1.3rem}
+  .blkty button.on{background:#f3f0eb; border-color:#78716c; color:#3f3a36}
+  .blklen{display:flex; flex-wrap:wrap; gap:6px}
+  .blklen button{width:auto; background:var(--panel2); color:var(--navy); border:1.5px solid transparent; border-radius:999px; padding:7px 12px; font-weight:600; font-size:.82rem}
+  .blklen button.on{background:#f3f0eb; border-color:#78716c; color:#3f3a36}
   .tl .dsc{position:absolute; border-radius:8px}
   .tl .dsc.drop{background:#dbeafe; outline:2px dashed var(--accent2); outline-offset:-2px; z-index:1}
   .tl .tb{touch-action:auto; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; z-index:2}
@@ -1375,7 +1383,7 @@ async function api(action, payload, opts){
   finally{ if(!bg) busyEnd(id); }
 }
 // v163 - the office calls that put something on the calendar (every booking path goes through one)
-const SCH_BOOKS_ = /^(requestSchedule|requestBook|visitBook|bumpApply|scheduleAddDay|requestAddManual)$/;
+const SCH_BOOKS_ = /^(requestSchedule|requestBook|visitBook|bumpApply|scheduleAddDay|requestAddManual|blockAdd|blockEdit)$/;
 function apiBg(action, payload){ return api(action, payload, {bg:true}); } // background refreshes — silent
 /* v42 — WHY A PUNCH IS LOST, AND THE ONE RULE THAT STOPS IT.
  *
@@ -4775,7 +4783,7 @@ function schedView(){
       const past=mode==='day' && !dd;
       return `<div class="row" style="margin-bottom:${past?4:10}px">
       <button class="secondary grow" onclick="openAddManual('job',false,'${dd}')">⚡ Schedule a job${esc(on)}</button>
-      <button class="secondary grow" onclick="openAddManual('call',false,'${dd}')">📞 Schedule a call${esc(on)}</button>
+      <button class="secondary grow" onclick="openBlockAdd('${dd}')">🧱 Add a block${esc(on)}</button>
     </div>${past?'<p class="small muted" style="margin:0 0 10px">This day has passed, so these book from today.</p>':''}`; })():''}`;
   if(mode==='month') return head + schedMonthHtml() + (d?timeOffSection():'');
   if(mode==='year') return head + schYearHtml();
@@ -4835,11 +4843,13 @@ const SCH_TONE={
   declined: {bg:'#fef2f2',bd:'#dc2626',ink:'#991b1b',label:'Needs a new time'},
   cancelled:{bg:'#f1f5f9',bd:'#94a3b8',ink:'#475569',label:'Cancelled'},
   none:     {bg:'#e6f1fb',bd:'#2E75B6',ink:'#0C447C',label:'Booked'},
-  look:     {bg:'#f3e8ff',bd:'#9333ea',ink:'#581c87',label:'Estimate visit — going to look'}};   // v165
+  look:     {bg:'#f3e8ff',bd:'#9333ea',ink:'#581c87',label:'Estimate visit — going to look'},   // v165
+  block:    {bg:'#f3f0eb',bd:'#78716c',ink:'#3f3a36',label:'Block — not a job'}};               // v166
 /* v104 - a booking the customer was never asked about (a return visit, something put straight on
  * the calendar) is BLUE, "Booked": amber means somebody is waiting on an answer, and a calendar
  * that is amber everywhere says nothing. Paul's own rule: blue = next step, orange = needs you. */
 function schTone(ev){
+  if(schIsBlock_(ev)) return SCH_TONE.block;   // v166 - a block: no customer, no status
   // v165 - a visit to LOOK at a job for an estimate is purple, whatever else it is, unless it needs a new time
   if(schIsLook_(ev) && ['declined','cancelled'].indexOf(ev.confirm)<0) return SCH_TONE.look;
   return SCH_TONE[ev&&ev.confirm]||SCH_TONE.none; }
@@ -4848,6 +4858,23 @@ function schTone(ev){
    booked yet." at the top of the calendar notes (requestSchedule_, ESTIMATE); a booked job never starts so. */
 function schIsLook_(ev){ return !!ev && /^\s*Estimate call \(/.test(String(ev.desc||'')); }
 function schLookTag_(ev){ return schIsLook_(ev)?'🔍 ':''; }
+/* v166 - a BLOCK is calendar time that is not a job (Code.gs v134 writes "Block (Meeting) — not a job." first) */
+function schIsBlock_(ev){ return !!ev && /^\s*Block \(/.test(String(ev.desc||'')); }
+const BLK_TYPES=[
+  ['meeting','🤝','Meeting','Who with, and what about?'],
+  ['quoting','🧮','Quoting','Which jobs are you pricing?'],
+  ['walkthrough','🚶','Walk-through','Which site, with whom?'],
+  ['call','📞','Phone call','Who are you calling?'],
+  ['supplies','🛒','Supplies / pickup','What, and from where?'],
+  ['office','🗂️','Office / admin','Invoicing, paperwork…'],
+  ['travel','🚚','Travel','Where to?'],
+  ['personal','🙋','Personal','Appointment, family…'],
+  ['other','📌','Other','What is it?']];
+function blkTypeOf_(ev){
+  const m=/^\s*Block \(([^)]*)\)/.exec(String(ev&&ev.desc||'')), lbl=m?m[1]:'';
+  const t=BLK_TYPES.find(x=>x[2]===lbl); return t?{key:t[0],label:t[2]}:{key:'other',label:lbl||'Other'}; }
+function blkNote_(ev){ const lines=String(ev&&ev.desc||'').split('\n'); lines.shift();
+  return lines.filter(l=>!/^Added from the timesheet app by /.test(l)).join('\n').trim(); }
 function schDate(s){ const p=String(s).split('-'); return new Date(Number(p[0]),Number(p[1])-1,Number(p[2])); }
 function schAdd(s,n){ const d=schDate(s); d.setDate(d.getDate()+n); return localDateStr(d); }
 function schAnchor(){ return S.schedDay || localDateStr(new Date()); }
@@ -4903,7 +4930,7 @@ function schLegend(data){
   return `<p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
     ?'Tap a job for its details · drag it to another day or time (on a phone: press and hold first)'
     :'Tap a job for the address, the details and who\'s with you'}<br>
-    ${sw(SCH_TONE.none)}booked &nbsp; ${sw(SCH_TONE.confirmed)}confirmed &nbsp; ${sw(SCH_TONE.waiting)}not confirmed yet &nbsp; ${sw(SCH_TONE.declined)}needs a new time &nbsp; ${sw(SCH_TONE.look)}🔍 estimate visit</p>`;
+    ${sw(SCH_TONE.none)}booked &nbsp; ${sw(SCH_TONE.confirmed)}confirmed &nbsp; ${sw(SCH_TONE.waiting)}not confirmed yet &nbsp; ${sw(SCH_TONE.declined)}needs a new time &nbsp; ${sw(SCH_TONE.look)}🔍 estimate visit &nbsp; ${sw(SCH_TONE.block)}🧱 block (not a job)</p>`;
 }
 function schGrid(days, o){
   const hh=o.hh, canDrag=!!o.canDrag;
@@ -4931,7 +4958,7 @@ function schGrid(days, o){
       const k=reg(ev), t=schTone(ev), L=lanes[ev.id]||{lane:0,count:1}, w=100/L.count;
       const s=schHours(ev), dur=schDur(ev);
       const scope=String(ev.title||'').split(/\s+[—–-]\s+/).slice(1).join(' – ');
-      return `<div class="blk${(ev.assigned||[]).length?'':' un'}${schIsDragged(ev)?' ghosted':''}" data-ek="${k}" role="button" tabindex="0" aria-label="${esc(schedName(ev))}, ${esc(fmtTime(ev.start))}" style="top:${(s-h0)*hh+1}px;height:${Math.max(hh/2,dur*hh)-3}px;left:calc(${L.lane*w}% + 2px);width:calc(${w}% - 4px);background:${t.bg};border-color:${t.bd};color:${t.ink}"
+      return `<div class="blk${((ev.assigned||[]).length||schIsBlock_(ev))?'':' un'}${schIsDragged(ev)?' ghosted':''}" data-ek="${k}" role="button" tabindex="0" aria-label="${esc(schedName(ev))}, ${esc(fmtTime(ev.start))}" style="top:${(s-h0)*hh+1}px;height:${Math.max(hh/2,dur*hh)-3}px;left:calc(${L.lane*w}% + 2px);width:calc(${w}% - 4px);background:${t.bg};border-color:${t.bd};color:${t.ink}"
         onpointerdown="schedGrab(event,'${k}','${d}')" ontouchmove="schTouchClaim(event)" onclick="event.stopPropagation()">
         <div class="bt"><b>${schLookTag_(ev)}${esc(schedName(ev))}</b>${L.count>1?`<span class="bn" aria-label="job ${L.lane+1} of ${L.count} at this time">${L.lane+1}</span>`:''}</div>
         <div class="bs">${esc(fmtTime(ev.start))} – ${esc(fmtTime(ev.end))}</div>
@@ -5038,6 +5065,7 @@ function schMergeLocal_(data, since){
     const i=data.events.findIndex(e=>String(e.id)===id);
     if(x.ev){ if(!schInWin_(data, x.ev.start)){ if(i>=0) data.events.splice(i,1); }
               else if(i<0) data.events.push(Object.assign({}, x.ev)); else Object.assign(data.events[i], x.ev); }
+    else if(x.gone){ if(i>=0) data.events.splice(i,1); }   // v166 - deleted here
     else if(x.patch && i>=0) Object.assign(data.events[i], x.patch); });
   data.events.sort((a,b)=>String(a.start)<String(b.start)?-1:1);
   (S._toLocal||[]).forEach(t=>{ if(t.at<since) return; data.timeOff=data.timeOff||[];
@@ -5603,7 +5631,7 @@ function schedMonthHtml(){
     const evs=(evByDay[k]||[]).slice().sort((a,b)=>new Date(a.start)-new Date(b.start));
     const lanes=schLanes(evs);
     const show=evs.slice(0,2).map(ev=>{
-      const rk=reg(ev), un=data&&data.canAssign&&!ev.assigned.length, tn=schTone(ev), L=lanes[ev.id];
+      const rk=reg(ev), un=data&&data.canAssign&&!ev.assigned.length&&!schIsBlock_(ev), tn=schTone(ev), L=lanes[ev.id];
       return `<div class="ev${un?' un':''}${schIsDragged(ev)?' ghosted':''}" data-ek="${rk}" data-day="${k}" style="background:${tn.bg};color:${tn.ink};border:1px solid ${tn.bd}"
         onpointerdown="schedGrab(event,'${rk}','${k}')" ontouchmove="schTouchClaim(event)" onclick="event.stopPropagation()"
         >${L&&L.count>1?`<span class="bn">${L.lane+1}</span>`:''}${schedChip(ev)}</div>`;
@@ -5621,7 +5649,7 @@ function schedMonthHtml(){
     </div>
     <div class="cal" ontouchmove="schTouchClaim(event)">${cells}</div>
     <p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
-      ? 'Tap a job to open it, or <b>drag it onto another day</b> (on a phone: press and hold first) · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · purple 🔍 = estimate visit (going to look) · dashed = nobody assigned · a name on a yellow tag = that person is off'
+      ? 'Tap a job to open it, or <b>drag it onto another day</b> (on a phone: press and hold first) · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · purple 🔍 = estimate visit (going to look) · grey-brown 🧱 = a block, not a job · dashed = nobody assigned · a name on a yellow tag = that person is off'
       : 'Your jobs this month · your name on a yellow tag = your time off · a yellow day = stat holiday · tap a day to see where you\'re heading'}</p>
   </div>`;
 }
@@ -5637,8 +5665,8 @@ function openSchedDay(day){
   const hrs=timed.reduce((t,e)=>t+schDur(e),0), crew={};
   timed.forEach(e=>(e.assigned||[]).forEach(a=>crew[a.name]=1));
   const canAdd=canApprove() && day>=localDateStr(new Date());
-  const nLook=timed.filter(schIsLook_).length, nJob=timed.length-nLook;   // v165
-  const sum = timed.length ? [ nJob?`${nJob} job${nJob>1?'s':''}`:'', nLook?`🔍 ${nLook} estimate visit${nLook>1?'s':''}`:'', `${dsHrs_(hrs)} booked`,
+  const nLook=timed.filter(schIsLook_).length, nBlk=timed.filter(schIsBlock_).length, nJob=timed.length-nLook-nBlk;   // v165, v166
+  const sum = timed.length ? [ nJob?`${nJob} job${nJob>1?'s':''}`:'', nLook?`🔍 ${nLook} estimate visit${nLook>1?'s':''}`:'', nBlk?`🧱 ${nBlk} block${nBlk>1?'s':''}`:'', `${dsHrs_(hrs)} booked`,
       `${fmtTime(timed[0].start)} – ${fmtTime(timed.reduce((m,e)=>e.end>m?e.end:m, timed[0].end))}` ]
       .concat(Object.keys(crew).length?[`👷 ${Object.keys(crew).length} on the crew`]:[]) : [];
   sheet(`<h2 style="margin-bottom:4px">${esc(label)}</h2>
@@ -5648,10 +5676,10 @@ function openSchedDay(day){
     ${allDay.map(ev=>{ const tn=schTone(ev); return `<div class="dall" style="background:${tn.bg};color:${tn.ink};border-color:${tn.bd}" onclick="openSchedDetail('${reg(ev)}')">All day · ${esc(schedName(ev))}</div>`; }).join('')}
     ${timed.length||canAdd ? dsTimeline_(day, timed, data, canAdd)
       : `<p class="muted small">${data.canAssign?'Nothing on the calendar this day.':'Nothing scheduled for you this day.'}</p>`}
-    ${timed.length?`<p class="small muted" style="margin:6px 0 0">${['none','confirmed','waiting','declined','look'].map(k=>`<span class="sw" style="background:${SCH_TONE[k].bg};border-color:${SCH_TONE[k].bd}"></span>${esc(SCH_TONE[k].label.toLowerCase())}`).join(' &nbsp; ')}</p>`:''}
+    ${timed.length?`<p class="small muted" style="margin:6px 0 0">${['none','confirmed','waiting','declined','look','block'].map(k=>`<span class="sw" style="background:${SCH_TONE[k].bg};border-color:${SCH_TONE[k].bd}"></span>${esc(SCH_TONE[k].label.toLowerCase())}`).join(' &nbsp; ')}</p>`:''}
     ${canAdd?`<div class="row" style="margin-top:12px">
       <button class="grow" onclick="openAddManual('job',false,'${day}')">⚡ Add a job this day</button>
-      <button class="secondary grow" onclick="openAddManual('call',false,'${day}')">📞 Add a call</button>
+      <button class="secondary grow" onclick="openBlockAdd('${day}')">🧱 Add a block</button>
     </div>`:''}
     <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
   S._dsDay=day;
@@ -5698,9 +5726,9 @@ function dsTimeline_(day, evs, data, canAdd){
     const title=String(ev.title||''), parts=title.split(/\s+[—–]\s+/), head=parts[0]||'Job';
     const nm=head.split(' · ')[0].trim()||'Job', po=head.split(' · ').slice(1).join(' · ').trim();
     const scope=parts.slice(1).join(' — ').replace(/^⚠\s*/,'').trim();
-    const un=data.canAssign && !(ev.assigned||[]).length, small=hgt<54, narrow=L.count>1 && window.innerWidth<700;
+    const un=data.canAssign && !(ev.assigned||[]).length && !schIsBlock_(ev), small=hgt<54, narrow=L.count>1 && window.innerWidth<700;
     const crew=(ev.assigned||[]).length?schCrew(ev)+(narrow&&ev.assigned.length>1?'':`<span style="margin-left:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ev.assigned.map(a=>String(a.name||'').split(/\s+/)[0]).join(', '))}</span>`)
-      :(data.canAssign?'<span style="color:#b45309;font-weight:700">⚠ nobody assigned</span>':'');
+      :(data.canAssign&&!schIsBlock_(ev)?'<span style="color:#b45309;font-weight:700">⚠ nobody assigned</span>':'');
     out+=`<div class="tb${un?' un':''}${small?' sm':''}" style="top:${y(schHours(ev))+2}px;height:${hgt}px;left:calc(${RAIL+4}px + ${w} * ${L.lane});width:calc(${w} - 4px);background:${tn.bg};color:${tn.ink};border-color:${tn.bd}" data-ek="${k}"
       onpointerdown="schedGrab(event,'${k}','${day}')" ontouchmove="schTouchClaim(event)" onclick="event.stopPropagation()">
       ${small?`<span class="tt">${esc(schedClock(ev))}</span><span class="tn">${schLookTag_(ev)}${esc(nm)}</span>`
@@ -5716,6 +5744,130 @@ function dsTimeline_(day, evs, data, canAdd){
   if(day===localDateStr(new Date())){ const n=new Date(), nh=n.getHours()+n.getMinutes()/60;
     if(nh>=h0 && nh<=h1) out+=`<div class="now" style="top:${y(nh)}px"></div>`; }
   return `<div class="tl" style="height:${H+8}px">${out}</div>`;
+}
+/* v166 - ADD A BLOCK (Paul, 24 Nov: "instead of add a call button, i want that to be add a block and that block
+   can be different options; meetings, quoting, walk-through, phone calls, etc."). Time on the calendar that is
+   not a job: pick what it is, the day, the start and how long, and who is on it. No job number, nobody emailed.
+   It shows teal on every view, drags like a job, and tapping it opens this same sheet to change or delete it.
+   A customer phoning for a price still has the old lead call, one tap away at the bottom. Needs Code.gs v134. */
+let blkState=null;
+function openBlockAdd(day){
+  const now=new Date(), t=day||localDateStr(now);
+  let h=8, m=0;
+  if(t===localDateStr(now)){ const n=new Date(now.getTime()+15*60000); h=n.getHours(); m=n.getMinutes()<30?30:0; if(m===0) h++; if(h>20){ h=8; } }
+  blkState={ id:'', key:'meeting', label:'', note:'', day:t, time:String(h).padStart(2,'0')+':'+String(m).padStart(2,'0'),
+    minutes:60, emails:S.me&&S.me.email?[lc(S.me.email)]:[], location:'', del:false, fromDay:blkFrom_() };
+  blkRender_();
+}
+function openBlockEdit(ev){
+  const ty=blkTypeOf_(ev), s0=new Date(ev.start);
+  if(!canApprove()){
+    return sheet(`<h2>${esc(ev.title)}</h2>
+      <p class="small muted" style="margin-top:-4px">${esc(schedDayLabel(localDateStr(s0)))} · ${esc(fmtTime(ev.start))}–${esc(fmtTime(ev.end))}</p>
+      <div class="banner" style="background:${SCH_TONE.block.bg};color:${SCH_TONE.block.ink};border:1px solid ${SCH_TONE.block.bd}">🧱 <b>${esc(ty.label)}</b> — not a job</div>
+      ${blkNote_(ev)?`<p class="small" style="white-space:pre-wrap">${esc(blkNote_(ev))}</p>`:''}
+      ${ev.location?`<p class="small">📍 ${esc(ev.location)}</p>`:''}
+      <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  }
+  blkState={ id:String(ev.id), key:ty.key, label:ty.key==='other'?ty.label:'', note:blkNote_(ev), day:localDateStr(s0), time:fmtHM(ev.start),
+    minutes:Math.max(5,Math.round((new Date(ev.end)-s0)/60000)), emails:(ev.assigned||[]).map(a=>lc(a.email)), location:ev.location||'', del:false, fromDay:blkFrom_() };
+  blkRender_();
+}
+function blkGrab_(){ const b=blkState; if(!b||!document.getElementById('blkNote')) return;
+  b.note=val('blkNote'); b.day=val('blkDay')||b.day; b.time=val('blkTime')||b.time; b.location=val('blkWhere');
+  if(document.getElementById('blkLabel')) b.label=val('blkLabel');
+  const hrs=Number(val('blkHrs')); if(hrs>0) b.minutes=Math.round(hrs*60);
+  if(document.querySelector('.blk-emp')) b.emails=[...document.querySelectorAll('.blk-emp:checked')].map(x=>lc(x.value)); }   // the crew may not be listed yet
+function blkType_(k){ blkGrab_(); blkState.key=k; blkRender_(); }
+function blkLen_(m){ blkGrab_(); blkState.minutes=m; blkRender_(); }
+function blkRender_(){
+  const b=blkState; if(!b) return;
+  const t=BLK_TYPES.find(x=>x[0]===b.key)||BLK_TYPES[0];
+  const crew=(S.employees||[]).filter(e=>e.active!==false&&e.role!=='bookkeeper');
+  if(!crew.length && S.online && !b.empAsked){ b.empAsked=true; apiBg('listEmployees').then(r=>{ S.employees=(r&&r.employees)||[]; if(blkState===b&&document.getElementById('blkNote')){ blkGrab_(); blkRender_(); } }).catch(()=>{}); }
+  const lens=[[15,'15 min'],[30,'30 min'],[60,'1 h'],[90,'1½ h'],[120,'2 h'],[180,'3 h'],[240,'4 h'],[480,'Full day']];
+  sheet(`<h2>${b.id?'Edit block':'🧱 Add a block'}</h2>
+    <p class="small muted" style="margin-top:-4px">Time on the calendar that isn't a job — no job number, nobody is emailed.</p>
+    <label>What is it?</label>
+    <div class="blkty">${BLK_TYPES.map(x=>`<button type="button" class="${x[0]===b.key?'on':''}" onclick="blkType_('${x[0]}')"><span>${x[1]}</span>${esc(x[2])}</button>`).join('')}</div>
+    ${b.key==='other'?`<label>Call it</label><input id="blkLabel" maxlength="40" value="${esc(b.label)}" placeholder="e.g. Training, Inspection">`:''}
+    <label>Notes <span class="muted">(optional)</span></label>
+    <textarea id="blkNote" rows="2" placeholder="${esc(t[3])}">${esc(b.note)}</textarea>
+    <div class="row">
+      <div class="grow"><label>Day</label><input id="blkDay" type="date" value="${esc(b.day)}"></div>
+      <div class="grow"><label>Start</label><input id="blkTime" type="time" value="${esc(b.time)}"></div>
+    </div>
+    <label>How long?</label>
+    <div class="blklen">${lens.map(([m,l])=>`<button type="button" class="${m===b.minutes?'on':''}" onclick="blkLen_(${m})">${l}</button>`).join('')}</div>
+    <div class="row" style="align-items:center;gap:8px;margin-top:6px"><span class="small muted">or</span>
+      <input id="blkHrs" type="number" step="0.25" min="0.25" max="24" style="width:110px" value="${lens.some(x=>x[0]===b.minutes)?'':(b.minutes/60)}" placeholder="hours"><span class="small muted">hours</span></div>
+    <label>Who's on it</label>
+    <div>${crew.length?crew.map(e=>`<label class="chip" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px">
+        <input type="checkbox" class="blk-emp" value="${esc(e.email)}" ${b.emails.indexOf(lc(e.email))>=0?'checked':''} style="width:16px;height:16px;margin:0">${esc(e.name||e.email)}</label>`).join('')
+      :`<span class="small muted">${S.online?'<span class="spin"></span> Loading the crew…':'Just you.'}</span>`}</div>
+    <label>Where <span class="muted">(optional)</span></label><input id="blkWhere" value="${esc(b.location)}" placeholder="Address or place">
+    <div class="small muted" id="blkSum" style="margin-top:8px"></div>
+    <button id="blkGo" style="width:100%;margin-top:12px" onclick="blkSave_()">${b.id?'Save changes':'Put it on the calendar'}</button>
+    ${b.id?`<button class="secondary" style="width:100%;margin-top:8px;color:var(--bad)" onclick="blkDelete_(this)">${b.del?'Tap again to delete it':'🗑 Delete this block'}</button>`:''}
+    <button class="secondary" style="width:100%;margin-top:8px" onclick="blkDone_()">Cancel</button>
+    ${b.id?'':`<p class="small" style="margin-top:12px"><a href="#" style="color:var(--accent2)" onclick="event.preventDefault();openAddManual('call',false,'${esc(b.day)}')">📞 A customer calling for a price? Add it as a lead call instead ›</a></p>`}`);
+  ['blkDay','blkTime','blkHrs'].forEach(id=>{ const e=document.getElementById(id); if(e) e.addEventListener('change',()=>{ blkGrab_(); blkSumShow_(); }); });
+  blkSumShow_();
+}
+/* opened from a tapped day: going back lands on that day again, not on the bare calendar */
+function blkFrom_(){ return (S._sheet&&S._sheet.querySelector('.tl'))?S._dsDay:''; }
+function blkDone_(){ const d=blkState&&blkState.fromDay; if(d) openSchedDay(d); else closeSheet(); }
+function blkWhen_(){ const b=blkState; const s=new Date(b.day+'T'+b.time); return isNaN(s)?null:s; }
+function blkSumShow_(){
+  const box=document.getElementById('blkSum'), b=blkState; if(!box||!b) return;
+  const s=blkWhen_(); if(!s){ box.textContent='Pick a day and a start time.'; return; }
+  const e=new Date(s.getTime()+b.minutes*60000);
+  box.innerHTML=`${esc(schedDayLabel(b.day))} · <b>${esc(fmtTime(s.toISOString()))} – ${esc(fmtTime(e.toISOString()))}</b>`;
+}
+function blkTitle_(b){ const t=BLK_TYPES.find(x=>x[0]===b.key)||BLK_TYPES[0], lbl=b.key==='other'?(String(b.label||'').trim()||'Other'):t[2];
+  const n=String(b.note||'').trim().split('\n')[0].slice(0,80); return {lbl, title:t[1]+' '+lbl+(n?' — '+n:'')}; }
+function schDropEv_(id, gone){
+  id=String(id);
+  if(gone) schLocalNote_(id,{gone:true}); else delete S._schLocal[id];
+  const drop=d=>{ if(!d||!Array.isArray(d.events)) return false; const n=d.events.length; d.events=d.events.filter(e=>String(e.id)!==id); return d.events.length!==n; };
+  Object.keys(S.schedMonths||{}).forEach(m=>{ if(drop(S.schedMonths[m])) try{ DB.setCache('sched_'+m,S.schedMonths[m]); }catch(e){} });
+  if(S.sched && drop(S.sched)) try{ DB.setCache('sched',S.sched); }catch(e){}
+  S.schedYears={};
+}
+function blkRepaint_(){ if(S.tab==='sched') try{ render(); }catch(e){} dsRepaint_(); }
+async function blkSave_(){
+  blkGrab_(); const b=blkState; if(!b) return;
+  if(!S.online) return toast('You need signal to change the calendar.');
+  const s=blkWhen_(); if(!s) return toast('Pick a day and a start time.');
+  if(!(b.minutes>=5 && b.minutes<=1440)) return toast('Pick how long it takes.');
+  if(b.key==='other' && !String(b.label||'').trim()) return toast('Give it a name — e.g. Training.');
+  const tt=blkTitle_(b), end=new Date(s.getTime()+b.minutes*60000);
+  const names=b.emails.map(e=>{ const x=(S.employees||[]).find(y=>lc(y.email)===e); return {email:e, name:(x&&x.name)||(S.me&&lc(S.me.email)===e?S.me.name:e.split('@')[0])}; });
+  const desc=`Block (${tt.lbl}) — not a job.`+(String(b.note||'').trim()?'\n'+String(b.note).trim():'');
+  const local={ title:tt.title, start:s.toISOString(), end:end.toISOString(), allDay:false, location:b.location||'', desc, assigned:names, confirm:'none', recurring:false };
+  const pl={ type:b.key, label:b.label, note:b.note, start:s.toISOString(), minutes:b.minutes, emails:b.emails, location:b.location||'' };
+  blkDone_();
+  if(b.id){   // edit: changed on the calendar at the tap, put back if the office says no
+    const prev=Object.assign({}, schFindEv(b.id)||{});
+    schPut_(Object.assign({id:b.id}, local)); blkRepaint_(); toast('Block changed ✓', 3000);
+    try{ await api('blockEdit', Object.assign({eventId:b.id}, pl)); }
+    catch(e){ if(prev.id) schPut_(prev); blkRepaint_(); toast('Block NOT changed — put back as it was. '+e.message, 9000); }
+    return;
+  }
+  const tmp='blk_local_'+Date.now();
+  schPut_(Object.assign({id:tmp}, local)); blkRepaint_(); toast('Block on the calendar ✓', 3000);
+  try{ await api('blockAdd', pl); schDropEv_(tmp); blkRepaint_(); }
+  catch(e){ schDropEv_(tmp); blkRepaint_();
+    toast(/unknown action/i.test(e.message)?'Block NOT saved: the office script needs its update first.':'Block NOT saved — taken back off the calendar. '+e.message, 9000); }
+}
+async function blkDelete_(btn){
+  const b=blkState; if(!b||!b.id) return;
+  if(!b.del){ blkGrab_(); b.del=true; btn.textContent='Tap again to delete it'; return; }
+  if(!S.online) return toast('You need signal to change the calendar.');
+  const prev=Object.assign({}, schFindEv(b.id)||{});
+  blkDone_(); schDropEv_(b.id, true); blkRepaint_(); toast('Block deleted', 3000);
+  try{ await api('blockDelete',{eventId:b.id}); }
+  catch(e){ if(S._schLocal) delete S._schLocal[String(b.id)]; if(prev.id) schPut_(prev); blkRepaint_(); toast('Block NOT deleted — put back. '+e.message, 9000); }
 }
 /* Time off: crew request + track; admins approve/deny right here. */
 function timeOffSection(){
@@ -5932,6 +6084,7 @@ async function evPrefetch_(events){
 }
 async function openSchedDetail(k){
   const ev=dereg(k); if(!ev) return;
+  if(schIsBlock_(ev)) return openBlockEdit(ev);   // v166
   const d=(S.sched&&S.sched.canAssign!==undefined)?S.sched:(schData(localDateStr(new Date(ev.start)))||S.sched||{});
   if(d.canAssign && !(S.employees&&S.employees.length) && S.online){
     apiBg('listEmployees').then(r=>{ S.employees=(r&&r.employees)||[]; }).catch(()=>{});   // v107 - never waited on
