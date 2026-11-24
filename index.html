@@ -8139,7 +8139,9 @@ function coUpdateWorked(){
     (overnight?' <span class="pill pending">overnight</span>':'')+
     (gms>RUNAWAY_SHIFT_H*3600000?' <span style="color:var(--bad)">⚠ that is a very long shift — check the days</span>':'')+
     (bmin*60000>Math.max(0,gms)?' <span style="color:var(--bad)">⚠ break exceeds time worked</span>':'')+
-    (bmin!==c.autoBreakMin?` <span class="muted">(auto-tracked: ${c.autoBreakMin} min)</span>`:'');
+    (bmin!==c.autoBreakMin?` <span class="muted">(auto-tracked: ${c.autoBreakMin} min)</span>`:'')+
+    ((c.inEdited && localDateStr(new Date(c.inAt))!==localDateStr(new Date(c.origInAt)))
+      ? `<br><span style="color:var(--needs-ink)">The clock-in day was changed (you tapped in ${esc(fmtDay(c.origInAt))}), so this entry is filed on ${esc(fmtDay(c.inAt))} and goes to the office for approval.</span>`:'');   // v170
   const sub=document.getElementById('coSubmit');
   if (sub) sub.disabled = !(gms>0); // over-break is warn-and-confirm, never disabled
 }
@@ -8367,6 +8369,10 @@ async function coCommit_(){
     Notes: prevNotes ? (c.notes? prevNotes+' | '+c.notes : prevNotes) : c.notes,
     Company:c.company, 'Customer/Job Site':c.jobSite, 'PO#':c.poNumber,
     Source:'live', Date:(S.openEntry&&S.openEntry.Date)||todayStr() };
+  // v170 - PAY. A clock-in moved to ANOTHER DAY on the review: the office files the entry on that day, in
+  // that day's pay period, and holds it for approval (Code.gs v137). The phone's copy says the same at once.
+  const dayMoved = c.inEdited && localDateStr(new Date(c.inAt))!==localDateStr(new Date(c.origInAt));
+  if (dayMoved){ closing.Date=localDateStr(new Date(c.inAt)); closing.Day=new Date(c.inAt).toLocaleDateString('en-US',{weekday:'short'}); closing.Status='pending'; }
   upsertLocalEntry(closing); // real clock-out: Source stays 'live' → drops off Paused-today
   S.openEntry=null; render();
   saveBootCache(); // persist the clocked-OUT state NOW — reopening the app mid-request must
@@ -8399,8 +8405,11 @@ async function coCommit_(){
   // Fold the server-computed values into the local entry — no full refresh needed.
   if (r && r.hours!=null){
     const i=(S.entries||[]).findIndex(x=>x.EntryID===c.entryId);
-    if (i>=0) S.entries[i]={ ...S.entries[i], Hours:r.hours, 'Gross Hours':r.gross, 'Break Hrs':r.breakHrs };
+    if (i>=0) S.entries[i]={ ...S.entries[i], Hours:r.hours, 'Gross Hours':r.gross, 'Break Hrs':r.breakHrs,
+      ...(r.date?{ Date:r.date, Day:r.day||S.entries[i].Day, PeriodKey:r.periodKey||S.entries[i].PeriodKey, Status:r.status||'pending' }:{}) };   // v170
   }
+  // v170 - said so it is true whether the clock-out reached the office or is waiting on the phone for signal
+  if (dayMoved) setTimeout(()=>toast('Clock-in day changed — this entry is filed on '+fmtDay(c.inAt)+' and needs the office\'s approval.', 8000), 3600);
   if (c.items.length){
     apiMutate('logMaterials',{ entryId:c.entryId, jobSite:c.jobSite||c.company||'', poNumber:c.poNumber||'', items:c.items });
     const pend=c.items.filter(i=>!i.matched).length;
