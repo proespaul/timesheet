@@ -443,6 +443,34 @@
     .sheet{align-items:center}
     .sheet .panel{max-width:640px; border-radius:24px}
   }
+  /* v164 - THE DAY SHEET AS A TIMELINE (Paul, 24 Nov: "design it like a ux/ui designer ... with time blocks") */
+  .dsum{display:flex; gap:8px; flex-wrap:wrap; margin:2px 0 10px}
+  .dsum span{background:var(--panel2); border-radius:999px; padding:4px 10px; font-size:.78rem; color:var(--navy); font-weight:600}
+  .doff{display:inline-flex; align-items:center; gap:4px; font-size:.78rem; font-weight:700; color:#92400e; background:#fef3c7;
+    border:1px solid #fcd34d; border-radius:999px; padding:3px 10px; margin:0 6px 6px 0}
+  .tl{position:relative; margin:6px 0 4px}
+  .tl .hr{position:absolute; left:0; right:0; border-top:1px solid var(--line); height:0}
+  .tl .hr.half{border-top-style:dashed; opacity:.55}
+  .tl .hl{position:absolute; left:0; width:46px; transform:translateY(-50%); font-size:.68rem; color:var(--muted); text-align:right; padding-right:8px; background:var(--panel)}
+  .tl .tb{position:absolute; box-sizing:border-box; border-radius:12px; padding:6px 9px 6px 11px; overflow:hidden; cursor:pointer;
+    border:1px solid; border-left-width:5px; display:flex; flex-direction:column; gap:2px; box-shadow:0 1px 2px rgba(15,23,42,.06)}
+  .tl .tb:active{transform:scale(.99)}
+  .tl .tb.un{border-style:dashed; border-left-style:solid}
+  .tl .tb .tt{display:flex; justify-content:space-between; gap:6px; font-size:.72rem; font-weight:700; opacity:.85; white-space:nowrap}
+  .tl .tb .tn{font-size:.92rem; font-weight:800; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:none}
+  .tl .tb .tt, .tl .tb .tc{flex:none}
+  .tl .tb .ts{flex:0 1 auto; min-height:0}
+  .tl .tb .tp{font-weight:600; font-size:.72rem; opacity:.75; margin-left:4px}
+  .tl .tb .ts{font-size:.76rem; line-height:1.25; opacity:.9; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+  .tl .tb .tc{margin-top:auto; display:flex; gap:3px; align-items:center; font-size:.7rem}
+  .tl .tb.sm{flex-direction:row; align-items:center; gap:6px; padding-top:2px; padding-bottom:2px}
+  .tl .tb.sm .tn{font-size:.8rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .tl .gap{position:absolute; box-sizing:border-box; border:1.5px dashed #cbd5e1; border-radius:12px; display:flex; align-items:center;
+    justify-content:center; font-size:.76rem; color:var(--muted); cursor:pointer; background:repeating-linear-gradient(135deg,transparent 0 8px,rgba(148,163,184,.08) 8px 16px)}
+  .tl .gap b{color:var(--accent2); margin-left:4px}
+  .tl .now{position:absolute; left:40px; right:0; border-top:2px solid #ef4444; z-index:3}
+  .tl .now::before{content:''; position:absolute; left:-5px; top:-6px; width:10px; height:10px; border-radius:50%; background:#ef4444}
+  .dall{border-radius:12px; padding:8px 11px; border:1px solid; border-left-width:5px; margin-bottom:6px; cursor:pointer; font-weight:700; font-size:.88rem}
 </style>
 </head>
 <body>
@@ -5571,28 +5599,80 @@ function schedMonthHtml(){
 function openSchedDay(day){
   const data=(S.schedMonths||{})[curSchedMonth()];
   if(!data){ toast('Still loading — try again in a second.'); return; }
-  const evs=data.events.filter(e=>localDateStr(new Date(e.start))===day);
+  const evs=data.events.filter(e=>localDateStr(new Date(e.start))===day).sort((a,b)=>new Date(a.start)-new Date(b.start));
   const hols=(data.holidays||[]).filter(h=>h.date===day);
   const offs=(data.timeOff||[]).filter(t=>t.status==='approved'&&day>=t.start&&day<=t.end);
   const p=day.split('-');
   const label=new Date(Number(p[0]),Number(p[1])-1,Number(p[2])).toLocaleDateString([],{weekday:'long',month:'long',day:'numeric'});
-  sheet(`<h2>${esc(label)}</h2>
+  const timed=evs.filter(e=>!e.allDay), allDay=evs.filter(e=>e.allDay);
+  const hrs=timed.reduce((t,e)=>t+schDur(e),0), crew={};
+  timed.forEach(e=>(e.assigned||[]).forEach(a=>crew[a.name]=1));
+  const canAdd=canApprove() && day>=localDateStr(new Date());
+  const sum = timed.length ? [ `${timed.length} job${timed.length>1?'s':''}`, `${dsHrs_(hrs)} booked`,
+      `${fmtTime(timed[0].start)} – ${fmtTime(timed.reduce((m,e)=>e.end>m?e.end:m, timed[0].end))}` ]
+      .concat(Object.keys(crew).length?[`👷 ${Object.keys(crew).length} on the crew`]:[]) : [];
+  sheet(`<h2 style="margin-bottom:4px">${esc(label)}</h2>
+    ${sum.length?`<div class="dsum">${sum.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}
     ${hols.map(h=>`<div class="banner" style="background:#fef9c3;color:#854d0e;border:1px solid #fde68a">🎉 ${esc(h.name)} — stat holiday</div>`).join('')}
-    ${(data.canAssign&&offs.length)?`<div class="small" style="color:var(--pending);margin:4px 0">🏖 Off: ${offs.map(t=>esc(t.name)).join(', ')}</div>`:''}
-    ${(!data.canAssign&&offs.length)?'<div class="small" style="color:var(--pending);margin:4px 0">🏖 Your approved time off</div>':''}
-    ${evs.length? evs.map(ev=>{ const k=reg(ev);
-      return `<div class="list-item" style="cursor:pointer" onclick="openSchedDetail('${k}')">
-        <div class="row between"><b>${esc(ev.title)}</b>
-          <span class="small muted">${ev.allDay?'All day':fmtTime(ev.start)+'–'+fmtTime(ev.end)}</span></div>
-        ${ev.location?`<div class="small muted">📍 ${esc(ev.location)}</div>`:''}
-        <div class="small" style="margin-top:2px">${ev.assigned.map(a=>`<span class="chip" style="padding:3px 10px;font-size:.78rem">${esc(a.name)}</span>`).join(' ')||(data.canAssign?'<span style="color:var(--pending)">⚠ nobody assigned</span>':'')}</div>
-      </div>`; }).join('')
+    ${offs.length?`<div>${offs.map(t=>`<span class="doff">🏖 ${esc(data.canAssign?t.name:'You')} ${data.canAssign?'off':'are off'}${t.reason&&data.canAssign?` · <span style="font-weight:500">${esc(t.reason)}</span>`:''}</span>`).join('')}</div>`:''}
+    ${allDay.map(ev=>{ const tn=schTone(ev); return `<div class="dall" style="background:${tn.bg};color:${tn.ink};border-color:${tn.bd}" onclick="openSchedDetail('${reg(ev)}')">All day · ${esc(schedName(ev))}</div>`; }).join('')}
+    ${timed.length||canAdd ? dsTimeline_(day, timed, data, canAdd)
       : `<p class="muted small">${data.canAssign?'Nothing on the calendar this day.':'Nothing scheduled for you this day.'}</p>`}
-    ${(canApprove() && day>=localDateStr(new Date()))?`<div class="row" style="margin-top:10px">
+    ${timed.length?`<p class="small muted" style="margin:6px 0 0">${['none','confirmed','waiting','declined'].map(k=>`<span class="sw" style="background:${SCH_TONE[k].bg};border-color:${SCH_TONE[k].bd}"></span>${esc(SCH_TONE[k].label.toLowerCase())}`).join(' &nbsp; ')}</p>`:''}
+    ${canAdd?`<div class="row" style="margin-top:12px">
       <button class="grow" onclick="openAddManual('job',false,'${day}')">⚡ Add a job this day</button>
       <button class="secondary grow" onclick="openAddManual('call',false,'${day}')">📞 Add a call</button>
     </div>`:''}
     <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
+  const nowEl=document.querySelector('.tl .now'); if(nowEl) try{ nowEl.scrollIntoView({block:'center'}); }catch(e){}
+}
+function dsHrs_(h){ const r=Math.round(h*4)/4; return (r%1?r.toFixed(r*4%2?2:1).replace(/0$/,''):String(r))+' h'; }
+/* v164 - the day as a timeline: an hour rail, each job a block as tall as it is long, side by side when two
+   overlap, the open stretches of the working day shown as gaps to book into, and a red line for now. */
+function dsTimeline_(day, evs, data, canAdd){
+  const HH=64, RAIL=50, DAY0=8, DAY1=17;   // the working day: 8 to 5
+  let h0=DAY0, h1=DAY1;
+  evs.forEach(e=>{ h0=Math.min(h0, Math.floor(schHours(e))); h1=Math.max(h1, Math.ceil(schHours(e)+schDur(e))); });
+  h0=Math.max(0,h0); h1=Math.min(24,Math.max(h1,h0+1));
+  const y=h=>(h-h0)*HH, H=(h1-h0)*HH;
+  let out='';
+  for(let h=h0; h<=h1; h++){
+    out+=`<div class="hr" style="top:${y(h)}px;left:${RAIL-4}px"></div>`;
+    if(h<h1) out+=`<div class="hr half" style="top:${y(h+0.5)}px;left:${RAIL}px"></div>`;
+    out+=`<div class="hl" style="top:${y(h)}px">${h===0||h===24?'12 AM':h===12?'Noon':(h%12)+(h<12?' AM':' PM')}</div>`;
+  }
+  // open stretches of the working day (only where a job can still be added)
+  if(canAdd){
+    let t=DAY0; const busy=evs.map(e=>[schHours(e), schHours(e)+schDur(e)]).sort((a,b)=>a[0]-b[0]);
+    const gaps=[]; busy.forEach(([a,b])=>{ if(a-t>=1) gaps.push([t,Math.min(a,DAY1)]); t=Math.max(t,b); });
+    if(DAY1-t>=1) gaps.push([t,DAY1]);
+    gaps.filter(g=>g[1]-g[0]>=1).forEach(([a,b])=>{
+      const lbl=d=>{ const hh=Math.floor(d), mm=Math.round((d-hh)*60); return (hh%12||12)+(mm?':'+String(mm).padStart(2,'0'):'')+(hh<12?' AM':' PM'); };
+      out+=`<div class="gap" style="top:${y(a)+3}px;height:${(b-a)*HH-6}px;left:${RAIL+4}px;right:2px" onclick="openAddManual('job',false,'${day}')">Open ${lbl(a)} – ${lbl(b)}<b>＋ Book</b></div>`; });
+  }
+  const lanes=schLanes(evs);
+  evs.forEach(ev=>{
+    const L=lanes[ev.id]||{lane:0,count:1}, tn=schTone(ev), dur=schDur(ev), hgt=Math.max(26, dur*HH-4);
+    const w=`(100% - ${RAIL+6}px) / ${L.count}`;
+    const title=String(ev.title||''), parts=title.split(/\s+[—–]\s+/), head=parts[0]||'Job';
+    const nm=head.split(' · ')[0].trim()||'Job', po=head.split(' · ').slice(1).join(' · ').trim();
+    const scope=parts.slice(1).join(' — ').replace(/^⚠\s*/,'').trim();
+    const un=data.canAssign && !(ev.assigned||[]).length, small=hgt<54, narrow=L.count>1 && window.innerWidth<700;
+    const crew=(ev.assigned||[]).length?schCrew(ev)+(narrow&&ev.assigned.length>1?'':`<span style="margin-left:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ev.assigned.map(a=>String(a.name||'').split(/\s+/)[0]).join(', '))}</span>`)
+      :(data.canAssign?'<span style="color:#b45309;font-weight:700">⚠ nobody assigned</span>':'');
+    out+=`<div class="tb${un?' un':''}${small?' sm':''}" style="top:${y(schHours(ev))+2}px;height:${hgt}px;left:calc(${RAIL+4}px + ${w} * ${L.lane});width:calc(${w} - 4px);background:${tn.bg};color:${tn.ink};border-color:${tn.bd}" onclick="openSchedDetail('${reg(ev)}')">
+      ${small?`<span class="tt">${esc(schedClock(ev))}</span><span class="tn">${esc(nm)}</span>`
+      :`<div class="tt">${narrow?`<span>${esc(schedClock(ev))} – ${esc(schedClock({start:ev.end}))}</span>`:`<span>${esc(fmtTime(ev.start))} – ${esc(fmtTime(ev.end))}</span><span>${esc(dsHrs_(dur))}</span>`}</div>
+        <div class="tn">${esc(nm)}${po&&!narrow?`<span class="tp">${esc(po)}</span>`:''}</div>
+        ${narrow&&po?`<div class="ts" style="-webkit-line-clamp:1;font-weight:600">${esc(po)}</div>`:''}
+        ${scope&&hgt>=(narrow?100:80)?`<div class="ts" style="-webkit-line-clamp:${narrow?1:2}">${esc(scope)}</div>`:''}
+        ${ev.location&&hgt>=(narrow?150:110)?`<div class="ts" style="-webkit-line-clamp:1">📍 ${esc(ev.location)}</div>`:''}
+        ${hgt>=70?`<div class="tc">${crew}</div>`:''}`}
+    </div>`;
+  });
+  if(day===localDateStr(new Date())){ const n=new Date(), nh=n.getHours()+n.getMinutes()/60;
+    if(nh>=h0 && nh<=h1) out+=`<div class="now" style="top:${y(nh)}px"></div>`; }
+  return `<div class="tl" style="height:${H+8}px">${out}</div>`;
 }
 /* Time off: crew request + track; admins approve/deny right here. */
 function timeOffSection(){
