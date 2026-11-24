@@ -469,6 +469,10 @@
     justify-content:center; font-size:.76rem; color:var(--muted); cursor:pointer; background:repeating-linear-gradient(135deg,transparent 0 8px,rgba(148,163,184,.08) 8px 16px)}
   .tl .gap b{color:var(--accent2); margin-left:4px}
   .tl .hr, .tl .hl, .tl .now{pointer-events:none}
+  .pickbar{display:flex; justify-content:space-between; align-items:center; gap:10px; background:#eef6ff; border:1.5px solid var(--accent2);
+    color:var(--navy); border-radius:14px; padding:10px 12px; margin-bottom:10px}
+  .tl .dsc.pk, .tgc.pk{cursor:pointer}
+  .tl .dsc.pk:hover, .tgc.pk:hover{background:#dbeafe}
   .blkty{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px}
   .blkty button{background:var(--panel2); color:var(--navy); border:1.5px solid transparent; border-radius:12px; padding:8px 4px; font-weight:600;
     font-size:.78rem; display:flex; flex-direction:column; align-items:center; gap:2px; width:auto; min-height:58px}
@@ -2692,6 +2696,7 @@ function go(tab, nav){
      you stay on the tab; it goes back to the month on the next visit. Set BEFORE the first paint,
      or the tab would flash the list it was left on. */
   if(tab==='sched' && S.tab!=='sched') S.schedView='month';
+  if(tab!=='sched') S.schPick=null;   // v168 - leaving the Calendar tab ends picking a time
   if(tab==='jobs' && S.tab!=='jobs' && nav!=='arch') S.jobsShowArch=false;   // v135 - archived jobs stay hidden unless asked for on this visit
   S.tab=tab; render();
   if (tab==='admin' && S.online){ loadPending(); loadObStatus(); loadAllowAdmin(); } // fetched on demand, not at boot
@@ -4777,7 +4782,7 @@ function schedView(){
       <button class="${mode==='day'?'on':''}" onclick="schedToggle('day')">Day</button>
       <button class="${mode==='list'?'on':''}" onclick="schedToggle('list')">List</button>
     </div>
-    ${canApprove()?(()=>{ // v114 - in the Day view these book on the day you are looking at
+    ${S.schPick?schPickBar_():canApprove()?(()=>{ // v114 - in the Day view these book on the day you are looking at
       const dd=(mode==='day' && schAnchor()>=localDateStr(new Date()))?schAnchor():'';
       const on=dd?' · '+schDate(dd).toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'}):'';
       const past=mode==='day' && !dd;
@@ -4952,7 +4957,7 @@ function schGrid(days, o){
   html+='</div>';
   html+=days.map((d,i)=>{
     let cells='';
-    for(let k=0;k<(h1-h0)*2;k++){ const t=h0+k/2; cells+=`<div class="tgc${k%2?' half':''}" data-drop="1" data-day="${d}" data-t="${t}" style="height:${hh/2}px"></div>`; }
+    for(let k=0;k<(h1-h0)*2;k++){ const t=h0+k/2; cells+=`<div class="tgc${k%2?' half':''}${S.schPick?' pk':''}" data-drop="1" data-day="${d}" data-t="${t}" style="height:${hh/2}px"${S.schPick?` onclick="schPickAt('${d}',${t})"`:''}></div>`; }
     const evs=per[i].filter(e=>!e.allDay), lanes=schLanes(evs);
     const blocks=evs.map(ev=>{
       const k=reg(ev), t=schTone(ev), L=lanes[ev.id]||{lane:0,count:1}, w=100/L.count;
@@ -5665,19 +5670,21 @@ function openSchedDay(day){
   const hrs=timed.reduce((t,e)=>t+schDur(e),0), crew={};
   timed.forEach(e=>(e.assigned||[]).forEach(a=>crew[a.name]=1));
   const canAdd=canApprove() && day>=localDateStr(new Date());
+  const pk=S.schPick;   // v168 - picking a time for a booking
   const nLook=timed.filter(schIsLook_).length, nBlk=timed.filter(schIsBlock_).length, nJob=timed.length-nLook-nBlk;   // v165, v166
   const sum = timed.length ? [ nJob?`${nJob} job${nJob>1?'s':''}`:'', nLook?`🔍 ${nLook} estimate visit${nLook>1?'s':''}`:'', nBlk?`🧱 ${nBlk} block${nBlk>1?'s':''}`:'', `${dsHrs_(hrs)} booked`,
       `${fmtTime(timed[0].start)} – ${fmtTime(timed.reduce((m,e)=>e.end>m?e.end:m, timed[0].end))}` ]
       .concat(Object.keys(crew).length?[`👷 ${Object.keys(crew).length} on the crew`]:[]) : [];
-  sheet(`<h2 style="margin-bottom:4px">${esc(label)}</h2>
+  sheet(`${pk?`<div class="pickbar" style="margin:0 0 10px"><div><b>📅 ${esc(pk.who||'Booking')}</b> · ${esc(pk.what)}<div class="small">Tap the time it starts.</div></div></div>`:''}
+    <h2 style="margin-bottom:4px">${esc(label)}</h2>
     ${sum.length?`<div class="dsum">${sum.filter(Boolean).map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}
     ${hols.map(h=>`<div class="banner" style="background:#fef9c3;color:#854d0e;border:1px solid #fde68a">🎉 ${esc(h.name)} — stat holiday</div>`).join('')}
     ${offs.length?`<div>${offs.map(t=>`<span class="doff">🏖 ${esc(data.canAssign?t.name:'You')} ${data.canAssign?'off':'are off'}${t.reason&&data.canAssign?` · <span style="font-weight:500">${esc(t.reason)}</span>`:''}</span>`).join('')}</div>`:''}
     ${allDay.map(ev=>{ const tn=schTone(ev); return `<div class="dall" style="background:${tn.bg};color:${tn.ink};border-color:${tn.bd}" onclick="openSchedDetail('${reg(ev)}')">All day · ${esc(schedName(ev))}</div>`; }).join('')}
-    ${timed.length||canAdd ? dsTimeline_(day, timed, data, canAdd)
+    ${timed.length||canAdd||pk ? dsTimeline_(day, timed, data, canAdd)
       : `<p class="muted small">${data.canAssign?'Nothing on the calendar this day.':'Nothing scheduled for you this day.'}</p>`}
     ${timed.length?`<p class="small muted" style="margin:6px 0 0">${['none','confirmed','waiting','declined','look','block'].map(k=>`<span class="sw" style="background:${SCH_TONE[k].bg};border-color:${SCH_TONE[k].bd}"></span>${esc(SCH_TONE[k].label.toLowerCase())}`).join(' &nbsp; ')}</p>`:''}
-    ${canAdd?`<div class="row" style="margin-top:12px">
+    ${canAdd&&!pk?`<div class="row" style="margin-top:12px">
       <button class="grow" onclick="openAddManual('job',false,'${day}')">⚡ Add a job this day</button>
       <button class="secondary grow" onclick="openBlockAdd('${day}')">🧱 Add a block</button>
     </div>`:''}
@@ -5699,6 +5706,7 @@ function dsTimeline_(day, evs, data, canAdd){
   const HH=64, RAIL=50, DAY0=8, DAY1=17;   // the working day: 8 to 5
   let h0=DAY0, h1=DAY1;
   evs.forEach(e=>{ h0=Math.min(h0, Math.floor(schHours(e))); h1=Math.max(h1, Math.ceil(schHours(e)+schDur(e))); });
+  if(S.schPick) h1=Math.max(h1, 18);   // v168 - picking: the whole working day, so a visit can start right after a 1-5 job
   h0=Math.max(0,h0); h1=Math.min(24,Math.max(h1,h0+1));
   const y=h=>(h-h0)*HH, H=(h1-h0)*HH;
   let out='';
@@ -5714,11 +5722,13 @@ function dsTimeline_(day, evs, data, canAdd){
     if(DAY1-t>=1) gaps.push([t,DAY1]);
     gaps.filter(g=>g[1]-g[0]>=1).forEach(([a,b])=>{
       const lbl=d=>{ const hh=Math.floor(d), mm=Math.round((d-hh)*60); return (hh%12||12)+(mm?':'+String(mm).padStart(2,'0'):'')+(hh<12?' AM':' PM'); };
-      out+=`<div class="gap" style="top:${y(a)+3}px;height:${(b-a)*HH-6}px;left:${RAIL+4}px;right:2px" onclick="openAddManual('job',false,'${day}')">Open ${lbl(a)} – ${lbl(b)}<b>＋ Book</b></div>`; });
+      out+=S.schPick
+        ? `<div class="gap" style="top:${y(a)+3}px;height:${(b-a)*HH-6}px;left:${RAIL+4}px;right:2px;pointer-events:none">Open ${lbl(a)} – ${lbl(b)}<b>· tap a time</b></div>`
+        : `<div class="gap" style="top:${y(a)+3}px;height:${(b-a)*HH-6}px;left:${RAIL+4}px;right:2px" onclick="openAddManual('job',false,'${day}')">Open ${lbl(a)} – ${lbl(b)}<b>＋ Book</b></div>`; });
   }
   // v165 - a half-hour target under each line: a block is dragged onto a new time on this day
   // (the same press-and-hold drag and Undo bar as the Week and Day views)
-  for(let t=h0; t<h1; t+=0.5) out+=`<div class="dsc" data-drop="1" data-day="${day}" data-t="${t}" style="top:${y(t)}px;height:${HH/2}px;left:${RAIL}px;right:0"></div>`;
+  for(let t=h0; t<h1; t+=0.5) out+=`<div class="dsc${S.schPick?' pk':''}" data-drop="1" data-day="${day}" data-t="${t}" style="top:${y(t)}px;height:${HH/2}px;left:${RAIL}px;right:0"${S.schPick?` onclick="schPickAt('${day}',${t})"`:''}></div>`;
   const lanes=schLanes(evs);
   evs.forEach(ev=>{
     const L=lanes[ev.id]||{lane:0,count:1}, tn=schTone(ev), dur=schDur(ev), hgt=Math.max(26, dur*HH-4), k=reg(ev);
@@ -5744,6 +5754,60 @@ function dsTimeline_(day, evs, data, canAdd){
   if(day===localDateStr(new Date())){ const n=new Date(), nh=n.getHours()+n.getMinutes()/60;
     if(nh>=h0 && nh<=h1) out+=`<div class="now" style="top:${y(nh)}px"></div>`; }
   return `<div class="tl" style="height:${H+8}px">${out}</div>`;
+}
+/* v168 - PICK A TIME ON THE REAL CALENDAR (Paul, 24 Nov: "instead of a pop up of a calendar when i press book a
+   visit to look button on the estimate page, can we show the page just like how it would show in the calendar tab
+   except make the same function as before?"). The Calendar tab opens in picking mode: a bar on top says who is
+   being booked, every view is the usual one (month, week, day, the tapped-day timeline), and tapping a time
+   opens a small check - the time, how long, whether anything else is booked then - and Use this time goes on
+   to the same booking form as before. Leaving the tab or Cancel ends it. */
+function schPickStart(o){
+  closeSheetDom();
+  S.schPick={ who:o.who||'', what:o.what||'booking', sub:o.sub||'', hours:Math.max(0.25,Number(o.hours)||0.5), onPick:o.onPick, from:S.tab };
+  if(S.tab==='sched'){ S.schedView='month'; render(); loadSchedMonth(); } else go('sched');
+}
+function schPickBar_(){
+  const pk=S.schPick;
+  return `<div class="pickbar"><div><b>📅 Booking ${esc(pk.who||'')}</b> · ${esc(pk.what)}${pk.sub?`<div class="small" style="opacity:.85">${esc(pk.sub)}</div>`:''}
+      <div class="small" style="margin-top:2px">Tap a day, then the time it starts.</div></div>
+    <button class="secondary" style="width:auto;padding:8px 14px" onclick="schPickCancel()">Cancel</button></div>`;
+}
+function schPickCancel(){ const back=S.schPick&&S.schPick.from; S.schPick=null; closeSheetDom(); if(back&&back!=='sched') go(back); else render(); }
+function schPickAt(day, t){
+  const pk=S.schPick; if(!pk) return;
+  pk.day=day; pk.t=Number(t); pk.fromSheet=!!(S._sheet&&S._sheet.querySelector('.tl'));
+  schPickCheck_();
+}
+function schPickStartDate_(){ const pk=S.schPick, p=pk.day.split('-'); const h=Math.floor(pk.t), m=Math.round((pk.t-h)*60);
+  return new Date(Number(p[0]),Number(p[1])-1,Number(p[2]),h,m); }
+function schPickLen_(hrs){ if(!S.schPick) return; S.schPick.hours=hrs; schPickCheck_(); }
+function schPickCheck_(){
+  const pk=S.schPick; if(!pk||!pk.day) return;
+  const st=schPickStartDate_(), en=new Date(st.getTime()+pk.hours*3600000), sIso=st.toISOString(), eIso=en.toISOString();
+  const evs=(schDayEvents(pk.day)||[]).filter(e=>!e.allDay && new Date(e.start)<en && new Date(e.end)>st);
+  const past=st.getTime()<Date.now()-60000;
+  const lens=[[0.25,'15 min'],[0.5,'30 min'],[1,'1 h'],[2,'2 h']];
+  sheet(`<div class="pickbar" style="margin:0 0 10px"><div><b>📅 ${esc(pk.who||'Booking')}</b> · ${esc(pk.what)}</div></div>
+    <h2 style="margin-bottom:2px">${esc(fmtDay(sIso))}</h2>
+    <p style="margin:0 0 8px;font-size:1.15rem"><b>${esc(fmtTime(sIso))} – ${esc(fmtTime(eIso))}</b></p>
+    <label style="margin-top:0">How long?</label>
+    <div class="blklen">${lens.map(([h,l])=>`<button type="button" class="${Math.abs(h-pk.hours)<1e-6?'on':''}" onclick="schPickLen_(${h})">${l}</button>`).join('')}</div>
+    ${evs.length?`<div class="banner" style="margin-top:10px;text-align:left;background:var(--needs-bg);color:var(--needs-ink)"><b>⚠️ You're also booked then:</b>
+        ${evs.map(x=>`<div class="small" style="margin-top:4px">• with <b>${esc(String(x.title||'').split(/\s+[—–]\s+/)[0])}</b> from ${esc(fmtTime(x.start))} to ${esc(fmtTime(x.end))}</div>`).join('')}
+        <div class="small" style="margin-top:6px">You can still book it — both stay on the calendar.</div></div>`
+      :'<div class="small" style="margin-top:10px;color:var(--good)">✓ Nothing else is booked then.</div>'}
+    ${past?'<div class="small" style="margin-top:6px;color:var(--pending)">⚠️ That time has already passed.</div>':''}
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="schPickBack_()">‹ Another time</button>
+      <button class="grow" onclick="schPickUse_()">Use this time ›</button>
+    </div>`);
+}
+function schPickBack_(){ const pk=S.schPick; if(pk&&pk.fromSheet&&pk.day) openSchedDay(pk.day); else closeSheet(); }
+function schPickUse_(){
+  const pk=S.schPick; if(!pk||!pk.day) return;
+  const st=schPickStartDate_(), f=pk.onPick, hrs=pk.hours;
+  S.schPick=null; closeSheetDom(); render();
+  if(f) f(st.toISOString(), hrs, false);
 }
 /* v166 - ADD A BLOCK (Paul, 24 Nov: "instead of add a call button, i want that to be add a block and that block
    can be different options; meetings, quoting, walk-through, phone calls, etc."). Time on the calendar that is
@@ -11962,6 +12026,13 @@ async function amLater(btn){
    fill the booking form (crew, emails), which still checks the slot before anything is sent. */
 function openReqSchedule(i, src){
   const q = src==='estLead' ? ((S.estData&&S.estData.leads)||[])[i] : (S.requests||[])[i]; if(!q) return;
+  if(src==='estLead'){   // v168 - the real Calendar tab, not the pop-up
+    const id=String(q.id);
+    return schPickStart({ who:q.customer||'', what:'visit to look', sub:[q.scope,q.address].filter(Boolean).join(' · '), hours:0.5,
+      onPick:(start,hours)=>{ const j=((S.estData&&S.estData.leads)||[]).findIndex(x=>String(x.id)===id);
+        if(j<0) return toast('That customer is not on the Estimates list any more - refresh it and try again.', 7000);
+        openReqScheduleForm(j, 'estLead', start, hours, false); } });
+  }
   const sug=q.suggested&&!isNaN(new Date(q.suggested))?new Date(q.suggested):new Date(Date.now()+86400000);
   dayPickOpen({ title:(src==='estLead'?'When is the visit? — ':'When is the job? — ')+(q.customer||''),
     sub:[q.scope,q.address].filter(Boolean).join(' · '), hours:src==='estLead'?0.5:(q.hours||1),
