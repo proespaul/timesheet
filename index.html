@@ -1335,9 +1335,13 @@ function busyEnd(id){ if(id!=null) _slowLive.delete(id);
 async function api(action, payload, opts){
   const bg = opts && opts.bg;
   const id = bg ? null : busyStart();   // the token this call must hand back
-  try{ return await apiRaw_(action, payload, opts && opts.timeout); }
+  try{ const r = await apiRaw_(action, payload, opts && opts.timeout);
+       if(SCH_BOOKS_.test(action)) { try{ schAfterBook_(r); }catch(e){} }   // v163 - on the calendar at once
+       return r; }
   finally{ if(!bg) busyEnd(id); }
 }
+// v163 - the office calls that put something on the calendar (every booking path goes through one)
+const SCH_BOOKS_ = /^(requestSchedule|requestBook|visitBook|bumpApply|scheduleAddDay|requestAddManual)$/;
 function apiBg(action, payload){ return api(action, payload, {bg:true}); } // background refreshes — silent
 /* v42 — WHY A PUNCH IS LOST, AND THE ONE RULE THAT STOPS IT.
  *
@@ -4669,10 +4673,13 @@ async function invListSave(){
    the events they're assigned to — plus who else is coming; admins see everything and assign
    from the event detail sheet. Newly-assigned workers get an email. */
 async function loadSched(){
-  if (S.schedLoading) return;
+  if (S.schedLoading){ if(S.online) S._slAgain=true; return; }   // v163
   if (!S.sched){ const c=await DB.getCache('sched'); if(c){ S.sched=c; if(S.tab==='sched') render(); } } // paint instantly
   S.schedLoading=true; if(S.tab==='sched') render();
-  try{ const r=await apiBg('scheduleList',{}); if(r&&Array.isArray(r.events)){ S.sched=r; S.schedErr=''; DB.setCache('sched',r); } }
+  const since=Date.now();
+  try{ const r=await apiBg('scheduleList',{}); if(r&&Array.isArray(r.events)){
+    const t=new Date(); t.setHours(0,0,0,0); r._win=[localDateStr(t), localDateStr(new Date(t.getTime()+14*86400000))];
+    schMergeLocal_(r, since); S.sched=r; S.schedErr=''; DB.setCache('sched',r); } }
   catch(e){ S.schedErr=/permission/i.test(e.message)
       ? 'The Calendar needs a one-time authorization from Paul: open script.google.com → the timesheet project → Run any function → approve the Calendar permission.'
       : e.message;
@@ -4748,10 +4755,20 @@ function schedView(){
     ${body}
     ${d?timeOffSection():''}`;
 }
-function schedRefreshAll(){ // any schedule mutation: refresh the list AND drop stale month grids
-  S.schedMonths={}; S.schedYears={};
+function schedRefreshAll(){ // any schedule mutation: refresh the list AND the months on screen
+  // v163 - the months on screen are kept and read again quietly; wiping them first blanked the calendar,
+  // or painted the copy kept on the phone - from before the change - until the office answered.
+  const keep=schVisibleMonths_();
+  Object.keys(S.schedMonths||{}).forEach(m=>{ if(!keep.includes(m)) delete S.schedMonths[m]; });
+  S.schedYears={};
   loadSched();
   if((S.schedView||'month')!=='list') schEnsure();
+}
+function schVisibleMonths_(){
+  const v=S.schedView||'month';
+  if(v==='month') return [curSchedMonth()];
+  if(v==='week'||v==='day'){ const a=schAnchor(), days=v==='week'?[schMonday(a), schAdd(schMonday(a),6)]:[a]; return [...new Set(days.map(d=>d.slice(0,7)))]; }
+  return [];
 }
 function schedToggle(m){
   // v102 - keep your place: March in Month opens March in Week and Day, and the week you were
@@ -4921,7 +4938,86 @@ function schDayHtml(){
 }
 /* Patch one booking everywhere the phone holds it, carrying it to another month's list when the
    move crosses a month. */
+/* v163 - A BOOKING IS ON THE CALENDAR THE MOMENT THE OFFICE SAYS YES (Paul, 24 Nov: "adding events to
+   calendar takes a few seconds to buffer" / "ive scheduled maria elaine and it didnt show in the calendar
+   until a whole minute"). Timed from his own computer: every trip to the office costs about 2 s before
+   any work, and after a booking the app re-read the whole month (4-6 s) - wiping its own copy first -
+   while booking from a request did not refresh the calendar at all, and a month read that had set off
+   BEFORE the booking could land after it and paint the old month back.
+   Now the office's answer carries the new entry (office script v133; an older script's answer is built
+   into one from its start, end and title) and the app puts it straight into every copy of the calendar
+   it holds, on screen and on the phone. The month is still read again afterwards, quietly, without
+   blanking what is on screen, and a read that set off before a change keeps that change. */
+S._schLocal = {};                 // id -> {ev|patch, at}: changes made here, kept until the office's copy has them
+S._toLocal = [];                  // time off added here: {rec, at}
+function schLocalNote_(id, x){ const now=Date.now(); S._schLocal[String(id)]=Object.assign({at:now}, x);
+  Object.keys(S._schLocal).forEach(k=>{ if(now-S._schLocal[k].at>15*60000) delete S._schLocal[k]; });
+  S._toLocal=S._toLocal.filter(t=>now-t.at<15*60000); }
+function schEvFrom_(r){
+  if(!r) return null;
+  const ev=r.event||(r.booking&&r.booking.event)||(r.booked&&r.booked.event);
+  if(ev&&ev.id) return ev;
+  const b=r.booked||r.booking||r;                 // an office from before v133: build it from what it said
+  if(b&&b.eventId&&b.start&&b.end) return { id:String(b.eventId), title:b.title||'', start:b.start, end:b.end, allDay:false,
+    location:b.location||'', desc:b.desc||'', assigned:b.assigned||[], confirm:b.confirm||'none', recurring:false };
+  return null;
+}
+function schMonthWin_(m){ const p=m.split('-'); return [m+'-01', localDateStr(new Date(Number(p[0]),Number(p[1]),1))]; }
+function schInWin_(data, startIso, mKey){
+  // a month kept on the phone from before v163 has no window written on it: its key says which month it is
+  const w=(data&&data._win)||(mKey?schMonthWin_(mKey):null); if(!w) return true;
+  const d=localDateStr(new Date(startIso)); return d>=w[0] && d<w[1]; }
+function schPut_(ev){
+  if(!ev||!ev.id) return;
+  ev=Object.assign({}, ev); schLocalNote_(ev.id, {ev});
+  const id=String(ev.id), put=(d,mKey)=>{ if(!d||!Array.isArray(d.events)) return false;
+    const i=d.events.findIndex(e=>String(e.id)===id);
+    if(!schInWin_(d, ev.start, mKey)){ if(i>=0){ d.events.splice(i,1); return true; } return false; }   // moved out of this copy
+    if(i>=0) d.events[i]=Object.assign({}, d.events[i], ev); else d.events.push(Object.assign({}, ev));
+    d.events.sort((a,b)=>String(a.start)<String(b.start)?-1:1); return true; };
+  const all=S.schedMonths||{};
+  Object.keys(all).forEach(m=>{ if(put(all[m],m)) try{ DB.setCache('sched_'+m, all[m]); }catch(e){} });
+  const m=localDateStr(new Date(ev.start)).slice(0,7);
+  if(!all[m]){ // not open on this screen: the month kept on the phone gets it too, so it is right the moment it opens
+    DB.getCache('sched_'+m).then(c=>{ if(c&&!(S.schedMonths||{})[m]&&put(c,m)) DB.setCache('sched_'+m,c); }).catch(()=>{}); }
+  if(S.sched){ if(!S.sched._win){ const t=new Date(); t.setHours(0,0,0,0); S.sched._win=[localDateStr(t), localDateStr(new Date(t.getTime()+14*86400000))]; }
+    if(put(S.sched)) try{ DB.setCache('sched', S.sched); }catch(e){} }
+  S.schedYears={};
+}
+function schAfterBook_(r){
+  const ev=schEvFrom_(r); if(ev) schPut_(ev);
+  if(S.tab==='sched'){ render(); schedRefreshAll(); }      // and check with the office, quietly
+}
+/* a read of the calendar that set off before a change was made here keeps that change */
+function schMergeLocal_(data, since){
+  if(!data||!Array.isArray(data.events)) return data;
+  Object.keys(S._schLocal||{}).forEach(id=>{ const x=S._schLocal[id]; if(x.at<since) return;
+    const i=data.events.findIndex(e=>String(e.id)===id);
+    if(x.ev){ if(!schInWin_(data, x.ev.start)){ if(i>=0) data.events.splice(i,1); }
+              else if(i<0) data.events.push(Object.assign({}, x.ev)); else Object.assign(data.events[i], x.ev); }
+    else if(x.patch && i>=0) Object.assign(data.events[i], x.patch); });
+  data.events.sort((a,b)=>String(a.start)<String(b.start)?-1:1);
+  (S._toLocal||[]).forEach(t=>{ if(t.at<since) return; data.timeOff=data.timeOff||[];
+    const j=data.timeOff.findIndex(o=>o.id===t.rec.id || (t.tmp && o.id===t.tmp)); if(j<0) data.timeOff.push(Object.assign({},t.rec)); });
+  return data;
+}
+/* time off: on the calendar at the tap; taken back off if the office says no */
+function schPutTimeOff_(rec, tmpId){
+  S._toLocal.push({rec, at:Date.now(), tmp:tmpId});
+  const all=Object.values(S.schedMonths||{}).concat(S.sched?[S.sched]:[]);
+  all.forEach(d=>{ if(!d) return; d.timeOff=(d.timeOff||[]).filter(o=>o.id!==rec.id && o.id!==tmpId); d.timeOff.push(Object.assign({},rec)); });
+  Object.keys(S.schedMonths||{}).forEach(m=>{ try{ DB.setCache('sched_'+m, S.schedMonths[m]); }catch(e){} });
+  if(S.sched) try{ DB.setCache('sched', S.sched); }catch(e){}
+}
+function schRepaint_(){ if(S.tab==='sched') try{ render(); }catch(e){} }   // v163
+function schDropTimeOff_(id){
+  S._toLocal=S._toLocal.filter(t=>t.rec.id!==id && t.tmp!==id);
+  Object.values(S.schedMonths||{}).concat(S.sched?[S.sched]:[]).forEach(d=>{ if(d&&d.timeOff) d.timeOff=d.timeOff.filter(o=>o.id!==id); });
+  Object.keys(S.schedMonths||{}).forEach(m=>{ try{ DB.setCache('sched_'+m, S.schedMonths[m]); }catch(e){} });
+  if(S.sched) try{ DB.setCache('sched', S.sched); }catch(e){}
+}
 function schApply(id, patch){
+  schLocalNote_(id, {patch:Object.assign({},patch)});   // v163 - a month read already on its way keeps this move
   const all=S.schedMonths||{}; let obj=null;
   Object.keys(all).forEach(m=>{ const d=all[m]; if(!d||!d.events) return;
     const i=d.events.findIndex(e=>String(e.id)===String(id)); if(i<0) return;
@@ -4992,7 +5088,7 @@ async function schUndoMove(id, prev, name){
        S.schedYears={}; toast(`${name} is back at ${schWhen(prev.start)}.`); if(S.online){ loadSched(); loadRequests(); } }
   catch(e){ toast('Could not put it back: '+e.message, 8000); schRefreshQuiet(); }
 }
-function schRefreshQuiet(){ S.schedMonths={}; schEnsure(); }
+function schRefreshQuiet(){ schedRefreshAll(); }   // v163 - quiet means the screen stays as it is
 async function schSetConfirm(k, state, btn){
   const ev=dereg(k); if(!ev) return;
   const was=ev.confirm||'none';
@@ -5155,8 +5251,8 @@ function schYearHtml(){
 function curSchedMonth(){ return S.schedMonth || curMonthStr(); }
 async function loadSchedMonth(mArg){
   const month=mArg||curSchedMonth();
-  S._smBusy=S._smBusy||{};
-  if (S._smBusy[month]) return;
+  S._smBusy=S._smBusy||{}; S._smAgain=S._smAgain||{};
+  if (S._smBusy[month]){ if(S.online) S._smAgain[month]=true; return; }   // v163 - read again once this one lands
   S.schedMonths=S.schedMonths||{};
   if (!S.schedMonths[month]){
     const c=await DB.getCache('sched_'+month);
@@ -5168,10 +5264,13 @@ async function loadSchedMonth(mArg){
     const p=month.split('-');
     const start=`${p[0]}-${p[1]}-01`;
     const end=localDateStr(new Date(Number(p[0]),Number(p[1]),1)); // first of next month
+    const since=Date.now();
     const r=await apiBg('scheduleList',{startDate:start,endDate:end});
-    if(r&&Array.isArray(r.events)){ S.schedMonths[month]=r; DB.setCache('sched_'+month,r); if(r.canAssign) evPrefetch_(r.events); }
+    if(r&&Array.isArray(r.events)){ r._win=[start,end]; schMergeLocal_(r, since);
+      S.schedMonths[month]=r; DB.setCache('sched_'+month,r); if(r.canAssign) evPrefetch_(r.events); }
   }catch(e){ if(!S.schedMonths[month]) toast(e.message); }
   S._smBusy[month]=false; S._smLoading=null; if(S.tab==='sched') render();
+  if(S._smAgain[month]){ S._smAgain[month]=false; loadSchedMonth(month); }
 }
 /* A chip: the time on its own line, the customer under it over two lines at most. The scope
    after the dash is dropped - it is the part that never fits and the part a tap shows anyway. */
@@ -5612,17 +5711,23 @@ async function taSubmit(btn){
   if(!S.online) return toast('You need signal.');
   const s=val('taStart'), e=val('taEnd')||s;
   if(!s) return toast('Pick the first day.'); if(e<s) return toast('Last day is before the first day.');
-  btn.disabled=true; btn.textContent='Saving…';
-  try{ const r=await api('timeOffRequest',{forEmail:val('taWho'), approved:true, startDate:s, endDate:e, reason:val('taReason')});
+  // v163 - on the calendar at the tap (Paul, 24 Nov: things took up to a minute to show). The office's
+  // answer swaps in its id; a no takes it back off and says so.
+  const who=val('taWho'), emp=(S.employees||[]).find(x=>lc(x.email)===lc(who));
+  const tmp='to_local_'+Date.now(), reason=val('taReason');
+  const rec={id:tmp, email:lc(who), name:(emp&&emp.name)||String(who).split('@')[0], start:s, end:e, reason, status:'approved'};
+  schPutTimeOff_(rec, tmp);
+  closeSheet(); schRepaint_(); toast('Time off is on the calendar ✓', 4000);
+  try{ const r=await api('timeOffRequest',{forEmail:who, approved:true, startDate:s, endDate:e, reason});
     if(!(r&&r.approved)){
       // v126 - an office script from before this feature files it as the ADMIN'S OWN pending request,
       // whoever was picked. Take that back and say so, rather than leave the wrong person asking for leave.
       try{ if(r&&r.id) await api('timeOffCancel',{reqId:r.id}); }catch(_){}
-      btn.disabled=false; btn.textContent='Put it on the calendar';
+      schDropTimeOff_(tmp); schRepaint_();
       return toast('Not added yet: the office script needs its update first (the Deploy click). Nothing was saved.', 9000);
     }
-    closeSheet(); toast('Time off is on the calendar ✓', 6000); schedRefreshAll();
-  }catch(err){ toast(err.message,8000); btn.disabled=false; btn.textContent='Put it on the calendar'; }
+    schDropTimeOff_(tmp); schPutTimeOff_(Object.assign({}, rec, {id:r.id||tmp}), tmp); schRepaint_();
+  }catch(err){ schDropTimeOff_(tmp); schRepaint_(); toast('Time off NOT saved — taken back off the calendar. '+err.message, 9000); }
 }
 function openTimeOff(){
   const t=todayStr();
