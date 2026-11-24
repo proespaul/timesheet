@@ -7349,10 +7349,11 @@ function startClockOutReview(){
 function coTick_(){
   const c=coState; if(!c){ clearInterval(coTickT); coTickT=null; return; }
   if (c.outEdited) return;
-  const el=document.getElementById('coOut');
-  if (el && document.activeElement===el) return; // being edited — leave both the value and outAt alone until the change event decides
+  const el=document.getElementById('coOut'), elD=document.getElementById('coOutD');
+  if ((el && document.activeElement===el) || (elD && document.activeElement===elD)) return; // being edited — leave both the value and outAt alone until the change event decides
   c.outAt = new Date().toISOString();
   if (el && el.value!==fmtHM(c.outAt)) el.value=fmtHM(c.outAt);
+  if (elD && elD.value!==localDateStr(new Date(c.outAt))) elD.value=localDateStr(new Date(c.outAt));   // v162 - past midnight the day moves too
   coUpdateWorked();
 }
 function coStopTick_(){ clearInterval(coTickT); coTickT=null; }
@@ -7380,14 +7381,23 @@ function renderClockOutReview(){
       </div>
     </div>
     <div class="card" style="margin:10px 0">
+      <!-- v162 - Paul, 24 Nov: Elijah's same-day shift showed 26.27 hrs. The review only had time
+           boxes and guessed the day, and a guess of "the next day" stuck. Each end now carries
+           its own day box, like the Edit entry screen (v93), and nothing is guessed. -->
       <div class="row">
+        <div class="grow"><label style="margin-top:0">Clock in day</label>
+          <input id="coInD" type="date" value="${localDateStr(new Date(c.inAt))}" max="${localDateStr(new Date())}" onchange="coTimes()"></div>
         <div class="grow"><label style="margin-top:0">Clock in</label>
           <input id="coIn" type="time" value="${fmtHM(c.inAt)}" onchange="coTimes()"></div>
-        <div class="grow"><label style="margin-top:0">Clock out</label>
-          <input id="coOut" type="time" value="${fmtHM(c.outAt)}" onchange="coTimes()"></div>
-        <div style="width:104px"><label style="margin-top:0">Break (min)</label>
-          <input id="coBreak" type="number" min="0" step="5" value="${c.breakMin}" oninput="coTimes()"></div>
       </div>
+      <div class="row">
+        <div class="grow"><label>Clock out day</label>
+          <input id="coOutD" type="date" value="${localDateStr(new Date(c.outAt))}" max="${localDateStr(new Date())}" onchange="coTimes()"></div>
+        <div class="grow"><label>Clock out</label>
+          <input id="coOut" type="time" value="${fmtHM(c.outAt)}" onchange="coTimes()"></div>
+      </div>
+      <div style="width:140px"><label>Break (min)</label>
+        <input id="coBreak" type="number" min="0" step="5" value="${c.breakMin}" oninput="coTimes()"></div>
       <div class="small muted" id="coWorked"></div>
       ${c.openBreakAt?`<p class="small" style="color:var(--needs-ink);margin:6px 0 0">⚠ Your break from ${esc(fmtTime(c.openBreakAt))} was never ended, so it isn't counted. Type the break you really took in the box above.</p>`:''}
     </div>
@@ -7598,20 +7608,19 @@ function cancelClockOutReview(){
 function coTimes(){
   const c=coState; if(!c) return;
   const before = c.inAt+'|'+c.outAt+'|'+c.breakMin; // to reset the over-break warning on change
-  const dstr=localDateStr(new Date(c.origInAt)); // times are anchored to the shift's start date
-  const inV=val('coIn'), outV=val('coOut');
-  if (inV && inV!==fmtHM(c.origInAt)){
-    const t=new Date(dstr+'T'+inV);
-    if(!isNaN(t)){ c.inAt=t.toISOString(); c.inEdited=true; }
-  } else if (inV){ c.inAt=c.origInAt; c.inEdited=false; }
-  // v43 — the box normally tracks the clock (coTick_ keeps it equal to fmtHM(c.outAt)), so a
-  // value that differs from it can only have been typed: that time wins from here on.
-  if (outV && outV!==fmtHM(c.outAt)){
-    let t=new Date(dstr+'T'+outV);
-    if(!isNaN(t)){
-      if (t <= new Date(c.inAt)) t=new Date(t.getTime()+86400000); // out before in = overnight shift
-      c.outAt=t.toISOString(); c.outEdited=true;
-    }
+  // v162 - each end is its own day + time, read as typed. No "out before in = next day" guess:
+  // that guess was made once and then stuck (out typed while the in time was still the late tap,
+  // then the in time fixed) and turned a 2.27 hr morning into 26.27 hrs overnight.
+  const inD=val('coInD'), inT=val('coIn'), outD=val('coOutD'), outT=val('coOut');
+  if (inD && inT){
+    if (inD===localDateStr(new Date(c.origInAt)) && inT===fmtHM(c.origInAt)){ c.inAt=c.origInAt; c.inEdited=false; }
+    else { const t=new Date(inD+'T'+inT); if(!isNaN(t)){ c.inAt=t.toISOString(); c.inEdited=true; } }
+  }
+  // The out boxes normally track the clock (coTick_ keeps them equal to c.outAt), so a value that
+  // differs can only have been typed: that day and time win from here on.
+  if (outD && outT && (outD+'T'+outT)!==(localDateStr(new Date(c.outAt))+'T'+fmtHM(c.outAt))){
+    const t=new Date(outD+'T'+outT);
+    if(!isNaN(t)){ c.outAt=t.toISOString(); c.outEdited=true; }
   }
   if (document.getElementById('coBreak')) c.breakMin = Math.max(0, Number(val('coBreak'))||0); // the review sheet may already be gone (coCommit_)
   // Any change to the numbers voids a pending "clock out anyway" confirmation.
@@ -7627,8 +7636,16 @@ function coUpdateWorked(){
   const bmin=Number(c.breakMin)||0;
   const net=Math.max(0, gms/3600000 - bmin/60);
   const overnight=localDateStr(new Date(c.outAt))!==localDateStr(new Date(c.inAt));
-  box.innerHTML = `Worked <b>${fmtDur(Math.max(0,gms))}</b>${bmin?` − ${bmin} min break`:''} → <b>${net.toFixed(2)} hrs</b>`+
+  const sub0=document.getElementById('coSubmit');
+  if (!(gms>0)){   // v162 - say it plainly instead of showing 0 hrs
+    box.innerHTML='<span style="color:var(--bad)">⚠ The clock-out is before the clock-in — check the days and times.</span>';
+    if (sub0) sub0.disabled=true;
+    return;
+  }
+  box.innerHTML = (overnight?`${esc(fmtDay(c.inAt))} ${esc(fmtTime(c.inAt))} → ${esc(fmtDay(c.outAt))} ${esc(fmtTime(c.outAt))}<br>`:'')+
+    `Worked <b>${fmtDur(Math.max(0,gms))}</b>${bmin?` − ${bmin} min break`:''} → <b>${net.toFixed(2)} hrs</b>`+
     (overnight?' <span class="pill pending">overnight</span>':'')+
+    (gms>RUNAWAY_SHIFT_H*3600000?' <span style="color:var(--bad)">⚠ that is a very long shift — check the days</span>':'')+
     (bmin*60000>Math.max(0,gms)?' <span style="color:var(--bad)">⚠ break exceeds time worked</span>':'')+
     (bmin!==c.autoBreakMin?` <span class="muted">(auto-tracked: ${c.autoBreakMin} min)</span>`:'');
   const sub=document.getElementById('coSubmit');
