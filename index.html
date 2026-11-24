@@ -206,6 +206,12 @@
     box-shadow:0 6px 18px rgba(31,56,100,.35); transform:translate(-50%,-140%); max-width:60vw;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .cal .day.blank{background:transparent; border:none; cursor:default}
+  .cal .day.out{background:var(--panel2); border-color:transparent}                       /* v171 - a day of the month before or after */
+  .cal .day.out .dn{color:#94a3b8; font-weight:600}
+  .cal .day.out .ev{opacity:.82}
+  .cal .day.out.hol{background:#fdf6d8}
+  .cal .day.out.ld .dn::after{content:' ·'; color:#cbd5e1}                                 /* that month is still being read */
+  .cal .day.out.today{border:2px solid var(--accent2)}
   .cal .day.today{border:2px solid var(--accent2); font-weight:800}
   .cal .day.hol{background:#fef9c3; border-color:#fde68a}
   /* v125 - on a desktop a request reads left, its buttons stack on the right (Paul, 9 Nov) */
@@ -4813,7 +4819,7 @@ function schedRefreshAll(){ // any schedule mutation: refresh the list AND the m
 }
 function schVisibleMonths_(){
   const v=S.schedView||'month';
-  if(v==='month') return [curSchedMonth()];
+  if(v==='month') return schMonthGridMonths_(curSchedMonth());   // v171 - with the days either side
   if(v==='week'||v==='day'){ const a=schAnchor(), days=v==='week'?[schMonday(a), schAdd(schMonday(a),6)]:[a]; return [...new Set(days.map(d=>d.slice(0,7)))]; }
   return [];
 }
@@ -5335,6 +5341,8 @@ function schYearHtml(){
 function curSchedMonth(){ return S.schedMonth || curMonthStr(); }
 async function loadSchedMonth(mArg){
   const month=mArg||curSchedMonth();
+  // v171 - the month view shows the days of the months either side too: read them alongside
+  if(!mArg && (S.schedView||'month')==='month') schMonthGridMonths_(month).filter(x=>x!==month).forEach(x=>loadSchedMonth(x));
   S._smBusy=S._smBusy||{}; S._smAgain=S._smAgain||{};
   if (S._smBusy[month]){ if(S.online) S._smAgain[month]=true; return; }   // v163 - read again once this one lands
   S.schedMonths=S.schedMonths||{};
@@ -5627,33 +5635,53 @@ function schedShiftMonth(dir){
   S.schedMonth=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0');
   render(); loadSchedMonth();
 }
+/* v171 - THE MONTH IN WHOLE WEEKS (Paul, 24 Nov: "i would like to see a 5-6 week view in the calendar month so that
+   i can see the days before and after of the month"). The grid runs from the Sunday on or before the 1st to the
+   Saturday on or after the last day - five weeks, or six when the month needs them, and never fewer than five,
+   so there are always days after it to see. The days of the months either side are greyed but they are real:
+   their own jobs, holidays and time off (each month is read on its own, the months either side quietly), and a
+   job can be tapped there or dragged onto one like any other day. */
+function schMonthGrid_(month){
+  const p=month.split('-'), y=Number(p[0]), m=Number(p[1]);
+  const first=new Date(y,m-1,1), dim=new Date(y,m,0).getDate(), lead=first.getDay();
+  const weeks=Math.max(5, Math.ceil((lead+dim)/7));
+  return { y, m, lead, dim, weeks, start:new Date(y,m-1,1-lead), prev:lead>0, next:lead+dim<weeks*7 };
+}
+/* the months whose days the grid for `month` shows */
+function schMonthGridMonths_(month){
+  const g=schMonthGrid_(month), out=[month];
+  if(g.prev) out.unshift(schMonthAdd(month,-1));
+  if(g.next) out.push(schMonthAdd(month,1));
+  return out;
+}
 function schedMonthHtml(){
   const month=curSchedMonth(), data=(S.schedMonths||{})[month];
-  const p=month.split('-'), y=Number(p[0]), m=Number(p[1]);
-  const evByDay={}, unByDay={}, holByDay={}, offByDay={};
-  if(data){
-    data.events.forEach(ev=>{ const k=localDateStr(new Date(ev.start));
-      (evByDay[k]=evByDay[k]||[]).push(ev);
-      if(data.canAssign && !ev.assigned.length) unByDay[k]=true; });
-    (data.holidays||[]).forEach(h=>holByDay[h.date]=h.name);
-    for(let d=new Date(y,m-1,1); d.getMonth()===m-1; d.setDate(d.getDate()+1)){
-      const k=localDateStr(d), o=schOffOn(k,data); if(o.length) offByDay[k]=o; }
-  }
-  const first=new Date(y,m-1,1), dim=new Date(y,m,0).getDate(), tstr=localDateStr(new Date());
+  const g=schMonthGrid_(month), y=g.y, m=g.m, tstr=localDateStr(new Date());
+  // each month's own jobs, holidays and time off, indexed by day - read once per month on the grid
+  const byM={};
+  const idx=mk=>{ if(mk in byM) return byM[mk]; const d=(S.schedMonths||{})[mk]; if(!d){ byM[mk]=null; return null; }
+    const o={ data:d, ev:{}, hol:{} };
+    (d.events||[]).forEach(ev=>{ const k=localDateStr(new Date(ev.start)); (o.ev[k]=o.ev[k]||[]).push(ev); });
+    (d.holidays||[]).forEach(h=>o.hol[h.date]=h.name);
+    return (byM[mk]=o); };
+  const narrow=window.innerWidth<700;
   let cells=['S','M','T','W','T','F','S'].map(d=>`<div class="dow">${d}</div>`).join('');
-  for(let i=0;i<first.getDay();i++) cells+='<div class="day blank"></div>';
-  for(let dn=1;dn<=dim;dn++){
-    const k=`${y}-${String(m).padStart(2,'0')}-${String(dn).padStart(2,'0')}`;
-    const evs=(evByDay[k]||[]).slice().sort((a,b)=>new Date(a.start)-new Date(b.start));
+  for(let i=0;i<g.weeks*7;i++){
+    const d=new Date(g.start.getFullYear(), g.start.getMonth(), g.start.getDate()+i);   // setDate-style, DST-safe
+    const k=localDateStr(d), mk=k.slice(0,7), out=mk!==month, o=idx(mk);
+    const evs=o?(o.ev[k]||[]).slice().sort((a,b)=>new Date(a.start)-new Date(b.start)):[];
+    const hol=o?o.hol[k]:'', offs=o?schOffOn(k,o.data):[];
     const lanes=schLanes(evs);
     const show=evs.slice(0,2).map(ev=>{
-      const rk=reg(ev), un=data&&data.canAssign&&!ev.assigned.length&&!schIsBlock_(ev), tn=schTone(ev), L=lanes[ev.id];
+      const rk=reg(ev), un=o&&o.data.canAssign&&!(ev.assigned||[]).length&&!schIsBlock_(ev), tn=schTone(ev), L=lanes[ev.id];
       return `<div class="ev${un?' un':''}${schIsDragged(ev)?' ghosted':''}" data-ek="${rk}" data-day="${k}" style="background:${tn.bg};color:${tn.ink};border:1px solid ${tn.bd}"
         onpointerdown="schedGrab(event,'${rk}','${k}')" ontouchmove="schTouchClaim(event)" onclick="event.stopPropagation()"
         >${L&&L.count>1?`<span class="bn">${L.lane+1}</span>`:''}${schedChip(ev)}</div>`;
     }).join('');
-    cells+=`<div class="day${k===tstr?' today':''}${holByDay[k]?' hol':''}" data-drop="1" data-day="${k}" onclick="openSchedDay('${k}')">
-      <span class="dn">${dn}</span>${holByDay[k]?`<div class="holn" title="${esc(holByDay[k])}">${esc(holByDay[k])}</div>`:''}${(offByDay[k]||[]).map(o=>schOffLine(o,window.innerWidth<700)).join('')}
+    // a day of another month says which month on its 1st and on the first square of the grid
+    const dn=(out && (d.getDate()===1 || i===0)) ? d.toLocaleDateString([],{month:'short'})+' '+d.getDate() : String(d.getDate());
+    cells+=`<div class="day${out?' out':''}${out&&!o?' ld':''}${k===tstr?' today':''}${hol?' hol':''}" data-drop="1" data-day="${k}" onclick="openSchedDay('${k}')">
+      <span class="dn">${esc(dn)}</span>${hol?`<div class="holn" title="${esc(hol)}">${esc(hol)}</div>`:''}${offs.map(x=>schOffLine(x,narrow)).join('')}
       <div class="evs">${show}${evs.length>2?`<div class="more">+${evs.length-2}</div>`:''}</div></div>`;
   }
   const label=new Date(y,m-1,1).toLocaleDateString([],{month:'long',year:'numeric'});
@@ -5665,13 +5693,14 @@ function schedMonthHtml(){
     </div>
     <div class="cal" ontouchmove="schTouchClaim(event)">${cells}</div>
     <p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
-      ? 'Tap a job to open it, or <b>drag it onto another day</b> (on a phone: press and hold first) · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · purple 🔍 = estimate visit (going to look) · grey-brown 🧱 = a block, not a job · dashed = nobody assigned · a name on a yellow tag = that person is off'
-      : 'Your jobs this month · your name on a yellow tag = your time off · a yellow day = stat holiday · tap a day to see where you\'re heading'}</p>
+      ? 'Tap a job to open it, or <b>drag it onto another day</b> (on a phone: press and hold first) · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · purple 🔍 = estimate visit (going to look) · grey-brown 🧱 = a block, not a job · dashed = nobody assigned · a name on a yellow tag = that person is off · greyed days are the month before or after'
+      : 'Your jobs this month · your name on a yellow tag = your time off · a yellow day = stat holiday · greyed days are the month before or after · tap a day to see where you\'re heading'}</p>
   </div>`;
 }
 function openSchedDay(day){
-  const data=schData(day)||(S.schedMonths||{})[curSchedMonth()];   // v169 - the day's own month
-  if(!data){ toast('Still loading — try again in a second.'); return; }
+  const data=schData(day);   // v169 - the day's own month
+  // v171 - a greyed day of the month before or after, not read yet: read it, rather than show it empty
+  if(!data){ loadSchedMonth(String(day).slice(0,7)); toast('Still loading that month — try again in a second.'); return; }
   const evs=data.events.filter(e=>localDateStr(new Date(e.start))===day).sort((a,b)=>new Date(a.start)-new Date(b.start));
   const hols=(data.holidays||[]).filter(h=>h.date===day);
   const offs=(data.timeOff||[]).filter(t=>t.status==='approved'&&day>=t.start&&day<=t.end);
