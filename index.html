@@ -253,6 +253,8 @@
     text-align:left; color:var(--navy); font-size:.82rem; font-weight:400; width:auto}
   .tgh b{font-weight:700} .tgh span{color:var(--muted)} .tgh.today b{color:var(--accent2)}
   .tgh .hl{display:block; font-size:.64rem; color:#854d0e}
+  .offl{font-size:.6rem; font-weight:700; line-height:1.15; color:#92400e; background:#fef3c7; border:1px solid #fcd34d; border-radius:5px; padding:1px 3px; margin:1px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:left}   /* v160 - who is off, on the day */
+  .tga .offl{font-size:.72rem; padding:2px 6px; margin:2px 0}
   .tga{border-bottom:1px solid var(--line); border-left:1px solid var(--line); padding:4px; display:flex; flex-direction:column; gap:3px}
   .tga.lbl{border-left:0; font-size:.64rem; color:var(--muted)}
   .adc{font-size:.72rem; font-weight:600; padding:3px 6px; border-radius:7px; border:1px solid; cursor:pointer;
@@ -2613,7 +2615,7 @@ function tabBar(){
     ${t('clock','⏱','Clock')}
     ${canReq?t('requests',`📨${pend?'<span class="dot"></span>':''}`,'Requests'):''}
     ${canReq?t('est',`📝${S.pendingEstimates?'<span class="dot"></span>':''}`,'Estimates'):''}
-    ${t('sched',cal,'Schedule')}
+    ${t('sched',cal,'Calendar')}
     ${canTeam?t('jobs','🏗️','Jobs'):''}
     ${canReq?'':t('entries','📋','Entries')}
     ${more}
@@ -3294,7 +3296,7 @@ function sideNav(){
     ${b('clock','⏱','Clock')}
     ${canApprove()?b('requests','📨','Requests',pend||'',!!pend):''}
     ${canApprove()?b('est','📝','Estimates',S.pendingEstimates||'',!!S.pendingEstimates):''}
-    ${b('sched',cal,'Schedule')}
+    ${b('sched',cal,'Calendar')}
     ${canTeam?b('jobs','🏗️','Jobs',ip||''):''}
     <div class="sgap"></div>
     ${b('hours','📊','Hours')}
@@ -4717,7 +4719,7 @@ function schedView(){
     ? `<div class="banner ot" style="white-space:pre-wrap">⚠ ${esc(S.schedErr)}</div>`
     : (S.schedLoading?'':'<p class="muted small">Open this tab while online to load the schedule.</p>');
   const mode=S.schedView||'month';
-  const head=`<div class="row between"><h2>Schedule</h2>${(S.schedLoading||S._smLoading)?'<span class="spin"></span>':''}</div>
+  const head=`<div class="row between"><h2>Calendar</h2>${(S.schedLoading||S._smLoading)?'<span class="spin"></span>':''}</div>
     <div class="seg" style="margin-bottom:10px">
       <button class="${mode==='year'?'on':''}" onclick="schedToggle('year')">Year</button>
       <button class="${mode==='month'?'on':''}" onclick="schedToggle('month')">Month</button>
@@ -4852,8 +4854,9 @@ function schGrid(days, o){
   days.forEach(d=>{ const data=schData(d); ((data&&data.holidays)||[]).forEach(h=>{ if(h.date===d) hol[d]=h.name; }); });
   let html='<div class="tgh"></div>'+days.map(d=>{ const dt=schDate(d);
     return `<button class="tgh${d===tstr?' today':''}" onclick="schOpenDay('${d}')"><b>${dt.toLocaleDateString([],{weekday:'short'})}</b> <span>${dt.toLocaleDateString([],{month:'short',day:'numeric'})}</span>${hol[d]?`<span class="hl">${esc(hol[d])}</span>`:''}</button>`; }).join('');
-  if(per.some(l=>l.some(e=>e.allDay))){
-    html+='<div class="tga lbl">All day</div>'+per.map(l=>`<div class="tga">${l.filter(e=>e.allDay).map(ev=>{ const k=reg(ev), t=schTone(ev);
+  const offs=days.map(d=>schOffOn(d));
+  if(per.some(l=>l.some(e=>e.allDay)) || offs.some(o=>o.length)){
+    html+='<div class="tga lbl">All day</div>'+per.map((l,i)=>`<div class="tga">${offs[i].map(o=>schOffLine(o)).join('')}${l.filter(e=>e.allDay).map(ev=>{ const k=reg(ev), t=schTone(ev);
       return `<div class="adc" style="background:${t.bg};border-color:${t.bd};color:${t.ink}" onclick="openSchedDetail('${k}')">${esc(schedName(ev))}</div>`; }).join('')}</div>`).join('');
   }
   html+='<div class="tgt">';
@@ -4878,6 +4881,18 @@ function schGrid(days, o){
   }).join('');
   return `<div class="tgwrap"><div class="tg" ontouchmove="schTouchClaim(event)" style="grid-template-columns:48px repeat(${days.length},minmax(${o.minCol}px,1fr))">${html}</div></div>`;
 }
+/* v160 - WHO IS OFF, WRITTEN ON THE DAY (Paul, 24 Nov: "it doesn't just give me an icon of like that umbrella,
+   but it actually puts out a line of like their name and their time off"). The approved time off covering a
+   day, one line per person, on the Month, Week and Day calendars. Crew see their own. */
+function schOffOn(day, data){
+  data=data||schData(day); const seen={}, out=[];
+  ((data&&data.timeOff)||[]).forEach(t=>{ if(t.status!=='approved'||day<t.start||day>t.end) return;
+    const n=String(t.name||'').trim()||'Time off'; if(seen[n]) return; seen[n]=1; out.push({name:n, reason:t.reason||''}); });
+  return out;
+}
+function schOffLine(o, small){ const first=o.name.split(/\s+/)[0];
+  // a month square on a phone is narrow: the first name alone, on the time-off colour; Week and Day say it in full
+  return `<div class="offl" title="${esc(o.name+' - time off'+(o.reason?': '+o.reason:''))}">${small?esc(first):'🏖 '+esc(first)+' off'}</div>`; }
 function schWeekHtml(){
   const mon=schMonday(schAnchor());
   const days=[0,1,2,3,4].map(i=>schAdd(mon,i));
@@ -5420,9 +5435,8 @@ function schedMonthHtml(){
       (evByDay[k]=evByDay[k]||[]).push(ev);
       if(data.canAssign && !ev.assigned.length) unByDay[k]=true; });
     (data.holidays||[]).forEach(h=>holByDay[h.date]=h.name);
-    (data.timeOff||[]).forEach(t=>{ if(t.status!=='approved') return;
-      for(let d=new Date(y,m-1,1); d.getMonth()===m-1; d.setDate(d.getDate()+1)){
-        const k=localDateStr(d); if(k>=t.start&&k<=t.end) offByDay[k]=true; } });
+    for(let d=new Date(y,m-1,1); d.getMonth()===m-1; d.setDate(d.getDate()+1)){
+      const k=localDateStr(d), o=schOffOn(k,data); if(o.length) offByDay[k]=o; }
   }
   const first=new Date(y,m-1,1), dim=new Date(y,m,0).getDate(), tstr=localDateStr(new Date());
   let cells=['S','M','T','W','T','F','S'].map(d=>`<div class="dow">${d}</div>`).join('');
@@ -5438,7 +5452,7 @@ function schedMonthHtml(){
         >${L&&L.count>1?`<span class="bn">${L.lane+1}</span>`:''}${schedChip(ev)}</div>`;
     }).join('');
     cells+=`<div class="day${k===tstr?' today':''}${holByDay[k]?' hol':''}" data-drop="1" data-day="${k}" onclick="openSchedDay('${k}')">
-      <span class="dn">${offByDay[k]?'🏖 ':''}${dn}</span>${holByDay[k]?`<div class="holn" title="${esc(holByDay[k])}">${esc(holByDay[k])}</div>`:''}
+      <span class="dn">${dn}</span>${holByDay[k]?`<div class="holn" title="${esc(holByDay[k])}">${esc(holByDay[k])}</div>`:''}${(offByDay[k]||[]).map(o=>schOffLine(o,window.innerWidth<700)).join('')}
       <div class="evs">${show}${evs.length>2?`<div class="more">+${evs.length-2}</div>`:''}</div></div>`;
   }
   const label=new Date(y,m-1,1).toLocaleDateString([],{month:'long',year:'numeric'});
@@ -5450,8 +5464,8 @@ function schedMonthHtml(){
     </div>
     <div class="cal" ontouchmove="schTouchClaim(event)">${cells}</div>
     <p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
-      ? 'Tap a job to open it, or <b>drag it onto another day</b> (on a phone: press and hold first) · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · dashed = nobody assigned · 🏖 = someone off'
-      : 'Your jobs this month · 🏖 = your time off · yellow = stat holiday · tap a day to see where you\'re heading'}</p>
+      ? 'Tap a job to open it, or <b>drag it onto another day</b> (on a phone: press and hold first) · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · dashed = nobody assigned · a name on yellow = that person is off'
+      : 'Your jobs this month · your name on yellow = your time off · yellow = stat holiday · tap a day to see where you\'re heading'}</p>
   </div>`;
 }
 function openSchedDay(day){
