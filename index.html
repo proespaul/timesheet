@@ -475,6 +475,10 @@
     justify-content:center; font-size:.76rem; color:var(--muted); cursor:pointer; background:repeating-linear-gradient(135deg,transparent 0 8px,rgba(148,163,184,.08) 8px 16px)}
   .tl .gap b{color:var(--accent2); margin-left:4px}
   .tl .hr, .tl .hl, .tl .now{pointer-events:none}
+  .cfrow{display:flex; gap:6px}
+  .cfrow .cfo{flex:1; width:auto; background:var(--panel2); color:var(--navy); border:1.5px solid transparent; border-radius:12px;
+    padding:10px 4px; font-weight:600; font-size:.86rem; line-height:1.2}
+  .cfrow .cfo.on{font-weight:800; box-shadow:inset 0 0 0 1px currentColor; cursor:default}
   .pickbar{display:flex; justify-content:space-between; align-items:center; gap:10px; background:#eef6ff; border:1.5px solid var(--accent2);
     color:var(--navy); border-radius:14px; padding:10px 12px; margin-bottom:10px}
   .tl .dsc.pk, .tgc.pk{cursor:pointer}
@@ -5183,8 +5187,12 @@ async function schSetConfirm(k, state, btn){
   const ev=dereg(k); if(!ev) return;
   const was=ev.confirm||'none';
   schApply(ev.id,{confirm:state}); ev.confirm=state;                 // v107 - the colour changes at the tap
-  closeSheet(); render();
-  toast(schedName(ev)+': '+SCH_TONE[state].label.toLowerCase()+'.');
+  closeSheet(); render(); dsRepaint_();
+  // v172 - with Undo, so a tap on the wrong one costs nothing
+  schUndoToast(schedName(ev).split(' · ')[0]+': '+SCH_TONE[state].label.toLowerCase(), ()=>{
+    schApply(ev.id,{confirm:was}); ev.confirm=was; render(); dsRepaint_();
+    if(['confirmed','waiting','declined'].indexOf(was)>=0) officeDo_('scheduleConfirm',{eventId:ev.id, state:was}, ()=>{});
+    toast(schedName(ev).split(' · ')[0]+' is back to '+(SCH_TONE[was]||SCH_TONE.none).label.toLowerCase()+'.'); });
   officeDo_('scheduleConfirm',{eventId:ev.id, state}, ()=>{ schApply(ev.id,{confirm:was}); render(); });
 }
 /* v105 - ANOTHER DAY ON THE SAME JOB (Paul, 7 Nov): "if we were there that day and need more days
@@ -5274,16 +5282,19 @@ function schStatusHtml(k, ev){
   const c=ev.confirm||'none', t=SCH_TONE[c]||SCH_TONE.none;
   if(ev.recurring) return `<div style="margin:10px 0 4px"><span class="pill" style="background:${t.bg};border:1px solid ${t.bd};color:${t.ink};font-weight:700">${esc(t.label)}</span></div>
     <p class="small muted" style="margin:6px 0 0">This is a repeating event. Move it or change it in Google Calendar.</p>`;
-  return `<div style="margin:10px 0 4px">
-    <span class="pill" style="background:${t.bg};border:1px solid ${t.bd};color:${t.ink};font-weight:700">${esc(t.label)}</span></div>
-    ${c!=='confirmed'?`<button style="width:100%;margin-top:6px;background:var(--ok)" onclick="schSetConfirm('${k}','confirmed',this)">✓ Customer confirmed</button>`:''}
-    <div class="row" style="margin-top:6px">
+  /* v172 - Paul, 24 Nov (photo of Andy Servant): "It says both confirmed and unconfirmed". The status was a pill
+     with buttons under it that READ like statuses ("✓ Customer confirmed", "Not confirmed yet"), so the sheet
+     seemed to say two things, and one tap on the wrong one changed it (Andy went back to not confirmed at 4:06).
+     Now it is one picker: the three states side by side, the one it is now lit, the others plainly a change. */
+  const opt=(st,ic,lbl)=>{ const on=c===st || (st==='waiting' && (c==='none'||c==='waiting'));
+    const tt=SCH_TONE[st];
+    return `<button type="button" class="cfo${on?' on':''}" ${on?'aria-pressed="true"':''} style="${on?`background:${tt.bg};border-color:${tt.bd};color:${tt.ink}`:''}"
+      onclick="${on?'':`schSetConfirm('${k}','${st}',this)`}">${ic} ${lbl}</button>`; };
+  return `<div class="small muted" style="margin:10px 0 4px">Did the customer confirm this time?</div>
+    <div class="cfrow">${opt('confirmed','✓','Confirmed')}${opt('waiting','⏳','Not yet')}${opt('declined','↻','Wants a new time')}</div>
+    <div class="row" style="margin-top:8px">
       <button class="secondary grow" onclick="schOpenMoveDate('${k}')">📅 Move to a date</button>
       <button class="secondary grow" onclick="schOpenAddDay('${k}')">➕ Add another day</button>
-    </div>
-    <div class="row" style="margin-top:6px">
-      ${c!=='declined'?`<button class="secondary grow" onclick="schSetConfirm('${k}','declined',this)">Needs a new time</button>`:''}
-      ${c!=='waiting'?`<button class="secondary grow" onclick="schSetConfirm('${k}','waiting',this)">Not confirmed yet</button>`:''}
     </div>`;
 }
 /* v103 - THE YEAR AT A GLANCE (Paul, 7 Nov). Twelve small months, each day shaded by the hours
@@ -6265,7 +6276,8 @@ async function openSchedDetail(k){
     ${info.detail?`<button class="secondary" style="width:100%;margin-top:8px" onclick="openSchedEnquiry('${key}')">📨 Original inquiry</button>`:''}
     ${info.kind==='visit'?`<p class="small muted" style="margin:8px 0 0">This is a <b>return visit</b> — it continues ${info.po?esc(info.po):'an earlier job'}, so the details above are the original job's.</p>`:''}
     ${info.isJob
-      ? `<button style="width:100%;margin-top:12px" onclick="openSchedModify('${key}',${bi})">✏️ Modify this booking</button>`
+      ? `<button style="width:100%;margin-top:12px" onclick="openSchedModify('${key}',${bi})">✏️ Modify this booking</button>
+         ${info.kind==='request'?`<button class="secondary" style="width:100%;margin-top:8px" onclick="schUnbookFromCal('${key}')">↩︎ Unbook — back to Requests</button>`:''}`
       : `<p class="small muted" style="margin:10px 0 0">Not a job — nothing to change here.</p>`}`;
   };
   const wrap=(inner)=>`<div id="sdMid">${inner}</div>`;
@@ -12556,6 +12568,14 @@ async function reqMove(i,btn,k){
    unbook them off the calendar and goes back to the request again ... instead of like having to move them
    right on the calendar itself"). Off the calendar at the tap, back on Requests as a job to book with its
    job number; the PO Log start date is cleared; nobody is emailed. Put back if the office says no. */
+/* v172 - Unbook straight from a job on the calendar (it was only inside Modify - Paul could not find it) */
+async function schUnbookFromCal(key){
+  const info=dereg(key); if(!info) return;
+  let bi=schedBookedIndex(info.requestId);
+  if(bi<0 && S.online){ try{ await loadRequests(); }catch(e){} bi=schedBookedIndex(info.requestId); }
+  if(bi<0) return toast(S.online?'Could not find this booking on the Requests list - pull down to refresh and try again.':'You need signal to unbook.', 6000);
+  closeSheetDom(); openReqUnbook(bi);
+}
 function openReqUnbook(i){
   const q=(S.reqBooked||[])[i]; if(!q) return;
   const s0=q.start&&!isNaN(new Date(q.start))?new Date(q.start):null, e0=q.end&&!isNaN(new Date(q.end))?new Date(q.end):null;
