@@ -4764,7 +4764,7 @@ function schedView(){
           ${ev.location?`<div class="small muted">📍 ${esc(ev.location)}</div>`:''}
           <div class="small" style="margin-top:2px">${ev.assigned.length
             ? ev.assigned.map(a=>`<span class="chip" style="padding:3px 10px;font-size:.78rem">${esc(a.name)}</span>`).join(' ')
-            : (d.canAssign?'<span style="color:var(--pending)">⚠ nobody assigned — tap to assign</span>':'')}</div>
+            : (d.canAssign&&!schIsBlock_(ev)?'<span style="color:var(--pending)">⚠ nobody assigned — tap to assign</span>':'')}</div>
         </div>`; }).join('');
     }).join('');
     if(!days.length) body = d.canAssign
@@ -4856,13 +4856,18 @@ const SCH_TONE={
 function schTone(ev){
   if(schIsBlock_(ev)) return SCH_TONE.block;   // v166 - a block: no customer, no status
   // v165 - a visit to LOOK at a job for an estimate is purple, whatever else it is, unless it needs a new time
-  if(schIsLook_(ev) && ['declined','cancelled'].indexOf(ev.confirm)<0) return SCH_TONE.look;
+  if((schIsLook_(ev)||schIsEstPhone_(ev)) && ['declined','cancelled'].indexOf(ev.confirm)<0) return SCH_TONE.look;
   return SCH_TONE[ev&&ev.confirm]||SCH_TONE.none; }
 /* v165 - Paul, 24 Nov: "some sort of color or indicator for times that i would need to go on my own to look
    at a job for an estimate". The office writes every visit to look as "Estimate call (30 min) - job not
    booked yet." at the top of the calendar notes (requestSchedule_, ESTIMATE); a booked job never starts so. */
 function schIsLook_(ev){ return !!ev && /^\s*Estimate call \(/.test(String(ev.desc||'')); }
-function schLookTag_(ev){ return schIsLook_(ev)?'🔍 ':''; }
+/* v169 - a lead call made BY PHONE (Code.gs v136 writes "Estimate phone call (") is the same purple, but it
+   is not a trip out: it gets a phone, not the magnifier. A visit the customer has confirmed keeps a tick,
+   because purple replaced the green it would have had. */
+function schIsEstPhone_(ev){ return !!ev && /^\s*Estimate phone call \(/.test(String(ev.desc||'')); }
+function schLookTag_(ev){ return schIsLook_(ev)?(ev.confirm==='confirmed'?'🔍✓ ':'🔍 '):schIsEstPhone_(ev)?'📞 ':''; }
+function schEstLabel_(ev){ return schIsLook_(ev)?'🔍 ESTIMATE VISIT'+(ev.confirm==='confirmed'?' · confirmed':ev.confirm==='waiting'?' · not confirmed yet':''):schIsEstPhone_(ev)?'📞 ESTIMATE CALL · by phone':''; }
 /* v166 - a BLOCK is calendar time that is not a job (Code.gs v134 writes "Block (Meeting) — not a job." first) */
 function schIsBlock_(ev){ return !!ev && /^\s*Block \(/.test(String(ev.desc||'')); }
 const BLK_TYPES=[
@@ -4876,7 +4881,8 @@ const BLK_TYPES=[
   ['personal','🙋','Personal','Appointment, family…'],
   ['other','📌','Other','What is it?']];
 function blkTypeOf_(ev){
-  const m=/^\s*Block \(([^)]*)\)/.exec(String(ev&&ev.desc||'')), lbl=m?m[1]:'';
+  const first=String(ev&&ev.desc||'').split('\n')[0];
+  const m=/^\s*Block \((.*)\) — not a job\./.exec(first)||/^\s*Block \(([^)]*)\)/.exec(first), lbl=m?m[1]:'';   // v169 - "Training (WHMIS)" keeps its brackets
   const t=BLK_TYPES.find(x=>x[2]===lbl); return t?{key:t[0],label:t[2]}:{key:'other',label:lbl||'Other'}; }
 function blkNote_(ev){ const lines=String(ev&&ev.desc||'').split('\n'); lines.shift();
   return lines.filter(l=>!/^Added from the timesheet app by /.test(l)).join('\n').trim(); }
@@ -5103,6 +5109,7 @@ function schApply(id, patch){
   if(obj && patch.start){ const nm=localDateStr(new Date(obj.start)).slice(0,7), nd=all[nm];
     if(nd && !nd.events.some(e=>String(e.id)===String(id))){ nd.events.push(obj); try{ DB.setCache('sched_'+nm,nd); }catch(err){} } }
   ((S.sched&&S.sched.events)||[]).forEach(e=>{ if(String(e.id)===String(id)) Object.assign(e,patch); });
+  if(obj) schLocalNote_(id, {ev:Object.assign({}, obj)});   // v169 - the whole entry, not just what changed
 }
 /* The bar after a move: says what happened, with Undo for a few seconds. */
 function schUndoToast(msg, fn){
@@ -5134,6 +5141,7 @@ function schFlagText(id, startIso, endIso){
 function schWhen(iso){ const d=new Date(iso); return d.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'})+' '+fmtTime(iso); }
 async function schMoveTo(evOrKey, day, t){
   const ev=(typeof evOrKey==='string')?dereg(evOrKey):evOrKey; if(!ev) return;
+  if(/^blk_local_/.test(String(ev.id))) return toast('Still saving that block — try again in a moment.');   // v169
   if(ev.allDay) return toast('An all-day booking can\'t be dragged to a time. Tap it to change it.');
   if(ev.recurring) return toast('That is a repeating event - move it in Google Calendar.', 6000);
   if(!S.online) return toast('You need signal to move a booking.');
@@ -5494,8 +5502,10 @@ function schHit(){
  * finger is on a page-turn arrow. */
 function schEdge(){
   if(!SD_||!SD_.on) return;
-  const pan=SD_.el&&SD_.el.closest&&SD_.el.closest('.sheet .panel');   // v165 - a drag on the day sheet scrolls the sheet
-  if(pan) return schEdgePanel_(pan);
+  // v165 - a drag on the day sheet scrolls the sheet. v169 - the sheet on screen NOW: the one the block was
+  // picked up from is redrawn when the office answers an earlier move, and the old one no longer scrolls.
+  if(SD_.inSheet===undefined) SD_.inSheet=!!(SD_.el&&SD_.el.closest&&SD_.el.closest('.sheet .panel'));
+  if(SD_.inSheet){ const pan=S._sheet&&S._sheet.querySelector('.panel'); if(pan) schEdgePanel_(); return; }
   let vy=0, hx=0;
   if(!SD_.flipDir){
     const topZ=70, botZ=innerHeight-(innerWidth<900?76:0)-70;
@@ -5519,15 +5529,16 @@ function schEdge(){
     schHit();
   }, 40);
 }
-function schEdgePanel_(pan){
-  const r=pan.getBoundingClientRect(), z=60, dir=SD_.ly<r.top+z?-1:(SD_.ly>r.bottom-z?1:0);
-  if(!dir){ if(SD_.scrollT){ clearInterval(SD_.scrollT); SD_.scrollT=null; } return; }
+function schEdgePanel_(){
+  const live=()=>S._sheet&&S._sheet.querySelector('.panel'), z=60;
+  const dirOf=()=>{ const pan=live(); if(!pan||!SD_) return 0; const r=pan.getBoundingClientRect(); return SD_.ly<r.top+z?-1:(SD_.ly>r.bottom-z?1:0); };
+  if(!dirOf()){ if(SD_.scrollT){ clearInterval(SD_.scrollT); SD_.scrollT=null; } return; }
   if(SD_.scrollT) return;
   SD_.scrollT=setInterval(()=>{
     if(!SD_||!SD_.on) return;
-    const rr=pan.getBoundingClientRect(), d=SD_.ly<rr.top+z?-1:(SD_.ly>rr.bottom-z?1:0), b=pan.scrollTop;
-    if(d) pan.scrollTop+=d*12;
-    if(!d || pan.scrollTop===b){ clearInterval(SD_.scrollT); SD_.scrollT=null; return; }
+    const pan=live(), d=dirOf(), b=pan?pan.scrollTop:0;
+    if(pan && d) pan.scrollTop+=d*12;
+    if(!pan || !d || pan.scrollTop===b){ clearInterval(SD_.scrollT); SD_.scrollT=null; return; }
     schHit();
   }, 40);
 }
@@ -5659,7 +5670,7 @@ function schedMonthHtml(){
   </div>`;
 }
 function openSchedDay(day){
-  const data=(S.schedMonths||{})[curSchedMonth()];
+  const data=schData(day)||(S.schedMonths||{})[curSchedMonth()];   // v169 - the day's own month
   if(!data){ toast('Still loading — try again in a second.'); return; }
   const evs=data.events.filter(e=>localDateStr(new Date(e.start))===day).sort((a,b)=>new Date(a.start)-new Date(b.start));
   const hols=(data.holidays||[]).filter(h=>h.date===day);
@@ -5671,8 +5682,8 @@ function openSchedDay(day){
   timed.forEach(e=>(e.assigned||[]).forEach(a=>crew[a.name]=1));
   const canAdd=canApprove() && day>=localDateStr(new Date());
   const pk=S.schPick;   // v168 - picking a time for a booking
-  const nLook=timed.filter(schIsLook_).length, nBlk=timed.filter(schIsBlock_).length, nJob=timed.length-nLook-nBlk;   // v165, v166
-  const sum = timed.length ? [ nJob?`${nJob} job${nJob>1?'s':''}`:'', nLook?`🔍 ${nLook} estimate visit${nLook>1?'s':''}`:'', nBlk?`🧱 ${nBlk} block${nBlk>1?'s':''}`:'', `${dsHrs_(hrs)} booked`,
+  const nLook=timed.filter(schIsLook_).length, nCall=timed.filter(schIsEstPhone_).length, nBlk=timed.filter(schIsBlock_).length, nJob=timed.length-nLook-nCall-nBlk;   // v165, v166, v169
+  const sum = timed.length ? [ nJob?`${nJob} job${nJob>1?'s':''}`:'', nLook?`🔍 ${nLook} estimate visit${nLook>1?'s':''}`:'', nCall?`📞 ${nCall} estimate call${nCall>1?'s':''}`:'', nBlk?`🧱 ${nBlk} block${nBlk>1?'s':''}`:'', `${dsHrs_(hrs)} booked`,
       `${fmtTime(timed[0].start)} – ${fmtTime(timed.reduce((m,e)=>e.end>m?e.end:m, timed[0].end))}` ]
       .concat(Object.keys(crew).length?[`👷 ${Object.keys(crew).length} on the crew`]:[]) : [];
   sheet(`${pk?`<div class="pickbar" style="margin:0 0 10px"><div><b>📅 ${esc(pk.who||'Booking')}</b> · ${esc(pk.what)}<div class="small">Tap the time it starts.</div></div></div>`:''}
@@ -5718,6 +5729,7 @@ function dsTimeline_(day, evs, data, canAdd){
   // open stretches of the working day (only where a job can still be added)
   if(canAdd){
     let t=DAY0; const busy=evs.map(e=>[schHours(e), schHours(e)+schDur(e)]).sort((a,b)=>a[0]-b[0]);
+    if(day===localDateStr(new Date())){ const n=new Date(); t=Math.max(t, Math.ceil((n.getHours()+n.getMinutes()/60)*2)/2); }   // v169 - today: only what is still ahead
     const gaps=[]; busy.forEach(([a,b])=>{ if(a-t>=1) gaps.push([t,Math.min(a,DAY1)]); t=Math.max(t,b); });
     if(DAY1-t>=1) gaps.push([t,DAY1]);
     gaps.filter(g=>g[1]-g[0]>=1).forEach(([a,b])=>{
@@ -5731,7 +5743,8 @@ function dsTimeline_(day, evs, data, canAdd){
   for(let t=h0; t<h1; t+=0.5) out+=`<div class="dsc${S.schPick?' pk':''}" data-drop="1" data-day="${day}" data-t="${t}" style="top:${y(t)}px;height:${HH/2}px;left:${RAIL}px;right:0"${S.schPick?` onclick="schPickAt('${day}',${t})"`:''}></div>`;
   const lanes=schLanes(evs);
   evs.forEach(ev=>{
-    const L=lanes[ev.id]||{lane:0,count:1}, tn=schTone(ev), dur=schDur(ev), hgt=Math.max(26, dur*HH-4), k=reg(ev);
+    const L=lanes[ev.id]||{lane:0,count:1}, tn=schTone(ev), dur=schDur(ev), k=reg(ev);
+    const hgt=Math.max(26, Math.min(dur, h1-schHours(ev))*HH-4);   // v169 - a job running past midnight stops at the bottom of the day
     const w=`(100% - ${RAIL+6}px) / ${L.count}`;
     const title=String(ev.title||''), parts=title.split(/\s+[—–]\s+/), head=parts[0]||'Job';
     const nm=head.split(' · ')[0].trim()||'Job', po=head.split(' · ').slice(1).join(' · ').trim();
@@ -5743,7 +5756,7 @@ function dsTimeline_(day, evs, data, canAdd){
       onpointerdown="schedGrab(event,'${k}','${day}')" ontouchmove="schTouchClaim(event)" onclick="event.stopPropagation()">
       ${small?`<span class="tt">${esc(schedClock(ev))}</span><span class="tn">${schLookTag_(ev)}${esc(nm)}</span>`
       :`<div class="tt">${narrow?`<span>${esc(schedClock(ev))} – ${esc(schedClock({start:ev.end}))}</span>`:`<span>${esc(fmtTime(ev.start))} – ${esc(fmtTime(ev.end))}</span><span>${esc(dsHrs_(dur))}</span>`}</div>
-        ${schIsLook_(ev)&&!narrow?'<div class="tt" style="opacity:1">🔍 ESTIMATE VISIT</div>':''}
+        ${schEstLabel_(ev)&&!narrow?`<div class="tt" style="opacity:1">${esc(schEstLabel_(ev))}</div>`:''}
         <div class="tn">${narrow?schLookTag_(ev):''}${esc(nm)}${po&&!narrow?`<span class="tp">${esc(po)}</span>`:''}</div>
         ${narrow&&po?`<div class="ts" style="-webkit-line-clamp:1;font-weight:600">${esc(po)}</div>`:''}
         ${scope&&hgt>=(narrow?100:80)?`<div class="ts" style="-webkit-line-clamp:${narrow?1:2}">${esc(scope)}</div>`:''}
@@ -5781,19 +5794,29 @@ function schPickAt(day, t){
 function schPickStartDate_(){ const pk=S.schPick, p=pk.day.split('-'); const h=Math.floor(pk.t), m=Math.round((pk.t-h)*60);
   return new Date(Number(p[0]),Number(p[1])-1,Number(p[2]),h,m); }
 function schPickLen_(hrs){ if(!S.schPick) return; S.schPick.hours=hrs; schPickCheck_(); }
+function schPickTime_(v){ const pk=S.schPick, m=/^(\d{1,2}):(\d{2})$/.exec(String(v||'')); if(!pk||!m) return;
+  pk.t=Number(m[1])+Number(m[2])/60; schPickCheck_(); }
+/* who else is booked then, said the way Paul asked: who, and from when to when */
+function schAlsoHtml_(evs){ return evs.map(x=>{ const who=esc(String(x.title||'another booking').split(/\s+[—–]\s+/)[0]);
+  return `<div class="small" style="margin-top:4px">• ${schIsBlock_(x)?`<b>${who}</b>`:`with <b>${who}</b>`} from ${esc(fmtTime(x.start))} to ${esc(fmtTime(x.end))}</div>`; }).join(''); }
+function schOverlaps_(day, st, en, skipId){ return (schDayEvents(day)||[]).filter(e=>!e.allDay && String(e.id)!==String(skipId||'') && new Date(e.start)<en && new Date(e.end)>st); }
 function schPickCheck_(){
   const pk=S.schPick; if(!pk||!pk.day) return;
   const st=schPickStartDate_(), en=new Date(st.getTime()+pk.hours*3600000), sIso=st.toISOString(), eIso=en.toISOString();
-  const evs=(schDayEvents(pk.day)||[]).filter(e=>!e.allDay && new Date(e.start)<en && new Date(e.end)>st);
+  const known=!!schData(pk.day), evs=schOverlaps_(pk.day, st, en);
   const past=st.getTime()<Date.now()-60000;
   const lens=[[0.25,'15 min'],[0.5,'30 min'],[1,'1 h'],[2,'2 h']];
   sheet(`<div class="pickbar" style="margin:0 0 10px"><div><b>📅 ${esc(pk.who||'Booking')}</b> · ${esc(pk.what)}</div></div>
-    <h2 style="margin-bottom:2px">${esc(fmtDay(sIso))}</h2>
-    <p style="margin:0 0 8px;font-size:1.15rem"><b>${esc(fmtTime(sIso))} – ${esc(fmtTime(eIso))}</b></p>
+    <h2 style="margin-bottom:6px">${esc(fmtDay(sIso))}</h2>
+    <div class="row" style="align-items:center;gap:10px;margin:0 0 8px">
+      <div style="width:150px"><label style="margin-top:0">Starts</label><input id="pkTime" type="time" value="${esc(fmtHM(sIso))}" onchange="schPickTime_(this.value)"></div>
+      <div style="font-size:1.05rem;padding-top:18px">until <b>${esc(fmtTime(eIso))}</b></div>
+    </div>
     <label style="margin-top:0">How long?</label>
     <div class="blklen">${lens.map(([h,l])=>`<button type="button" class="${Math.abs(h-pk.hours)<1e-6?'on':''}" onclick="schPickLen_(${h})">${l}</button>`).join('')}</div>
-    ${evs.length?`<div class="banner" style="margin-top:10px;text-align:left;background:var(--needs-bg);color:var(--needs-ink)"><b>⚠️ You're also booked then:</b>
-        ${evs.map(x=>`<div class="small" style="margin-top:4px">• with <b>${esc(String(x.title||'').split(/\s+[—–]\s+/)[0])}</b> from ${esc(fmtTime(x.start))} to ${esc(fmtTime(x.end))}</div>`).join('')}
+    ${!known?'<div class="small muted" style="margin-top:10px">That month is not loaded here yet, so this could not be checked — the booking form checks it again.</div>'
+      :evs.length?`<div class="banner" style="margin-top:10px;text-align:left;background:var(--needs-bg);color:var(--needs-ink)"><b>⚠️ You're also booked then:</b>
+        ${schAlsoHtml_(evs)}
         <div class="small" style="margin-top:6px">You can still book it — both stay on the calendar.</div></div>`
       :'<div class="small" style="margin-top:10px;color:var(--good)">✓ Nothing else is booked then.</div>'}
     ${past?'<div class="small" style="margin-top:6px;color:var(--pending)">⚠️ That time has already passed.</div>':''}
@@ -5812,18 +5835,29 @@ function schPickUse_(){
 /* v166 - ADD A BLOCK (Paul, 24 Nov: "instead of add a call button, i want that to be add a block and that block
    can be different options; meetings, quoting, walk-through, phone calls, etc."). Time on the calendar that is
    not a job: pick what it is, the day, the start and how long, and who is on it. No job number, nobody emailed.
-   It shows teal on every view, drags like a job, and tapping it opens this same sheet to change or delete it.
+   It shows stone-grey on every view, drags like a job, and tapping it opens this same sheet to change or delete it.
    A customer phoning for a price still has the old lead call, one tap away at the bottom. Needs Code.gs v134. */
 let blkState=null;
+/* v169 - where a new block starts: the first free hour of the working day (from now, today), not 8:00 on top
+   of the first job. 8:00 when the day is full or not loaded - it is only a start, the box changes it. */
+function blkFirstFree_(day, minutes){
+  const now=new Date(), need=(minutes||60)/60;
+  let t=8;
+  if(day===localDateStr(now)) t=Math.max(t, Math.ceil((now.getHours()+now.getMinutes()/60+0.25)*2)/2);
+  const busy=(schDayEvents(day)||[]).filter(e=>!e.allDay).map(e=>[schHours(e), schHours(e)+schDur(e)]).sort((a,b)=>a[0]-b[0]);
+  for(const [a,b] of busy){ if(a-t>=need-1e-6) break; if(b>t) t=Math.ceil(b*2)/2; }
+  if(t+need>20) t = day===localDateStr(now) ? Math.min(t, 23.5) : 8;
+  const h=Math.floor(t), m=Math.round((t-h)*60);
+  return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+}
 function openBlockAdd(day){
   const now=new Date(), t=day||localDateStr(now);
-  let h=8, m=0;
-  if(t===localDateStr(now)){ const n=new Date(now.getTime()+15*60000); h=n.getHours(); m=n.getMinutes()<30?30:0; if(m===0) h++; if(h>20){ h=8; } }
-  blkState={ id:'', key:'meeting', label:'', note:'', day:t, time:String(h).padStart(2,'0')+':'+String(m).padStart(2,'0'),
+  blkState={ id:'', key:'meeting', label:'', note:'', day:t, time:blkFirstFree_(t, 60),
     minutes:60, emails:S.me&&S.me.email?[lc(S.me.email)]:[], location:'', del:false, fromDay:blkFrom_() };
   blkRender_();
 }
 function openBlockEdit(ev){
+  if(/^blk_local_/.test(String(ev.id))) return toast('Still saving that block — try again in a moment.');   // v169 - it has no office id yet
   const ty=blkTypeOf_(ev), s0=new Date(ev.start);
   if(!canApprove()){
     return sheet(`<h2>${esc(ev.title)}</h2>
@@ -5842,13 +5876,22 @@ function blkGrab_(){ const b=blkState; if(!b||!document.getElementById('blkNote'
   if(document.getElementById('blkLabel')) b.label=val('blkLabel');
   const hrs=Number(val('blkHrs')); if(hrs>0) b.minutes=Math.round(hrs*60);
   if(document.querySelector('.blk-emp')) b.emails=[...document.querySelectorAll('.blk-emp:checked')].map(x=>lc(x.value)); }   // the crew may not be listed yet
+function blkCrewHtml_(b){
+  const crew=(S.employees||[]).filter(e=>e.active!==false&&e.role!=='bookkeeper');
+  return crew.length?crew.map(e=>`<label class="chip" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px">
+        <input type="checkbox" class="blk-emp" value="${esc(e.email)}" ${b.emails.indexOf(lc(e.email))>=0?'checked':''} style="width:16px;height:16px;margin:0">${esc(e.name||e.email)}</label>`).join('')
+      :`<span class="small muted">${S.online?'<span class="spin"></span> Loading the crew…':'Just you.'}</span>`;
+}
 function blkType_(k){ blkGrab_(); blkState.key=k; blkRender_(); }
 function blkLen_(m){ blkGrab_(); blkState.minutes=m; blkRender_(); }
 function blkRender_(){
   const b=blkState; if(!b) return;
   const t=BLK_TYPES.find(x=>x[0]===b.key)||BLK_TYPES[0];
   const crew=(S.employees||[]).filter(e=>e.active!==false&&e.role!=='bookkeeper');
-  if(!crew.length && S.online && !b.empAsked){ b.empAsked=true; apiBg('listEmployees').then(r=>{ S.employees=(r&&r.employees)||[]; if(blkState===b&&document.getElementById('blkNote')){ blkGrab_(); blkRender_(); } }).catch(()=>{}); }
+  // v169 - when the crew list arrives only that part is filled in: redrawing the whole sheet took the
+  // keyboard away from whoever was typing the note
+  if(!crew.length && S.online && !b.empAsked){ b.empAsked=true; apiBg('listEmployees').then(r=>{ S.employees=(r&&r.employees)||[];
+    const box=document.getElementById('blkCrew'); if(blkState===b && box) box.innerHTML=blkCrewHtml_(b); }).catch(()=>{}); }
   const lens=[[15,'15 min'],[30,'30 min'],[60,'1 h'],[90,'1½ h'],[120,'2 h'],[180,'3 h'],[240,'4 h'],[480,'Full day']];
   sheet(`<h2>${b.id?'Edit block':'🧱 Add a block'}</h2>
     <p class="small muted" style="margin-top:-4px">Time on the calendar that isn't a job — no job number, nobody is emailed.</p>
@@ -5866,9 +5909,7 @@ function blkRender_(){
     <div class="row" style="align-items:center;gap:8px;margin-top:6px"><span class="small muted">or</span>
       <input id="blkHrs" type="number" step="0.25" min="0.25" max="24" style="width:110px" value="${lens.some(x=>x[0]===b.minutes)?'':(b.minutes/60)}" placeholder="hours"><span class="small muted">hours</span></div>
     <label>Who's on it</label>
-    <div>${crew.length?crew.map(e=>`<label class="chip" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px">
-        <input type="checkbox" class="blk-emp" value="${esc(e.email)}" ${b.emails.indexOf(lc(e.email))>=0?'checked':''} style="width:16px;height:16px;margin:0">${esc(e.name||e.email)}</label>`).join('')
-      :`<span class="small muted">${S.online?'<span class="spin"></span> Loading the crew…':'Just you.'}</span>`}</div>
+    <div id="blkCrew">${blkCrewHtml_(b)}</div>
     <label>Where <span class="muted">(optional)</span></label><input id="blkWhere" value="${esc(b.location)}" placeholder="Address or place">
     <div class="small muted" id="blkSum" style="margin-top:8px"></div>
     <button id="blkGo" style="width:100%;margin-top:12px" onclick="blkSave_()">${b.id?'Save changes':'Put it on the calendar'}</button>
@@ -5880,13 +5921,15 @@ function blkRender_(){
 }
 /* opened from a tapped day: going back lands on that day again, not on the bare calendar */
 function blkFrom_(){ return (S._sheet&&S._sheet.querySelector('.tl'))?S._dsDay:''; }
-function blkDone_(){ const d=blkState&&blkState.fromDay; if(d) openSchedDay(d); else closeSheet(); }
+function blkDone_(){ const d=blkState&&blkState.fromDay, was=S._sheet; if(d) openSchedDay(d); if(!d || S._sheet===was) closeSheet(); }   // v169 - closes even when the day cannot be drawn
 function blkWhen_(){ const b=blkState; const s=new Date(b.day+'T'+b.time); return isNaN(s)?null:s; }
 function blkSumShow_(){
   const box=document.getElementById('blkSum'), b=blkState; if(!box||!b) return;
   const s=blkWhen_(); if(!s){ box.textContent='Pick a day and a start time.'; return; }
   const e=new Date(s.getTime()+b.minutes*60000);
-  box.innerHTML=`${esc(schedDayLabel(b.day))} · <b>${esc(fmtTime(s.toISOString()))} – ${esc(fmtTime(e.toISOString()))}</b>`;
+  const also=schOverlaps_(b.day, s, e, b.id);   // v169 - the same "who and when" as a booking
+  box.innerHTML=`${esc(schedDayLabel(b.day))} · <b>${esc(fmtTime(s.toISOString()))} – ${esc(fmtTime(e.toISOString()))}</b>`+
+    (also.length?`<div style="margin-top:6px;color:var(--needs-ink)"><b>⚠️ You're also booked then:</b>${schAlsoHtml_(also)}<div class="small" style="margin-top:4px">It can still go on — both stay on the calendar.</div></div>`:'');
 }
 function blkTitle_(b){ const t=BLK_TYPES.find(x=>x[0]===b.key)||BLK_TYPES[0], lbl=b.key==='other'?(String(b.label||'').trim()||'Other'):t[2];
   const n=String(b.note||'').trim().split('\n')[0].slice(0,80); return {lbl, title:t[1]+' '+lbl+(n?' — '+n:'')}; }
@@ -5930,7 +5973,7 @@ async function blkDelete_(btn){
   if(!S.online) return toast('You need signal to change the calendar.');
   const prev=Object.assign({}, schFindEv(b.id)||{});
   blkDone_(); schDropEv_(b.id, true); blkRepaint_(); toast('Block deleted', 3000);
-  try{ await api('blockDelete',{eventId:b.id}); }
+  try{ await api('blockDelete',{eventId:b.id}); schLocalNote_(String(b.id),{gone:true}); }   // v169 - counted from the office's yes
   catch(e){ if(S._schLocal) delete S._schLocal[String(b.id)]; if(prev.id) schPut_(prev); blkRepaint_(); toast('Block NOT deleted — put back. '+e.message, 9000); }
 }
 /* Time off: crew request + track; admins approve/deny right here. */
@@ -6168,7 +6211,8 @@ async function openSchedDetail(k){
           : '<p class="muted small">Just you so far.</p>')}`;
   const shell=(mid)=>`<h2>${esc(ev.title)}</h2>
     <p class="small muted" style="margin-top:-4px">${esc(when)}</p>
-    ${schIsLook_(ev)?`<div class="banner" style="background:${SCH_TONE.look.bg};color:${SCH_TONE.look.ink};border:1px solid ${SCH_TONE.look.bd}">🔍 <b>Estimate visit</b> — going to look at the job before it is priced. No job number yet.</div>`:''}
+    ${schIsLook_(ev)?`<div class="banner" style="background:${SCH_TONE.look.bg};color:${SCH_TONE.look.ink};border:1px solid ${SCH_TONE.look.bd}">🔍 <b>Estimate visit</b> — going to look at the job before it is priced. No job number yet.</div>`
+      :schIsEstPhone_(ev)?`<div class="banner" style="background:${SCH_TONE.look.bg};color:${SCH_TONE.look.ink};border:1px solid ${SCH_TONE.look.bd}">📞 <b>Estimate call, by phone</b> — no trip out. No job number yet.</div>`:''}
     ${ev.location?`<p class="small">📍 <a href="https://maps.google.com/?q=${encodeURIComponent(ev.location)}" target="_blank" style="color:var(--accent2)">${esc(ev.location)}</a></p>`:''}
     ${(d.canAssign&&!ev.allDay)?schStatusHtml(k, ev):''}
     ${mid}
@@ -7358,7 +7402,7 @@ window.addEventListener('popstate', (ev)=>{
   }
   if(S._sheet){ S._sheet.remove(); S._sheet=null; navReset_(); if(camStream) camStop(); return; } // Back closes the open popup (and the camera with it)
   const st=ev.state||{};
-  if(st.tab && st.tab!==S.tab){ S.tab=st.tab; render(); }   // Back = previous tab
+  if(st.tab && st.tab!==S.tab){ if(st.tab!=='sched') S.schPick=null; S.tab=st.tab; render(); }   // Back = previous tab (v169 - and it ends picking a time on the Calendar)
 });
 
 /* Speech-to-text into any field: uses the browser's built-in recognition where available
@@ -10655,9 +10699,11 @@ function requestsView(){
       ${enquiryBtn(q)}
       <div class="row" style="margin-top:6px">
         <button class="grow secondary" onclick="openReqMove(${i})">📅 Move it</button>
-        <button class="secondary" onclick="openReqUnbook(${i})">↩︎ Unbook</button>
-        ${q.confirm==='waiting'?`<button class="ghost" onclick="reqRenotify(${i})">Ask again</button>`:(!q.confirm||q.confirm==='none')?`<button class="ghost" onclick="reqRenotify(${i})">📧 Email customer</button>`:''}
-        <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>
+        <button class="grow secondary" onclick="openReqUnbook(${i})">↩︎ Unbook</button>
+      </div>
+      <div class="row" style="margin-top:6px">${/* v169 - two rows: four buttons on one line wrapped to three lines each on a phone */''}
+        ${q.confirm==='waiting'?`<button class="ghost grow" onclick="reqRenotify(${i})">Ask again</button>`:(!q.confirm||q.confirm==='none')?`<button class="ghost grow" onclick="reqRenotify(${i})">📧 Email customer</button>`:''}
+        <button class="danger${(q.confirm==='waiting'||!q.confirm||q.confirm==='none')?' grow':''}" onclick="openReqCancel(${i})">Cancel job</button>
       </div></div>
     </div>`; }).join('');
   return `${approvalsHtml()}${neoCardHtml()}${collateralCardHtml()}${callsCardHtml()}<h2>📨 Requests</h2>
@@ -11549,7 +11595,7 @@ function dpVerdictHtml(jobs,other){
   const all=jobs.concat(other);
   if(all.length) return pastHtml+`<div class="banner" style="margin-top:8px;text-align:left;background:var(--needs-bg);color:var(--needs-ink)">
     <b>⚠️ You're also booked then:</b>
-    ${all.map(x=>`<div class="small" style="margin-top:4px">• with <b>${esc(String(x.title||'another booking').split(/\s+[—–]\s+/)[0])}</b> from ${esc(fmtTime(x.start))} to ${esc(fmtTime(x.end))}</div>`).join('')}
+    ${all.map(x=>`<div class="small" style="margin-top:4px">• ${/^\s*Block \(/.test(String(x.detail||''))?'':'with '}<b>${esc(String(x.title||'another booking').split(/\s+[—–]\s+/)[0])}</b> from ${esc(fmtTime(x.start))} to ${esc(fmtTime(x.end))}</div>`).join('')}
     <div class="small" style="margin-top:6px">Both stay on the calendar — nothing is moved. ${jobs.length?'Fine when you have the crew for both.':''}</div>
   </div>`;
   return pastHtml+(past?'':'<div class="small" style="margin-top:8px;color:var(--good)">✓ That slot is free.</div>');
@@ -11996,6 +12042,7 @@ function amPickTime(){
       const r=await api('requestAddManual',{ kind:a.kind, po:a.po||'', customer:a.customer, phone:a.phone,
         email:a.email, address:a.address, scope:a.scope, company:a.company, hours:hours,
         start:start, bump:false, emergency:!!a.emergency, allowPast:true,
+        byPhone:a.kind==='call'&&!a.estMode,   // v169 - "Schedule a phone call" is a call, not a visit to look
         notifyCustomer:a.notifyCustomer!==false, poType:a.poType||'', fromPo:a.fromPo||'' },{timeout:120000});
       amState=null; bookFlag(r);
       if(a.kind==='call') loadEstimates();          // v115 - the visit shows under Visit booked
@@ -12051,6 +12098,8 @@ function openReqScheduleForm(i, src, pickStart, pickHours, pickBump){
   const t=`${pad(sug.getHours()||9)}:${pad(sug.getMinutes())}`;
   const crew=(S.employees||[]).filter(e=>e.active);
   const isAppt = src!=='estLead';
+  // v169 - the visit length chosen on the calendar (v168) used to be dropped here: the form always opened on 30 min
+  const cm0 = (!isAppt && pickHours && [15,30,60,120].indexOf(Math.round(pickHours*60))>=0) ? Math.round(pickHours*60) : 30;
   sheet(`<h2>${esc(q.customer||'Schedule')}</h2>
     <p class="small muted" style="margin-top:-4px">${q.address?esc(q.address):''}</p>
     ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
@@ -12060,9 +12109,9 @@ function openReqScheduleForm(i, src, pickStart, pickHours, pickBump){
     <div id="rqCallRow" style="${isAppt?'display:none':''}">
       <label>How long is the visit?</label>
       <div class="seg" id="rqCallSeg" style="margin-bottom:6px">
-        ${[[15,'15 min'],[30,'30 min'],[60,'1 h'],[120,'2 h']].map(([m,t])=>`<button type="button" data-m="${m}" class="${m===30?'on':''}" onclick="reqSetCall(${m})">${t}</button>`).join('')}
+        ${[[15,'15 min'],[30,'30 min'],[60,'1 h'],[120,'2 h']].map(([m,t])=>`<button type="button" data-m="${m}" class="${m===cm0?'on':''}" onclick="reqSetCall(${m})">${t}</button>`).join('')}
       </div>
-      <input type="hidden" id="rqCallMin" value="30">
+      <input type="hidden" id="rqCallMin" value="${cm0}">
     </div>
     <label>How long is the job? (hours — the AI guessed ${q.hours} with ${(q.crew||1)>1?((q.crew||1)+' people'):'you on your own'})</label>
     <input id="rqHours" type="number" step="0.25" min="0.25" value="${(isAppt&&pickHours)||q.hours||1}" oninput="reqSlotsSoon()">
@@ -12133,10 +12182,10 @@ function reqWhyText_(r, at, mins){
   const c=r&&r.atClash;
   if(c&&c.start&&c.end){
     const sameDay=localDateStr(new Date(c.start))===localDateStr(at);
-    return when+": you're also booked with "+String(c.title||'another booking')+' from '+(sameDay?'':fmtDay(c.start)+' ')+fmtTime(c.start)+' to '+fmtTime(c.end);
+    return when+(c.block?': you also have ':": you're also booked with ")+String(c.title||'another booking')+' from '+(sameDay?'':fmtDay(c.start)+' ')+fmtTime(c.start)+' to '+fmtTime(c.end);
   }
   const why=String((r&&r.atWhy)||'it does not fit');
-  return when+': '+why.replace(/^you are /,"you're ");
+  return when+': '+why.replace(/^you are /,"you're ");   // an older office, or a reason that is not a clash (a weekend, lunch, the day is over)
 }
 function reqPickSlot(k, quiet){
   const x=(S._rqSlots||[])[k]; if(!x) return;
@@ -12500,6 +12549,7 @@ async function reqUnbook(i){
   try{
     await api('requestUnschedule',{id, eventId:evId, manual:true},{timeout:90000});
     if(evId) schLocalNote_(evId,{gone:true});      // the office has it gone: a read already on its way must not bring it back
+    else if(S.sched || S.schedMonths) schedRefreshAll();   // v169 - no id on the card to take off by: read the calendar again
     loadRequests().catch(()=>{});
   }catch(e){
     S.reqBooked=snap.booked; S.requests=snap.reqs; S.pendingRequests=S.requests.length;
