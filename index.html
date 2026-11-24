@@ -468,6 +468,12 @@
   .tl .gap{position:absolute; box-sizing:border-box; border:1.5px dashed #cbd5e1; border-radius:12px; display:flex; align-items:center;
     justify-content:center; font-size:.76rem; color:var(--muted); cursor:pointer; background:repeating-linear-gradient(135deg,transparent 0 8px,rgba(148,163,184,.08) 8px 16px)}
   .tl .gap b{color:var(--accent2); margin-left:4px}
+  .tl .hr, .tl .hl, .tl .now{pointer-events:none}
+  .tl .dsc{position:absolute; border-radius:8px}
+  .tl .dsc.drop{background:#dbeafe; outline:2px dashed var(--accent2); outline-offset:-2px; z-index:1}
+  .tl .tb{touch-action:auto; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; z-index:2}
+  .tl .tb.ghosted{opacity:.35}
+  .tl .gap{z-index:1}
   .tl .now{position:absolute; left:40px; right:0; border-top:2px solid #ef4444; z-index:3}
   .tl .now::before{content:''; position:absolute; left:-5px; top:-6px; width:10px; height:10px; border-radius:50%; background:#ef4444}
   .dall{border-radius:12px; padding:8px 11px; border:1px solid; border-left-width:5px; margin-bottom:6px; cursor:pointer; font-weight:700; font-size:.88rem}
@@ -4828,11 +4834,20 @@ const SCH_TONE={
   waiting:  {bg:'#fff7e6',bd:'#d97706',ink:'#7c2d12',label:'Not confirmed yet'},
   declined: {bg:'#fef2f2',bd:'#dc2626',ink:'#991b1b',label:'Needs a new time'},
   cancelled:{bg:'#f1f5f9',bd:'#94a3b8',ink:'#475569',label:'Cancelled'},
-  none:     {bg:'#e6f1fb',bd:'#2E75B6',ink:'#0C447C',label:'Booked'}};
+  none:     {bg:'#e6f1fb',bd:'#2E75B6',ink:'#0C447C',label:'Booked'},
+  look:     {bg:'#f3e8ff',bd:'#9333ea',ink:'#581c87',label:'Estimate visit — going to look'}};   // v165
 /* v104 - a booking the customer was never asked about (a return visit, something put straight on
  * the calendar) is BLUE, "Booked": amber means somebody is waiting on an answer, and a calendar
  * that is amber everywhere says nothing. Paul's own rule: blue = next step, orange = needs you. */
-function schTone(ev){ return SCH_TONE[ev&&ev.confirm]||SCH_TONE.none; }
+function schTone(ev){
+  // v165 - a visit to LOOK at a job for an estimate is purple, whatever else it is, unless it needs a new time
+  if(schIsLook_(ev) && ['declined','cancelled'].indexOf(ev.confirm)<0) return SCH_TONE.look;
+  return SCH_TONE[ev&&ev.confirm]||SCH_TONE.none; }
+/* v165 - Paul, 24 Nov: "some sort of color or indicator for times that i would need to go on my own to look
+   at a job for an estimate". The office writes every visit to look as "Estimate call (30 min) - job not
+   booked yet." at the top of the calendar notes (requestSchedule_, ESTIMATE); a booked job never starts so. */
+function schIsLook_(ev){ return !!ev && /^\s*Estimate call \(/.test(String(ev.desc||'')); }
+function schLookTag_(ev){ return schIsLook_(ev)?'🔍 ':''; }
 function schDate(s){ const p=String(s).split('-'); return new Date(Number(p[0]),Number(p[1])-1,Number(p[2])); }
 function schAdd(s,n){ const d=schDate(s); d.setDate(d.getDate()+n); return localDateStr(d); }
 function schAnchor(){ return S.schedDay || localDateStr(new Date()); }
@@ -4888,7 +4903,7 @@ function schLegend(data){
   return `<p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
     ?'Tap a job for its details · drag it to another day or time (on a phone: press and hold first)'
     :'Tap a job for the address, the details and who\'s with you'}<br>
-    ${sw(SCH_TONE.none)}booked &nbsp; ${sw(SCH_TONE.confirmed)}confirmed &nbsp; ${sw(SCH_TONE.waiting)}not confirmed yet &nbsp; ${sw(SCH_TONE.declined)}needs a new time</p>`;
+    ${sw(SCH_TONE.none)}booked &nbsp; ${sw(SCH_TONE.confirmed)}confirmed &nbsp; ${sw(SCH_TONE.waiting)}not confirmed yet &nbsp; ${sw(SCH_TONE.declined)}needs a new time &nbsp; ${sw(SCH_TONE.look)}🔍 estimate visit</p>`;
 }
 function schGrid(days, o){
   const hh=o.hh, canDrag=!!o.canDrag;
@@ -4918,7 +4933,7 @@ function schGrid(days, o){
       const scope=String(ev.title||'').split(/\s+[—–-]\s+/).slice(1).join(' – ');
       return `<div class="blk${(ev.assigned||[]).length?'':' un'}${schIsDragged(ev)?' ghosted':''}" data-ek="${k}" role="button" tabindex="0" aria-label="${esc(schedName(ev))}, ${esc(fmtTime(ev.start))}" style="top:${(s-h0)*hh+1}px;height:${Math.max(hh/2,dur*hh)-3}px;left:calc(${L.lane*w}% + 2px);width:calc(${w}% - 4px);background:${t.bg};border-color:${t.bd};color:${t.ink}"
         onpointerdown="schedGrab(event,'${k}','${d}')" ontouchmove="schTouchClaim(event)" onclick="event.stopPropagation()">
-        <div class="bt"><b>${esc(schedName(ev))}</b>${L.count>1?`<span class="bn" aria-label="job ${L.lane+1} of ${L.count} at this time">${L.lane+1}</span>`:''}</div>
+        <div class="bt"><b>${schLookTag_(ev)}${esc(schedName(ev))}</b>${L.count>1?`<span class="bn" aria-label="job ${L.lane+1} of ${L.count} at this time">${L.lane+1}</span>`:''}</div>
         <div class="bs">${esc(fmtTime(ev.start))} – ${esc(fmtTime(ev.end))}</div>
         ${o.wide&&scope?`<div class="bs">${esc(scope)}</div>`:''}
         ${(ev.assigned||[]).length?`<div class="bc">${o.wide?`<span class="bs">${ev.assigned.map(a=>esc(a.name)).join(', ')}</span>`:schCrew(ev)}</div>`:''}
@@ -5099,19 +5114,19 @@ async function schMoveTo(evOrKey, day, t){
   const id=ev.id, name=schedName(ev);
   const prev={start:ev.start, end:ev.end, confirm:ev.confirm||'none'};
   schApply(id,{start:ns.toISOString(), end:new Date(ns.getTime()+dur).toISOString(), confirm:'waiting'});
-  render();
+  render(); dsRepaint_();
   try{
     const r=await api('scheduleMove',{eventId:id, start:ns.toISOString()},{timeout:90000});
-    schApply(id,{start:r.start, end:r.end, confirm:r.confirm||'waiting'}); S.schedYears={}; render();
+    schApply(id,{start:r.start, end:r.end, confirm:r.confirm||'waiting'}); S.schedYears={}; render(); dsRepaint_();
     schUndoToast(`${name.split(' · ')[0]} moved to ${schWhen(r.start)}${schFlagText(id, r.start, r.end)}`, ()=>schUndoMove(id, prev, name));
     if(S.online){ loadSched(); loadRequests(); }   // the Requests tab shows the booked time too
   }catch(e){
-    schApply(id,prev); render();
+    schApply(id,prev); render(); dsRepaint_();
     toast(/unknown action/i.test(e.message)?'The office needs the latest script (v92) before jobs can be dragged.':e.message, 8000);
   }
 }
 async function schUndoMove(id, prev, name){
-  schApply(id,prev); render();
+  schApply(id,prev); render(); dsRepaint_();
   try{ await api('scheduleMove',{eventId:id, start:prev.start, confirm:prev.confirm},{timeout:90000});
        S.schedYears={}; toast(`${name} is back at ${schWhen(prev.start)}.`); if(S.online){ loadSched(); loadRequests(); } }
   catch(e){ toast('Could not put it back: '+e.message, 8000); schRefreshQuiet(); }
@@ -5209,7 +5224,7 @@ function schMoveDateGo(k){
   schMoveTo(ev, day, t);
 }
 function schStatusHtml(k, ev){
-  const t=schTone(ev), c=ev.confirm||'none';
+  const c=ev.confirm||'none', t=SCH_TONE[c]||SCH_TONE.none;
   if(ev.recurring) return `<div style="margin:10px 0 4px"><span class="pill" style="background:${t.bg};border:1px solid ${t.bd};color:${t.ink};font-weight:700">${esc(t.label)}</span></div>
     <p class="small muted" style="margin:6px 0 0">This is a repeating event. Move it or change it in Google Calendar.</p>`;
   return `<div style="margin:10px 0 4px">
@@ -5313,7 +5328,7 @@ function schedClock(ev){
 function schedMini(ev){ const t=schedClock(ev); return ev.allDay?schedName(ev):(t?t+' ':'')+schedName(ev); }
 function schedChip(ev){
   const t=schedClock(ev);
-  return `${t&&!ev.allDay?`<span class="t">${esc(t)}</span>`:''}<span class="n">${esc(schedName(ev))}</span>`;
+  return `${t&&!ev.allDay?`<span class="t">${esc(t)}</span>`:''}<span class="n">${schLookTag_(ev)}${esc(schedName(ev))}</span>`;
 }
 /* ---- DRAGGING A JOB ONTO ANOTHER DAY (v95) ------------------------------------------------
  * Paul, 3 Nov: "I would like to be able to click on it and drag it to another date to make it
@@ -5347,7 +5362,7 @@ function schedGrab(e, key, day){
   // where its top edge would be.
   SD_.off=0;
   try{
-    if(ev && !ev.allDay && el.classList && el.classList.contains('blk')){
+    if(ev && !ev.allDay && el.classList && (el.classList.contains('blk')||el.classList.contains('tb'))){
       const under=(document.elementsFromPoint?document.elementsFromPoint(e.clientX,e.clientY):[]).find(x=>x.getAttribute&&x.getAttribute('data-drop')&&x.getAttribute('data-t')!==null);
       if(under){ const o=Number(under.getAttribute('data-t'))-Math.floor(schHours(ev)*2)/2; if(o>0 && o<24) SD_.off=o; }
     }
@@ -5410,7 +5425,7 @@ function schHit(){
   // the menu bar, the page header or a pop-up lying over the calendar still stops a drop, as it always
   // did (v148 looked through those too, onto a slot nobody could see).
   const stack=(document.elementsFromPoint?document.elementsFromPoint(SD_.lx, SD_.ly):[document.elementFromPoint(SD_.lx, SD_.ly)]).filter(Boolean);
-  const top=stack.find(x=>!(x.closest&&x.closest('.blk,.ev')))||null;
+  const top=stack.find(x=>!(x.closest&&x.closest('.blk,.ev,.tl .tb,.tl .gap')))||null;   // v165 - the day sheet's blocks and open gaps too
   // Parked over ‹ or ›: turn the page now and then every second while it stays there.
   const fz=top&&top.closest?top.closest('[data-flip]'):null;
   const dir=fz?Number(fz.getAttribute('data-flip')):0;
@@ -5446,6 +5461,8 @@ function schHit(){
  * finger is on a page-turn arrow. */
 function schEdge(){
   if(!SD_||!SD_.on) return;
+  const pan=SD_.el&&SD_.el.closest&&SD_.el.closest('.sheet .panel');   // v165 - a drag on the day sheet scrolls the sheet
+  if(pan) return schEdgePanel_(pan);
   let vy=0, hx=0;
   if(!SD_.flipDir){
     const topZ=70, botZ=innerHeight-(innerWidth<900?76:0)-70;
@@ -5466,6 +5483,18 @@ function schEdge(){
     if(wrap){ const r=wrap.getBoundingClientRect();
       if(SD_.ly>=r.top && SD_.ly<=r.bottom && (SD_.lx<r.left+32 || SD_.lx>r.right-32)){ const b=wrap.scrollLeft; wrap.scrollLeft+=(SD_.lx<r.left+32?-12:12); moved=moved||wrap.scrollLeft!==b; } }
     if(!moved){ clearInterval(SD_.scrollT); SD_.scrollT=null; return; }   // at the end: stop, so the hit test rests
+    schHit();
+  }, 40);
+}
+function schEdgePanel_(pan){
+  const r=pan.getBoundingClientRect(), z=60, dir=SD_.ly<r.top+z?-1:(SD_.ly>r.bottom-z?1:0);
+  if(!dir){ if(SD_.scrollT){ clearInterval(SD_.scrollT); SD_.scrollT=null; } return; }
+  if(SD_.scrollT) return;
+  SD_.scrollT=setInterval(()=>{
+    if(!SD_||!SD_.on) return;
+    const rr=pan.getBoundingClientRect(), d=SD_.ly<rr.top+z?-1:(SD_.ly>rr.bottom-z?1:0), b=pan.scrollTop;
+    if(d) pan.scrollTop+=d*12;
+    if(!d || pan.scrollTop===b){ clearInterval(SD_.scrollT); SD_.scrollT=null; return; }
     schHit();
   }, 40);
 }
@@ -5592,7 +5621,7 @@ function schedMonthHtml(){
     </div>
     <div class="cal" ontouchmove="schTouchClaim(event)">${cells}</div>
     <p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
-      ? 'Tap a job to open it, or <b>drag it onto another day</b> (on a phone: press and hold first) · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · dashed = nobody assigned · a name on a yellow tag = that person is off'
+      ? 'Tap a job to open it, or <b>drag it onto another day</b> (on a phone: press and hold first) · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · purple 🔍 = estimate visit (going to look) · dashed = nobody assigned · a name on a yellow tag = that person is off'
       : 'Your jobs this month · your name on a yellow tag = your time off · a yellow day = stat holiday · tap a day to see where you\'re heading'}</p>
   </div>`;
 }
@@ -5608,23 +5637,32 @@ function openSchedDay(day){
   const hrs=timed.reduce((t,e)=>t+schDur(e),0), crew={};
   timed.forEach(e=>(e.assigned||[]).forEach(a=>crew[a.name]=1));
   const canAdd=canApprove() && day>=localDateStr(new Date());
-  const sum = timed.length ? [ `${timed.length} job${timed.length>1?'s':''}`, `${dsHrs_(hrs)} booked`,
+  const nLook=timed.filter(schIsLook_).length, nJob=timed.length-nLook;   // v165
+  const sum = timed.length ? [ nJob?`${nJob} job${nJob>1?'s':''}`:'', nLook?`🔍 ${nLook} estimate visit${nLook>1?'s':''}`:'', `${dsHrs_(hrs)} booked`,
       `${fmtTime(timed[0].start)} – ${fmtTime(timed.reduce((m,e)=>e.end>m?e.end:m, timed[0].end))}` ]
       .concat(Object.keys(crew).length?[`👷 ${Object.keys(crew).length} on the crew`]:[]) : [];
   sheet(`<h2 style="margin-bottom:4px">${esc(label)}</h2>
-    ${sum.length?`<div class="dsum">${sum.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}
+    ${sum.length?`<div class="dsum">${sum.filter(Boolean).map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}
     ${hols.map(h=>`<div class="banner" style="background:#fef9c3;color:#854d0e;border:1px solid #fde68a">🎉 ${esc(h.name)} — stat holiday</div>`).join('')}
     ${offs.length?`<div>${offs.map(t=>`<span class="doff">🏖 ${esc(data.canAssign?t.name:'You')} ${data.canAssign?'off':'are off'}${t.reason&&data.canAssign?` · <span style="font-weight:500">${esc(t.reason)}</span>`:''}</span>`).join('')}</div>`:''}
     ${allDay.map(ev=>{ const tn=schTone(ev); return `<div class="dall" style="background:${tn.bg};color:${tn.ink};border-color:${tn.bd}" onclick="openSchedDetail('${reg(ev)}')">All day · ${esc(schedName(ev))}</div>`; }).join('')}
     ${timed.length||canAdd ? dsTimeline_(day, timed, data, canAdd)
       : `<p class="muted small">${data.canAssign?'Nothing on the calendar this day.':'Nothing scheduled for you this day.'}</p>`}
-    ${timed.length?`<p class="small muted" style="margin:6px 0 0">${['none','confirmed','waiting','declined'].map(k=>`<span class="sw" style="background:${SCH_TONE[k].bg};border-color:${SCH_TONE[k].bd}"></span>${esc(SCH_TONE[k].label.toLowerCase())}`).join(' &nbsp; ')}</p>`:''}
+    ${timed.length?`<p class="small muted" style="margin:6px 0 0">${['none','confirmed','waiting','declined','look'].map(k=>`<span class="sw" style="background:${SCH_TONE[k].bg};border-color:${SCH_TONE[k].bd}"></span>${esc(SCH_TONE[k].label.toLowerCase())}`).join(' &nbsp; ')}</p>`:''}
     ${canAdd?`<div class="row" style="margin-top:12px">
       <button class="grow" onclick="openAddManual('job',false,'${day}')">⚡ Add a job this day</button>
       <button class="secondary grow" onclick="openAddManual('call',false,'${day}')">📞 Add a call</button>
     </div>`:''}
     <button class="secondary" style="width:100%;margin-top:10px" onclick="closeSheet()">Close</button>`);
-  const nowEl=document.querySelector('.tl .now'); if(nowEl) try{ nowEl.scrollIntoView({block:'center'}); }catch(e){}
+  S._dsDay=day;
+  const nowEl=document.querySelector('.tl .now'); if(nowEl && !S._dsKeep) try{ nowEl.scrollIntoView({block:'center'}); }catch(e){}
+}
+/* v165 - after a drag on the day sheet (or its Undo) the sheet is drawn again where it was scrolled to */
+function dsRepaint_(){
+  if(!S._dsDay || !S._sheet || !S._sheet.querySelector('.tl')) return;
+  const pan=S._sheet.querySelector('.panel'), st=pan?pan.scrollTop:0;
+  S._dsKeep=true; try{ openSchedDay(S._dsDay); } finally{ S._dsKeep=false; }
+  const p2=S._sheet&&S._sheet.querySelector('.panel'); if(p2) p2.scrollTop=st;
 }
 function dsHrs_(h){ const r=Math.round(h*4)/4; return (r%1?r.toFixed(r*4%2?2:1).replace(/0$/,''):String(r))+' h'; }
 /* v164 - the day as a timeline: an hour rail, each job a block as tall as it is long, side by side when two
@@ -5650,9 +5688,12 @@ function dsTimeline_(day, evs, data, canAdd){
       const lbl=d=>{ const hh=Math.floor(d), mm=Math.round((d-hh)*60); return (hh%12||12)+(mm?':'+String(mm).padStart(2,'0'):'')+(hh<12?' AM':' PM'); };
       out+=`<div class="gap" style="top:${y(a)+3}px;height:${(b-a)*HH-6}px;left:${RAIL+4}px;right:2px" onclick="openAddManual('job',false,'${day}')">Open ${lbl(a)} – ${lbl(b)}<b>＋ Book</b></div>`; });
   }
+  // v165 - a half-hour target under each line: a block is dragged onto a new time on this day
+  // (the same press-and-hold drag and Undo bar as the Week and Day views)
+  for(let t=h0; t<h1; t+=0.5) out+=`<div class="dsc" data-drop="1" data-day="${day}" data-t="${t}" style="top:${y(t)}px;height:${HH/2}px;left:${RAIL}px;right:0"></div>`;
   const lanes=schLanes(evs);
   evs.forEach(ev=>{
-    const L=lanes[ev.id]||{lane:0,count:1}, tn=schTone(ev), dur=schDur(ev), hgt=Math.max(26, dur*HH-4);
+    const L=lanes[ev.id]||{lane:0,count:1}, tn=schTone(ev), dur=schDur(ev), hgt=Math.max(26, dur*HH-4), k=reg(ev);
     const w=`(100% - ${RAIL+6}px) / ${L.count}`;
     const title=String(ev.title||''), parts=title.split(/\s+[—–]\s+/), head=parts[0]||'Job';
     const nm=head.split(' · ')[0].trim()||'Job', po=head.split(' · ').slice(1).join(' · ').trim();
@@ -5660,10 +5701,12 @@ function dsTimeline_(day, evs, data, canAdd){
     const un=data.canAssign && !(ev.assigned||[]).length, small=hgt<54, narrow=L.count>1 && window.innerWidth<700;
     const crew=(ev.assigned||[]).length?schCrew(ev)+(narrow&&ev.assigned.length>1?'':`<span style="margin-left:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ev.assigned.map(a=>String(a.name||'').split(/\s+/)[0]).join(', '))}</span>`)
       :(data.canAssign?'<span style="color:#b45309;font-weight:700">⚠ nobody assigned</span>':'');
-    out+=`<div class="tb${un?' un':''}${small?' sm':''}" style="top:${y(schHours(ev))+2}px;height:${hgt}px;left:calc(${RAIL+4}px + ${w} * ${L.lane});width:calc(${w} - 4px);background:${tn.bg};color:${tn.ink};border-color:${tn.bd}" onclick="openSchedDetail('${reg(ev)}')">
-      ${small?`<span class="tt">${esc(schedClock(ev))}</span><span class="tn">${esc(nm)}</span>`
+    out+=`<div class="tb${un?' un':''}${small?' sm':''}" style="top:${y(schHours(ev))+2}px;height:${hgt}px;left:calc(${RAIL+4}px + ${w} * ${L.lane});width:calc(${w} - 4px);background:${tn.bg};color:${tn.ink};border-color:${tn.bd}" data-ek="${k}"
+      onpointerdown="schedGrab(event,'${k}','${day}')" ontouchmove="schTouchClaim(event)" onclick="event.stopPropagation()">
+      ${small?`<span class="tt">${esc(schedClock(ev))}</span><span class="tn">${schLookTag_(ev)}${esc(nm)}</span>`
       :`<div class="tt">${narrow?`<span>${esc(schedClock(ev))} – ${esc(schedClock({start:ev.end}))}</span>`:`<span>${esc(fmtTime(ev.start))} – ${esc(fmtTime(ev.end))}</span><span>${esc(dsHrs_(dur))}</span>`}</div>
-        <div class="tn">${esc(nm)}${po&&!narrow?`<span class="tp">${esc(po)}</span>`:''}</div>
+        ${schIsLook_(ev)&&!narrow?'<div class="tt" style="opacity:1">🔍 ESTIMATE VISIT</div>':''}
+        <div class="tn">${narrow?schLookTag_(ev):''}${esc(nm)}${po&&!narrow?`<span class="tp">${esc(po)}</span>`:''}</div>
         ${narrow&&po?`<div class="ts" style="-webkit-line-clamp:1;font-weight:600">${esc(po)}</div>`:''}
         ${scope&&hgt>=(narrow?100:80)?`<div class="ts" style="-webkit-line-clamp:${narrow?1:2}">${esc(scope)}</div>`:''}
         ${ev.location&&hgt>=(narrow?150:110)?`<div class="ts" style="-webkit-line-clamp:1">📍 ${esc(ev.location)}</div>`:''}
@@ -5908,6 +5951,7 @@ async function openSchedDetail(k){
           : '<p class="muted small">Just you so far.</p>')}`;
   const shell=(mid)=>`<h2>${esc(ev.title)}</h2>
     <p class="small muted" style="margin-top:-4px">${esc(when)}</p>
+    ${schIsLook_(ev)?`<div class="banner" style="background:${SCH_TONE.look.bg};color:${SCH_TONE.look.ink};border:1px solid ${SCH_TONE.look.bd}">🔍 <b>Estimate visit</b> — going to look at the job before it is priced. No job number yet.</div>`:''}
     ${ev.location?`<p class="small">📍 <a href="https://maps.google.com/?q=${encodeURIComponent(ev.location)}" target="_blank" style="color:var(--accent2)">${esc(ev.location)}</a></p>`:''}
     ${(d.canAssign&&!ev.allDay)?schStatusHtml(k, ev):''}
     ${mid}
