@@ -6194,6 +6194,8 @@ async function openSchedModify(key,bi){
       : row('👤','Customer &amp; job details','No job record behind this booking — nothing to correct.','toast(\'This booking has no job record behind it.\')','ghost')}
     ${row('📨','Original inquiry', info.detail?'What the customer wrote, with their photos.':'Nothing on file for this one.',
         info.detail?`openSchedEnquiry('${key}')`:`toast('No enquiry on file for this one.')`, info.detail?'secondary':'ghost')}
+    ${isReq?row('↩︎','Unbook — back to Requests','Takes it off the calendar and puts it back on Requests with '+(info.po?esc(info.po):'its job number')+', to book again whenever you want. Nobody is emailed.',
+        `closeSheetDom();openReqUnbook(${bi})`):''}
     ${isReq
       ? row('❌','Cancel the job','Frees the slot and marks '+(info.po?esc(info.po):'the job')+' Cancelled. The job number is kept, never reused.',
           `closeSheetDom();openReqCancel(${bi})`,'danger')
@@ -7927,7 +7929,7 @@ function bumpPlanHtml(plan){
       + '<br>was '+esc(fmtDay(x.from))+' '+esc(fmtTime(x.from))+' → <b>waiting for a new time</b></div>').join('');
   } else if(ov.length){
     // v155 (Paul, 20 Nov: "do not automatically take the other job off. just flag it to me")
-    h+='<div class="small" style="margin-top:8px;font-weight:700;color:var(--pending)">⚠️ Double-booked — '+(ov.length===1?'this stays where it is:':'these stay where they are:')+'</div>';
+    h+='<div class="small" style="margin-top:8px;font-weight:700;color:var(--pending)">⚠️ You\'re also booked then — '+(ov.length===1?'it stays where it is:':'they stay where they are:')+'</div>';
     h+=ov.map(x=>'<div class="small" style="margin-top:6px;padding-left:8px;border-left:3px solid var(--pending)">'
       + '<b>'+esc(x.customer||x.title)+'</b>'+(x.po?' <span class="muted">'+esc(x.po)+'</span>':'')
       + (x.job?'<br><span class="muted">'+esc(x.job)+'</span>':'')
@@ -7935,7 +7937,7 @@ function bumpPlanHtml(plan){
       + '</div>').join('');
     h+='<p class="small muted" style="margin:8px 0 0">Nothing is moved. Fine when you have the crew for both.</p>';
   } else h+='<div class="small" style="margin-top:6px;color:var(--good)">✓ Nothing else is booked then.</div>';
-  const warn=(plan.warnings||[]).filter(w=>!(ov.length&&/^Double-booked/.test(w)));
+  const warn=(plan.warnings||[]).filter(w=>!(ov.length&&/^(Double-booked|You are also booked)/.test(w)));
   if(warn.length) h+=warn.map(w=>'<div class="small" style="margin-top:6px;color:var(--pending)">⚠️ '+esc(w)+'</div>').join('');
   return h+'</div>';
 }
@@ -8319,7 +8321,7 @@ async function coCommit_(){
         note:c.notes, notifyCustomer:!!c.rv.notify, hash:k.plan.hash },{timeout:120000});
       toast('Return visit booked — '+fmtDay(k.start)+', '+fmtTime(k.start)
         + (b&&b.moved?' · '+b.moved+' job(s) came off the calendar — give them a new time in Requests › ⚡ Needs a new time':'')
-        + (b&&b.overlaps&&b.overlaps.length?' · ⚠ double-booked with '+b.overlaps.map(x=>x.customer||x.title).join(', '):''), 9000);
+        + (b&&b.overlaps&&b.overlaps.length?" · ⚠ you're also booked with "+b.overlaps.map(x=>(x.customer||x.title)+(x.from&&x.fromEnd?' ('+fmtTime(x.from)+'–'+fmtTime(x.fromEnd)+')':'')).join(', '):''), 9000);
       if (b&&b.problems&&b.problems.length) setTimeout(()=>toast('Could not move: '+b.problems.join('; '), 8000), 8200);
       loadRequests();
     }catch(e){ coRvFailed_(e.message, {start:k.start}); }
@@ -10589,6 +10591,7 @@ function requestsView(){
       ${enquiryBtn(q)}
       <div class="row" style="margin-top:6px">
         <button class="grow secondary" onclick="openReqMove(${i})">📅 Move it</button>
+        <button class="secondary" onclick="openReqUnbook(${i})">↩︎ Unbook</button>
         ${q.confirm==='waiting'?`<button class="ghost" onclick="reqRenotify(${i})">Ask again</button>`:(!q.confirm||q.confirm==='none')?`<button class="ghost" onclick="reqRenotify(${i})">📧 Email customer</button>`:''}
         <button class="danger" onclick="openReqCancel(${i})">Cancel job</button>
       </div></div>
@@ -11249,7 +11252,7 @@ async function callMoveGo(i,btn){
   try{
     const b=await api('bumpApply',{start:k.start, eventId:x.eventId, hash:k.plan.hash, callId:x.id},{timeout:120000});
     toast('Moved to '+fmtDay(k.start)+' '+fmtTime(k.start)+(b&&b.moved?' · '+b.moved+' more job(s) came off the calendar — they are under "⚡ Needs a new time"':'')
-      +(b&&b.overlaps&&b.overlaps.length?' · ⚠ double-booked with '+b.overlaps.map(x=>x.customer||x.title).join(', '):''), 9000);
+      +(b&&b.overlaps&&b.overlaps.length?" · ⚠ you're also booked with "+b.overlaps.map(x=>(x.customer||x.title)+(x.from&&x.fromEnd?' ('+fmtTime(x.from)+'–'+fmtTime(x.fromEnd)+')':'')).join(', '):''), 9000);
     S._cmPlan=null; closeSheet(); loadRequests();
   }catch(e){
     toast(e.message, 7000); btn.disabled=false; btn.textContent='Confirm the move';
@@ -11481,8 +11484,8 @@ function dpVerdictHtml(jobs,other){
   const pastHtml=past?`<div class="small" style="margin-top:8px;color:var(--pending)">⚠️ ${esc(fmtDay(st.toISOString()))} ${esc(fmtTime(st.toISOString()))} has already passed — it will still be booked.</div>`:'';
   const all=jobs.concat(other);
   if(all.length) return pastHtml+`<div class="banner" style="margin-top:8px;text-align:left;background:var(--needs-bg);color:var(--needs-ink)">
-    <b>⚠️ Double-booked: that slot already has ${all.length===1?'a booking':all.length+' bookings'}.</b>
-    ${all.map(x=>`<div class="small" style="margin-top:4px">• ${esc(x.title)}${x.customer?' — '+esc(x.customer):''} <span class="muted">(${esc(fmtTime(x.start))}–${esc(fmtTime(x.end))})</span></div>`).join('')}
+    <b>⚠️ You're also booked then:</b>
+    ${all.map(x=>`<div class="small" style="margin-top:4px">• with <b>${esc(String(x.title||'another booking').split(/\s+[—–]\s+/)[0])}</b> from ${esc(fmtTime(x.start))} to ${esc(fmtTime(x.end))}</div>`).join('')}
     <div class="small" style="margin-top:6px">Both stay on the calendar — nothing is moved. ${jobs.length?'Fine when you have the crew for both.':''}</div>
   </div>`;
   return pastHtml+(past?'':'<div class="small" style="margin-top:8px;color:var(--good)">✓ That slot is free.</div>');
@@ -12045,10 +12048,24 @@ async function reqSlotsLoad(autoMove){
       if(autoMove!==false && S._rqSlots.length){
         const first=S._rqSlots[0];
         reqPickSlot(0, true);
-        if(note){ note.style.color='var(--pending)'; note.textContent='⚠️ '+fmtDay(at)+' '+fmtTime(at)+' does not work ('+r.atWhy+') — moved to '+fmtDay(first.start)+' '+fmtTime(first.start)+'. Check it before booking.'; }
-      } else if(note){ note.style.color='var(--bad)'; note.textContent='✗ '+fmtDay(at)+' '+fmtTime(at)+' does not work: '+r.atWhy+'.'; }
+        if(note){ note.style.color='var(--pending)'; note.textContent='⚠️ '+reqWhyText_(r, at, mins)+' — moved to '+fmtDay(first.start)+' '+fmtTime(first.start)+'. Check it before booking.'; }
+      } else if(note){ note.style.color='var(--pending)'; note.textContent='⚠️ '+reqWhyText_(r, at, mins)+'.'; }
     }
   }catch(e){ if(seq===rqSlotsSeq) box.innerHTML='<span class="small" style="color:var(--bad)">Could not read the calendar — '+esc(e.message)+'</span>'; }
+}
+/* v167 - Paul, 24 Nov: "Don't tell me it doesn't work. Tell me where it clashes and how ... Just say you're
+   also booked with Nate Hillman from this time to that time." The office sends the booking it runs into
+   (Code.gs v135, atClash); an older office sends only its reason, which is shown as it is. */
+function reqWhyText_(r, at, mins){
+  const a=at.toISOString(), e=new Date(at.getTime()+mins*60000).toISOString();
+  const when=fmtDay(a)+' '+fmtTime(a)+' – '+fmtTime(e);
+  const c=r&&r.atClash;
+  if(c&&c.start&&c.end){
+    const sameDay=localDateStr(new Date(c.start))===localDateStr(at);
+    return when+": you're also booked with "+String(c.title||'another booking')+' from '+(sameDay?'':fmtDay(c.start)+' ')+fmtTime(c.start)+' to '+fmtTime(c.end);
+  }
+  const why=String((r&&r.atWhy)||'it does not fit');
+  return when+': '+why.replace(/^you are /,"you're ");
 }
 function reqPickSlot(k, quiet){
   const x=(S._rqSlots||[])[k]; if(!x) return;
@@ -12377,6 +12394,49 @@ async function reqMove(i,btn,k){
 }
 /* v46 — cancel a booked job. Frees the calendar slot and marks the PO Log row Cancelled.
    The PO number is kept: it is an invoice number, and the sequence never reuses one. */
+/* v167 - UNBOOK (Paul, 24 Nov: "an option when I book the customer and a customer confirm ... to be able to
+   unbook them off the calendar and goes back to the request again ... instead of like having to move them
+   right on the calendar itself"). Off the calendar at the tap, back on Requests as a job to book with its
+   job number; the PO Log start date is cleared; nobody is emailed. Put back if the office says no. */
+function openReqUnbook(i){
+  const q=(S.reqBooked||[])[i]; if(!q) return;
+  const s0=q.start&&!isNaN(new Date(q.start))?new Date(q.start):null, e0=q.end&&!isNaN(new Date(q.end))?new Date(q.end):null;
+  const when=s0?fmtDay(s0.toISOString())+' '+fmtTime(s0.toISOString())+(e0?' – '+fmtTime(e0.toISOString()):''):'';
+  const conf=q.confirm==='confirmed';
+  sheet(`<h2>Unbook ${esc(q.customer||'this job')}?</h2>
+    <p class="small muted" style="margin-top:-4px">${q.po?esc(q.po)+' · ':''}${esc(when)}</p>
+    ${q.scope?`<div class="banner" style="background:var(--panel2)">${esc(q.scope)}</div>`:''}
+    <p class="small">It comes off the calendar and goes back on <b>Requests</b>${q.po?' — still '+esc(q.po):''}, ready to book again whenever you want.</p>
+    <p class="small muted">Nobody is emailed.${conf?' They had confirmed this time, so let them know yourself if it is not happening.':''} The crew come off it, and the PO Log start date is cleared until it is booked again.</p>
+    <div class="row" style="margin-top:14px">
+      <button class="secondary grow" onclick="closeSheetDom();render()">Keep it booked</button>
+      <button class="grow" id="ubGo" onclick="reqUnbook(${i})">↩︎ Unbook it</button>
+    </div>`);
+}
+async function reqUnbook(i){
+  const q=(S.reqBooked||[])[i]; if(!q) return;
+  if(!S.online) return toast('You need signal to change the calendar.');
+  const id=q.id, evId=String(q.eventId||''), prevEv=evId?Object.assign({}, schFindEv(evId)||{}):null;
+  const snap={booked:(S.reqBooked||[]).slice(), reqs:(S.requests||[]).slice()};
+  // at the tap: off the calendar, off Booked jobs, on Requests
+  S.reqBooked=(S.reqBooked||[]).filter(x=>x.id!==id);
+  S.requests=[Object.assign({}, q, {status:'pending', start:'', end:'', assigned:[], eventId:'', confirm:'none', bumpedFrom:'', bumpedBy:'', told:''})]
+    .concat((S.requests||[]).filter(x=>x.id!==id));
+  S.pendingRequests=S.requests.length;
+  if(evId) schDropEv_(evId, true);
+  closeSheetDom(); render(); dsRepaint_();
+  toast((q.customer||'The job')+' is off the calendar — back on Requests'+(q.po?' as '+q.po:'')+'.', 5000);
+  try{
+    await api('requestUnschedule',{id, eventId:evId, manual:true},{timeout:90000});
+    if(evId) schLocalNote_(evId,{gone:true});      // the office has it gone: a read already on its way must not bring it back
+    loadRequests().catch(()=>{});
+  }catch(e){
+    S.reqBooked=snap.booked; S.requests=snap.reqs; S.pendingRequests=S.requests.length;
+    if(evId){ delete S._schLocal[evId]; if(prevEv&&prevEv.id) schPut_(prevEv); }
+    render(); dsRepaint_();
+    toast('NOT unbooked — it is still on the calendar. '+e.message, 9000);
+  }
+}
 function openReqCancel(i){
   const q=(S.reqBooked||[])[i]; if(!q) return;
   const when=q.start&&!isNaN(new Date(q.start))?new Date(q.start).toLocaleString(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
