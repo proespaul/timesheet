@@ -38,6 +38,7 @@
   button:disabled{opacity:.5}
   input,select,textarea{width:100%; font:inherit; color:var(--text); background:var(--panel2);
     border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin:6px 0}
+  input[type=date]{cursor:pointer}   /* v159 - the whole date box opens the calendar */
   label{display:block; font-size:.82rem; color:var(--muted); margin-top:10px}
   .wrap{max-width:560px; margin:0 auto; padding:16px}
   .card{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:16px; margin:12px 0}
@@ -5571,6 +5572,12 @@ function tpIsTime_(t){ return t&&t.tagName==='INPUT'&&t.type==='time'&&!t.disabl
 document.addEventListener('mousedown', e=>{ if(tpIsTime_(e.target)) e.preventDefault(); }, true);
 document.addEventListener('click', e=>{ if(tpIsTime_(e.target)){ e.preventDefault(); try{e.target.blur();}catch(_){} tpOpen(e.target); } }, true);
 document.addEventListener('keydown', e=>{ if(tpS&&e.key==='Escape') tpClose(false); if(tpS&&e.key==='Enter') tpClose(true); });
+/* v159 - A TAP ON A DATE BOX OPENS THE CALENDAR (Paul, 24 Nov, adding time off: "when I click on the date
+   option ... it shows me an actual calendar"). On a computer a date box only opened its calendar from the
+   small icon at its right end; a click anywhere else just picked the day, month or year to change with the
+   arrows. Now a click anywhere in any date box in the app opens the month calendar. Typing still works. */
+function dpIsDate_(t){ return t&&t.tagName==='INPUT'&&t.type==='date'&&!t.disabled&&!t.readOnly; }
+document.addEventListener('click', e=>{ if(dpIsDate_(e.target) && typeof e.target.showPicker==='function'){ try{ e.target.showPicker(); }catch(_){} } }, true);
 function openTimeOffAdmin(){
   const t=todayStr(), crew=(S.employees||[]).filter(e=>e.active);
   sheet(`<h2>🏖 Add time off</h2>
