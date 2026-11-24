@@ -255,6 +255,7 @@
   .tgh .hl{display:block; font-size:.64rem; color:#854d0e}
   .offl{font-size:.6rem; font-weight:700; line-height:1.15; color:#92400e; background:#fef3c7; border:1px solid #fcd34d; border-radius:5px; padding:1px 3px; margin:1px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:left}   /* v160 - who is off, on the day */
   .tga .offl{font-size:.72rem; padding:2px 6px; margin:2px 0}
+  .offl.sm{font-size:.57rem; padding:1px 1px; letter-spacing:-.2px; text-overflow:clip; text-align:center}   /* v161 - a phone's month square: Charles and Janelle fit whole */
   .tga{border-bottom:1px solid var(--line); border-left:1px solid var(--line); padding:4px; display:flex; flex-direction:column; gap:3px}
   .tga.lbl{border-left:0; font-size:.64rem; color:var(--muted)}
   .adc{font-size:.72rem; font-weight:600; padding:3px 6px; border-radius:7px; border:1px solid; cursor:pointer;
@@ -4673,7 +4674,7 @@ async function loadSched(){
   S.schedLoading=true; if(S.tab==='sched') render();
   try{ const r=await apiBg('scheduleList',{}); if(r&&Array.isArray(r.events)){ S.sched=r; S.schedErr=''; DB.setCache('sched',r); } }
   catch(e){ S.schedErr=/permission/i.test(e.message)
-      ? 'The Schedule needs a one-time authorization from Paul: open script.google.com → the timesheet project → Run any function → approve the Calendar permission.'
+      ? 'The Calendar needs a one-time authorization from Paul: open script.google.com → the timesheet project → Run any function → approve the Calendar permission.'
       : e.message;
     if(!S.sched) { /* shown inline in the tab — no vanishing toast */ } else if(!/busy right now/.test(e.message)) toast(e.message); }
   S.schedLoading=false; if(S.tab==='sched') render();
@@ -4717,7 +4718,7 @@ function schedView(){
       : '<p class="muted small">Nothing scheduled for you in the next 2 weeks. Check back — new jobs show up here when you\'re assigned.</p>';
   } else body = S.schedErr
     ? `<div class="banner ot" style="white-space:pre-wrap">⚠ ${esc(S.schedErr)}</div>`
-    : (S.schedLoading?'':'<p class="muted small">Open this tab while online to load the schedule.</p>');
+    : (S.schedLoading?'':'<p class="muted small">Open this tab while online to load the calendar.</p>');
   const mode=S.schedView||'month';
   const head=`<div class="row between"><h2>Calendar</h2>${(S.schedLoading||S._smLoading)?'<span class="spin"></span>':''}</div>
     <div class="seg" style="margin-bottom:10px">
@@ -4892,7 +4893,7 @@ function schOffOn(day, data){
 }
 function schOffLine(o, small){ const first=o.name.split(/\s+/)[0];
   // a month square on a phone is narrow: the first name alone, on the time-off colour; Week and Day say it in full
-  return `<div class="offl" title="${esc(o.name+' - time off'+(o.reason?': '+o.reason:''))}">${small?esc(first):'🏖 '+esc(first)+' off'}</div>`; }
+  return `<div class="offl${small?' sm':''}" title="${esc(o.name+' - time off'+(o.reason?': '+o.reason:''))}">${small?esc(first):'🏖 '+esc(first)+' off'}</div>`; }
 function schWeekHtml(){
   const mon=schMonday(schAnchor());
   const days=[0,1,2,3,4].map(i=>schAdd(mon,i));
@@ -5422,7 +5423,7 @@ function schedShiftMonth(dir){
   const dt=new Date(Number(p[0]), Number(p[1])-1+dir, 1);
   // keep within the backend's window: ~6 months ahead, 12 back
   const lim=new Date(); const min=new Date(lim.getFullYear(),lim.getMonth()-12,1), max=new Date(lim.getFullYear(),lim.getMonth()+6,1);
-  if(dt<min||dt>max) return toast(dir>0?'That\'s as far ahead as the schedule goes.':'That\'s as far back as it goes.');
+  if(dt<min||dt>max) return toast(dir>0?'That\'s as far ahead as the calendar goes.':'That\'s as far back as it goes.');
   S.schedMonth=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0');
   render(); loadSchedMonth();
 }
@@ -5464,8 +5465,8 @@ function schedMonthHtml(){
     </div>
     <div class="cal" ontouchmove="schTouchClaim(event)">${cells}</div>
     <p class="small muted" style="margin:10px 0 0">${(data&&data.canAssign)
-      ? 'Tap a job to open it, or <b>drag it onto another day</b> (on a phone: press and hold first) · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · dashed = nobody assigned · a name on yellow = that person is off'
-      : 'Your jobs this month · your name on yellow = your time off · yellow = stat holiday · tap a day to see where you\'re heading'}</p>
+      ? 'Tap a job to open it, or <b>drag it onto another day</b> (on a phone: press and hold first) · blue = booked · green = confirmed · amber = not confirmed yet · red = needs a new time · dashed = nobody assigned · a name on a yellow tag = that person is off'
+      : 'Your jobs this month · your name on a yellow tag = your time off · a yellow day = stat holiday · tap a day to see where you\'re heading'}</p>
   </div>`;
 }
 function openSchedDay(day){
@@ -5589,9 +5590,13 @@ document.addEventListener('keydown', e=>{ if(tpS&&e.key==='Escape') tpClose(fals
 /* v159 - A TAP ON A DATE BOX OPENS THE CALENDAR (Paul, 24 Nov, adding time off: "when I click on the date
    option ... it shows me an actual calendar"). On a computer a date box only opened its calendar from the
    small icon at its right end; a click anywhere else just picked the day, month or year to change with the
-   arrows. Now a click anywhere in any date box in the app opens the month calendar. Typing still works. */
+   arrows. Now a click anywhere in any date box in the app opens the month calendar.
+   v161 (audit, tested in a real Chrome window): the icon still opens it and a second click does not close it.
+   With the calendar open the keys belong to the calendar (arrows and Enter pick a day), so to TYPE a date
+   press Esc first. Mouse clicks only: a finger tap on a phone already opens the phone's own calendar. */
 function dpIsDate_(t){ return t&&t.tagName==='INPUT'&&t.type==='date'&&!t.disabled&&!t.readOnly; }
-document.addEventListener('click', e=>{ if(dpIsDate_(e.target) && typeof e.target.showPicker==='function'){ try{ e.target.showPicker(); }catch(_){} } }, true);
+document.addEventListener('click', e=>{ if(e.pointerType && e.pointerType!=='mouse') return;
+  if(dpIsDate_(e.target) && typeof e.target.showPicker==='function'){ try{ e.target.showPicker(); }catch(_){} } }, true);
 function openTimeOffAdmin(){
   const t=todayStr(), crew=(S.employees||[]).filter(e=>e.active);
   sheet(`<h2>🏖 Add time off</h2>
