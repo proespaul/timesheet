@@ -5188,11 +5188,15 @@ async function schSetConfirm(k, state, btn){
   const was=ev.confirm||'none';
   schApply(ev.id,{confirm:state}); ev.confirm=state;                 // v107 - the colour changes at the tap
   closeSheet(); render(); dsRepaint_();
-  // v172 - with Undo, so a tap on the wrong one costs nothing
-  schUndoToast(schedName(ev).split(' · ')[0]+': '+SCH_TONE[state].label.toLowerCase(), ()=>{
-    schApply(ev.id,{confirm:was}); ev.confirm=was; render(); dsRepaint_();
-    if(['confirmed','waiting','declined'].indexOf(was)>=0) officeDo_('scheduleConfirm',{eventId:ev.id, state:was}, ()=>{});
-    toast(schedName(ev).split(' · ')[0]+' is back to '+(SCH_TONE[was]||SCH_TONE.none).label.toLowerCase()+'.'); });
+  // v172 - with Undo, so a tap on the wrong one costs nothing. v173 - Undo only says what the office can do:
+  // it keeps confirmed / not confirmed yet / needs a new time, so a job nobody had been asked about goes back
+  // to "not confirmed yet" (not to a blue the office would repaint), and a customer's own cancel has no Undo.
+  const nm=schedName(ev).split(' · ')[0], back=was==='none'?'waiting':was;
+  if(['confirmed','waiting','declined'].indexOf(back)<0 || back===state) toast(nm+': '+SCH_TONE[state].label.toLowerCase()+'.');
+  else schUndoToast(nm+': '+SCH_TONE[state].label.toLowerCase(), ()=>{
+    schApply(ev.id,{confirm:back}); ev.confirm=back; render(); dsRepaint_();
+    officeDo_('scheduleConfirm',{eventId:ev.id, state:back}, ()=>{ schApply(ev.id,{confirm:state}); render(); });
+    toast(nm+' is back to '+SCH_TONE[back].label.toLowerCase()+'.'); });
   officeDo_('scheduleConfirm',{eventId:ev.id, state}, ()=>{ schApply(ev.id,{confirm:was}); render(); });
 }
 /* v105 - ANOTHER DAY ON THE SAME JOB (Paul, 7 Nov): "if we were there that day and need more days
@@ -5287,10 +5291,11 @@ function schStatusHtml(k, ev){
      seemed to say two things, and one tap on the wrong one changed it (Andy went back to not confirmed at 4:06).
      Now it is one picker: the three states side by side, the one it is now lit, the others plainly a change. */
   const opt=(st,ic,lbl)=>{ const on=c===st || (st==='waiting' && (c==='none'||c==='waiting'));
-    const tt=SCH_TONE[st];
+    const tt=on?t:SCH_TONE[st];   // v173 - lit in the colour the job really has on the calendar (blue when nobody was asked)
     return `<button type="button" class="cfo${on?' on':''}" ${on?'aria-pressed="true"':''} style="${on?`background:${tt.bg};border-color:${tt.bd};color:${tt.ink}`:''}"
       onclick="${on?'':`schSetConfirm('${k}','${st}',this)`}">${ic} ${lbl}</button>`; };
   return `<div class="small muted" style="margin:10px 0 4px">Did the customer confirm this time?</div>
+    ${c==='cancelled'?`<div class="banner" style="background:${t.bg};color:${t.ink};border:1px solid ${t.bd};margin:0 0 6px">The customer <b>cancelled</b> this by email. It is still on the calendar — pick what happens now, or Unbook it.</div>`:''}
     <div class="cfrow">${opt('confirmed','✓','Confirmed')}${opt('waiting','⏳','Not yet')}${opt('declined','↻','Wants a new time')}</div>
     <div class="row" style="margin-top:8px">
       <button class="secondary grow" onclick="schOpenMoveDate('${k}')">📅 Move to a date</button>
@@ -5352,10 +5357,15 @@ function schYearHtml(){
 function curSchedMonth(){ return S.schedMonth || curMonthStr(); }
 async function loadSchedMonth(mArg){
   const month=mArg||curSchedMonth();
-  // v171 - the month view shows the days of the months either side too: read them alongside
-  if(!mArg && (S.schedView||'month')==='month') schMonthGridMonths_(month).filter(x=>x!==month).forEach(x=>loadSchedMonth(x));
+  // v171 - the month view shows the days of the months either side too. v173 - they are painted from the
+  // phone's copy at once, and read from the office only AFTER the month on screen has landed (three reads at
+  // once slowed the one being looked at), not again within two minutes, and never past what the office keeps.
+  const nb=(!mArg && (S.schedView||'month')==='month') ? schMonthGridMonths_(month).filter(x=>x!==month && schMonthInRange_(x)) : [];
+  S._smAt=S._smAt||{};
+  nb.forEach(x=>{ if(!(S.schedMonths||{})[x]) DB.getCache('sched_'+x).then(c=>{ if(c && !(S.schedMonths||{})[x]){ (S.schedMonths=S.schedMonths||{})[x]=c; if(S.tab==='sched') render(); } }).catch(()=>{}); });
+  const nbRead=()=>nb.forEach(x=>{ if((S._smBusy||{})[x]) return; if(!(S.schedMonths||{})[x] || Date.now()-(S._smAt[x]||0)>120000) loadSchedMonth(x); });
   S._smBusy=S._smBusy||{}; S._smAgain=S._smAgain||{};
-  if (S._smBusy[month]){ if(S.online) S._smAgain[month]=true; return; }   // v163 - read again once this one lands
+  if (S._smBusy[month]){ if(S.online) S._smAgain[month]=true; nbRead(); return; }   // v163 - read again once this one lands
   S.schedMonths=S.schedMonths||{};
   if (!S.schedMonths[month]){
     const c=await DB.getCache('sched_'+month);
@@ -5370,9 +5380,10 @@ async function loadSchedMonth(mArg){
     const since=Date.now();
     const r=await apiBg('scheduleList',{startDate:start,endDate:end});
     if(r&&Array.isArray(r.events)){ r._win=[start,end]; schMergeLocal_(r, since);
-      S.schedMonths[month]=r; DB.setCache('sched_'+month,r); if(r.canAssign) evPrefetch_(r.events); }
+      S.schedMonths[month]=r; S._smAt[month]=Date.now(); DB.setCache('sched_'+month,r); if(r.canAssign) evPrefetch_(r.events); }
   }catch(e){ if(!S.schedMonths[month]) toast(e.message); }
   S._smBusy[month]=false; S._smLoading=null; if(S.tab==='sched') render();
+  nbRead();
   if(S._smAgain[month]){ S._smAgain[month]=false; loadSchedMonth(month); }
 }
 /* A chip: the time on its own line, the customer under it over two lines at most. The scope
@@ -5658,6 +5669,9 @@ function schMonthGrid_(month){
   const weeks=Math.max(5, Math.ceil((lead+dim)/7));
   return { y, m, lead, dim, weeks, start:new Date(y,m-1,1-lead), prev:lead>0, next:lead+dim<weeks*7 };
 }
+/* what the office keeps: a year back, six months ahead (the same limits the ‹ › arrows stop at) */
+function schMonthInRange_(mk){ const p=String(mk).split('-'), d=new Date(Number(p[0]),Number(p[1])-1,1), n=new Date();
+  return d>=new Date(n.getFullYear(),n.getMonth()-12,1) && d<=new Date(n.getFullYear(),n.getMonth()+6,1); }
 /* the months whose days the grid for `month` shows */
 function schMonthGridMonths_(month){
   const g=schMonthGrid_(month), out=[month];
@@ -5691,7 +5705,7 @@ function schedMonthHtml(){
     }).join('');
     // a day of another month says which month on its 1st and on the first square of the grid
     const dn=(out && (d.getDate()===1 || i===0)) ? d.toLocaleDateString([],{month:'short'})+' '+d.getDate() : String(d.getDate());
-    cells+=`<div class="day${out?' out':''}${out&&!o?' ld':''}${k===tstr?' today':''}${hol?' hol':''}" data-drop="1" data-day="${k}" onclick="openSchedDay('${k}')">
+    cells+=`<div class="day${out?' out':''}${out&&!o&&schMonthInRange_(mk)?' ld':''}${k===tstr?' today':''}${hol?' hol':''}" data-drop="1" data-day="${k}" onclick="openSchedDay('${k}')">
       <span class="dn">${esc(dn)}</span>${hol?`<div class="holn" title="${esc(hol)}">${esc(hol)}</div>`:''}${offs.map(x=>schOffLine(x,narrow)).join('')}
       <div class="evs">${show}${evs.length>2?`<div class="more">+${evs.length-2}</div>`:''}</div></div>`;
   }
@@ -5711,7 +5725,11 @@ function schedMonthHtml(){
 function openSchedDay(day){
   const data=schData(day);   // v169 - the day's own month
   // v171 - a greyed day of the month before or after, not read yet: read it, rather than show it empty
-  if(!data){ loadSchedMonth(String(day).slice(0,7)); toast('Still loading that month — try again in a second.'); return; }
+  if(!data){ const mk=String(day).slice(0,7);
+    if(!schMonthInRange_(mk)) return toast('That is past what the calendar keeps.');                                   // v173
+    if(!S.online) return toast('You need signal to see that month.');
+    if(!((S._smBusy||{})[mk])) loadSchedMonth(mk);                                                                    // v173 - not a second read on top of one already on its way
+    return toast('Still loading that month — try again in a second.'); }
   const evs=data.events.filter(e=>localDateStr(new Date(e.start))===day).sort((a,b)=>new Date(a.start)-new Date(b.start));
   const hols=(data.holidays||[]).filter(h=>h.date===day);
   const offs=(data.timeOff||[]).filter(t=>t.status==='approved'&&day>=t.start&&day<=t.end);
@@ -6217,8 +6235,12 @@ function evInfoPut_(id, info){
     const keep={}; keys.forEach(k=>keep[k]=S.evInfo[k]); S.evInfo=keep; DB.setCache('evInfo', keep);
   }catch(e){} }, 800);
 }
+let _evPrefQ=null;
 async function evPrefetch_(events){
-  if(_evPrefetching || !S.online || !canApprove()) return;
+  // v173 - since v171 three months load together; whichever landed first used to make the others' details
+  // skip, so a job on the month in front of you could open on "looking up the job...". They now wait their turn.
+  if(_evPrefetching){ _evPrefQ=(_evPrefQ||[]).concat(events||[]); return; }
+  if(!S.online || !canApprove()) return;
   await evInfoLoad_();
   const now=Date.now(), from=now-2*86400000;
   const ids=(events||[]).filter(e=>!e.allDay && new Date(e.end).getTime()>=from)
@@ -6228,6 +6250,7 @@ async function evPrefetch_(events){
   try{ const r=await apiBg('eventInfoMany',{ids}); Object.keys((r&&r.infos)||{}).forEach(id=>evInfoPut_(id, r.infos[id])); }
   catch(e){ /* an older script, or no answer: details are still fetched on the tap */ }
   _evPrefetching=false;
+  if(_evPrefQ){ const q=_evPrefQ; _evPrefQ=null; evPrefetch_(q); }
 }
 async function openSchedDetail(k){
   const ev=dereg(k); if(!ev) return;
@@ -6277,7 +6300,7 @@ async function openSchedDetail(k){
     ${info.kind==='visit'?`<p class="small muted" style="margin:8px 0 0">This is a <b>return visit</b> — it continues ${info.po?esc(info.po):'an earlier job'}, so the details above are the original job's.</p>`:''}
     ${info.isJob
       ? `<button style="width:100%;margin-top:12px" onclick="openSchedModify('${key}',${bi})">✏️ Modify this booking</button>
-         ${info.kind==='request'?`<button class="secondary" style="width:100%;margin-top:8px" onclick="schUnbookFromCal('${key}')">↩︎ Unbook — back to Requests</button>`:''}`
+         ${(info.kind==='request' && new Date(info.start).getTime()>Date.now()-2*86400000)?`<button class="secondary" style="width:100%;margin-top:8px" onclick="schUnbookFromCal('${key}')">↩︎ Unbook — back to Requests</button>`:''}`
       : `<p class="small muted" style="margin:10px 0 0">Not a job — nothing to change here.</p>`}`;
   };
   const wrap=(inner)=>`<div id="sdMid">${inner}</div>`;
