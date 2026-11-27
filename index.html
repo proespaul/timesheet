@@ -80,6 +80,13 @@
   .banner.offline{background:#fef3c7; color:#92400e; border:1px solid #fcd34d}
   .banner.ot{background:#fee2e2; color:#b91c1c; border:1px solid #fca5a5}
   .banner.sync{background:#dbeafe; color:var(--accent2)}
+  /* v174 - phone and office disagree */
+  .mmcard{border-left:4px solid var(--warn); background:#fffbeb}
+  .mmtag{font-size:.72rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:#92400e; margin-bottom:6px}
+  .mmhead{font-weight:700; color:var(--navy); margin-bottom:8px}
+  .mmrow{display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-top:1px solid var(--line); font-size:.95rem}
+  .mmrow .mmk{color:var(--muted); white-space:nowrap}
+  .mmrow b{text-align:right}
   .hidden{display:none !important}
   .list-item{border-bottom:1px solid var(--line); padding:12px 0}
   .list-item:last-child{border-bottom:none}
@@ -1517,7 +1524,10 @@ const MUTATING = /^(clockIn|clockOut|switchJobSite|startBreak|endBreak|editEntry
    a second set of material lines on the job and takes the shelf down again. Write-ahead makes a
    repeat possible (an action whose answer was lost is sent again on the next open), so each of
    these carries a submission id and the script remembers the first one for six hours. */
-const GUARDED = /^(takeMaterial|logMaterials|addManualEntry)$/;
+/* v174 - the punches join them (27 Nov, Elijah's duplicate shifts). A clock-in sent twice was
+   only recognised by its tap time in the ClockIn cell, and the clock-out review rewrites that
+   cell; with a subId the office knows the repeat whatever the cell says now (needs Code.gs v140). */
+const GUARDED = /^(takeMaterial|logMaterials|addManualEntry|clockIn|clockOut|switchJobSite|startBreak|endBreak)$/;
 /* v75 - fixForgotClockout joins this list: it is queued, counted on the banner, listed under
    "not at the office yet" and kept alive past the page, exactly like a punch. It is NOT in
    BTN_PUNCH below, because the big Clock In button must not sit disabled waiting for it - the
@@ -1543,7 +1553,7 @@ function fmtAge_(ms){
 async function queueCount_(){
   try{
     const items = await DB.all();
-    const punches = items.filter(it=>PUNCH.test(it.action));
+    const punches = items.filter(it=>PUNCH.test(it.action) && !it.held);   // v174 - held ones are on their own card
     const n = punches.length, stuck = punches.filter(isStuck_).length;
     const refused = ((await DB.getCache('syncLog'))||[]).length;
     // render() leaves an open sheet alone (it lives outside #app), so the banner is already
@@ -1570,7 +1580,7 @@ async function sendCount_(){
   try{
     const items=await DB.all();
     const rc=((await DB.getCache('pendingReceipts'))||[]).length;
-    const total=items.length + rc + (S.scanBusy||0);
+    const total=items.filter(it=>!it.held).length + rc + (S.scanBusy||0);
     const prev=S.waitN||0;
     if(total!==prev){
       S.waitN=total;
@@ -1607,7 +1617,7 @@ async function syncLogAdd_(entry){ try{ const l=((await DB.getCache('syncLog'))|
  * flight (see punchBusy()).
  */
 function punchKick_(tries){ tries=tries||0;
-  DB.all().then(a=>{ if (!a.some(x=>PUNCH.test(x.action) && !inflightQids.has(x.qid))) return;
+  DB.all().then(a=>{ if (!a.some(x=>PUNCH.test(x.action) && !inflightQids.has(x.qid) && !x.held)) return;
     if (syncing){ if (tries<40) setTimeout(()=>punchKick_(tries+1), 300); return; }   // a flush is running - go right after it
     flushQueue(); }).catch(()=>{});
 }
@@ -1752,6 +1762,7 @@ async function flushQueue(){
       const batch=[], made={};
       for (const it of items){
         if (done.has(it.qid)) continue;
+        if (it.held) continue;                                              // v174 - waiting on a person's choice
         if (!PUNCH.test(it.action) || inflightQids.has(it.qid)) break;      // tap order: never jump over one
         const p = { ...it.payload, queuedAt: it.ts };
         if (p.entryId && (idMap[p.entryId] || tempIdMap[p.entryId])) p.entryId = idMap[p.entryId] || tempIdMap[p.entryId];
@@ -1787,6 +1798,7 @@ async function flushQueue(){
     for (const it of items){
       if (halt) break;                            // v131 audit - the office did not answer the batch: stop here, keep everything
       if (done.has(it.qid)) continue;
+      if (it.held) continue;                      // v174 - phone and office disagree: nothing goes until somebody picks
       if (inflightQids.has(it.qid)){ if (PUNCH.test(it.action)) punchAhead = true; continue; } // apiMutate is delivering this one right now
       if (punchAhead && PUNCH.test(it.action)) continue;      // never overtake it - tap order is the office's order
       const p = { ...it.payload };
@@ -1870,7 +1882,7 @@ async function flushQueue(){
   // connection even if the app is closed (Background Sync), and tell the office about anything
   // that has now waited a day (it can be reached, or this flush would not have got this far).
   try {
-    const left = (await DB.all()).filter(it=>PUNCH.test(it.action) && !inflightQids.has(it.qid));
+    const left = (await DB.all()).filter(it=>PUNCH.test(it.action) && !inflightQids.has(it.qid) && !it.held);
     if (left.length){ registerSync_(); stuckReport_(left); }
   } catch(e){}
   // The old unconditional refresh here fired a full 4-6s bootstrap every 60s (the periodic
@@ -1950,6 +1962,7 @@ async function doLogin(){
     await saveSession_(S.session);
     keepStorage_();
     applyBootstrap(json.data.boot);
+    await mmReconcile_(json.data.boot);   // v174
     overlayQueued_(await DB.all()); // v42: punches still waiting on this phone stay visible
     S.booted = true; S._lastRefresh = Date.now();
     await DB.setCache('bootstrap', json.data.boot);
@@ -2096,6 +2109,7 @@ async function refresh(silent){
     const d = await apiBg('bootstrap');
     if (seq !== S.mutSeq || mutsInFlight > 0 || syncing){ scheduleRefresh(); return; } // stale
     applyBootstrap(d); await DB.setCache('bootstrap', d);
+    await mmReconcile_(d);                          // v174 - phone and office disagree? hold it and say so
     overlayQueued_(await DB.all()); S._lastRefresh = Date.now(); render();
   }
   catch(e){ if(!silent) toast(e.message); }
@@ -2113,8 +2127,10 @@ function ovHours_(e, outISO, running){
   const brk = Math.min(Math.round((ms/3600000)*100)/100 || 0, gross);
   return { Hours: Math.max(0, Math.round((gross-brk)*100)/100), 'Gross Hours': gross, 'Break Hrs': brk };
 }
-function overlayQueued_(items){
-  (items||[]).slice().sort((a,b)=>a.ts-b.ts).forEach(it=>{
+function overlayQueued_(items, withHeld){
+  // v174 - a punch held for a decision (see mmReconcile_) is NOT painted: until somebody picks,
+  // the screen shows what the office has.
+  (items||[]).filter(it=>withHeld || !it.held).sort((a,b)=>a.ts-b.ts).forEach(it=>{
     const p=it.payload||{};
     if (it.action==='clockIn' || it.action==='switchJobSite'){
       if (it.action==='switchJobSite' && S.openEntry && !S.openEntry._pending){
@@ -2150,6 +2166,152 @@ function overlayQueued_(items){
       }
     }
   });
+}
+
+/* ============================================================================
+ * v174 - WHEN THE PHONE AND THE OFFICE DISAGREE, SAY SO (Paul, 27 Nov).
+ * On 25 Nov Elijah's phone showed a shift still running from the day before and none of the work
+ * he had just entered. The sheet had the truth; the phone was painting punches that could not go
+ * through over it, and he had no way to see that, so he typed the whole day again.
+ *
+ * On every refresh (after the queue has had its chance to send), each shift the phone is still
+ * holding punches for is compared with what the office returned for it:
+ *   - punches only count once they are STUCK - 15 minutes old and refused / tried three times.
+ *     One that is just waiting for signal is the ordinary blue "waiting" badge, not this;
+ *   - a gap of 15 minutes or less in the clock-in, the clock-out or the hours: the office's
+ *     version is kept and the phone's punches for that shift are dropped, quietly;
+ *   - more than that: one card per shift, "your phone says 9.5 h, the office says nothing",
+ *     with Use the office hours (drop the phone's punches) and Use the app's hours (send the
+ *     phone's version as an edit, or as time added by hand when the office has nothing).
+ * Until one is picked the punches are HELD: not sent (here or by the service worker) and not
+ * painted, so the screen leans on the office - a phone that quietly overwrites the sheet is how
+ * good hours get destroyed. With Code.gs v140 this should almost never show. If it does show up
+ * often, something else is wrong and the card is the symptom.
+ * ==========================================================================*/
+const MM_GAP = 15*60000;
+S.mismatch = [];
+function mmKey_(it){
+  const p=it.payload||{};
+  if (/^(clockIn|switchJobSite)$/.test(it.action)){ const t=it.tempId||('tmp_'+it.ts); return tempIdMap[t]||t; }
+  return p.entryId ? (tempIdMap[p.entryId]||p.entryId) : '';
+}
+function mmStuck_(it){
+  return !!it.held || (punchAge_(it) >= MM_GAP && (!!it.conflict || (it.tries||0) >= 3));
+}
+function mmSame_(a,b){ const x=new Date(a).getTime(), y=new Date(b).getTime(); return !isNaN(x)&&!isNaN(y)&&Math.abs(x-y)<1500; }
+function mmSpan_(e){
+  const tin=new Date(e.ClockIn).getTime(), open=!e.ClockOut, tout=open?Date.now():new Date(e.ClockOut).getTime();
+  const hrs=open ? Math.max(0,(tout-tin)/3600000) : (Number(e.Hours)||0);
+  return { tin, tout, open, hrs };
+}
+function mmJob_(e){ return (e&&(e['Customer/Job Site']||e.Company))||'—'; }
+// The phone's version of one shift: the office's state with only this shift's punches laid over it.
+function mmPhoneVersion_(key, group, office){
+  const keepE=S.entries, keepO=S.openEntry;
+  try{
+    S.entries=(office.entries||[]).map(e=>({...e})); S.openEntry=office.openEntry?{...office.openEntry}:null;
+    overlayQueued_(group, true);
+    const all=(S.openEntry?[S.openEntry]:[]).concat(S.entries||[]);
+    return all.find(e=>e._pending && (e.EntryID===key || tempIdMap[e.EntryID]===key)) || null;
+  } finally { S.entries=keepE; S.openEntry=keepO; }
+}
+// The office's version: the same entry id, or - for a clock-in the phone never learned the id of -
+// the row that tap made (its Punch At, or an older row's auto Approved At or clock-in), or the same
+// job started within 15 minutes.
+function mmOfficeVersion_(key, group, phone, office){
+  const all=(office.openEntry?[office.openEntry]:[]).concat(office.entries||[]);
+  const byId=all.find(e=>e.EntryID===key); if (byId) return byId;
+  const ci=group.find(it=>/^(clockIn|switchJobSite)$/.test(it.action)); const tap=ci&&ci.payload&&ci.payload.at;
+  if (tap){
+    const hit=all.find(e=>(e['Punch At']&&mmSame_(e['Punch At'],tap)) ||
+      (!e['Punch At'] && e['Approved By']==='auto' && e['Approved At'] && mmSame_(e['Approved At'],tap)) ||
+      (e.ClockIn && mmSame_(e.ClockIn,tap)));
+    if (hit) return hit;
+  }
+  if (!phone) return null;
+  const job=s=>String(s||'').toLowerCase().replace(/\s+/g,' ').trim();
+  return all.find(e=>e.ClockIn && Math.abs(new Date(e.ClockIn)-new Date(phone.ClockIn))<=MM_GAP &&
+    ((phone['PO#']&&e['PO#']) ? String(phone['PO#'])===String(e['PO#']) : job(mmJob_(phone))===job(mmJob_(e)))) || null;
+}
+async function mmReconcile_(office){
+  let items=[];
+  try{ items=(await DB.all()).filter(it=>PUNCH.test(it.action) && !inflightQids.has(it.qid)).sort((a,b)=>a.ts-b.ts); }catch(e){ return; }
+  const groups=new Map();
+  for (const it of items){ const k=mmKey_(it); if(!k) continue; if(!groups.has(k)) groups.set(k,[]); groups.get(k).push(it); }
+  const cards=[];
+  for (const [key, group] of groups){
+    if (!group.some(mmStuck_)) continue;                         // just waiting - the badge covers it
+    const phone=mmPhoneVersion_(key, group, office);
+    const off=mmOfficeVersion_(key, group, phone, office);
+    let gap=0;
+    if (phone && off){ const a=mmSpan_(phone), b=mmSpan_(off);
+      gap=Math.max(Math.abs(a.tin-b.tin), Math.abs(a.tout-b.tout), Math.abs(a.hrs-b.hrs)*3600000); }
+    else if (phone) gap=mmSpan_(phone).hrs*3600000;               // the office has nothing
+    if (gap<=MM_GAP){                                              // close enough, or nothing to show: the office wins quietly
+      for (const it of group){ try{ await DB.del(it.qid); }catch(e){} }
+      continue;
+    }
+    for (const it of group){ if (!it.held){ try{ await DB.enqueue({ ...it, held:true }); }catch(e){} } }
+    cards.push({ key, qids:group.map(it=>it.qid), phone, office:off });
+  }
+  S.mismatch=cards;
+  queueCount_();
+}
+function mmSay_(e){
+  if (!e) return 'nothing';
+  const s=mmSpan_(e);
+  return s.open ? `clocked in since ${fmtTime(e.ClockIn)}, still running`
+    : `${fmtTime(e.ClockIn)} – ${fmtTime(e.ClockOut)} (${s.hrs.toFixed(2).replace(/\.?0+$/,'')} h)`;
+}
+function mmCards_(){
+  if (!(S.mismatch||[]).length) return '';
+  return S.mismatch.map((m,i)=>{
+    const p=m.phone, o=m.office, ref=p||o;
+    const canApp = p && !(mmSpan_(p).open && o);      // a running shift cannot be put over one the office has closed
+    return `<div class="card mmcard">
+      <div class="mmtag">Phone and office disagree</div>
+      <div class="mmhead">${esc(fmtDay(ref.ClockIn))}, ${esc(mmJob_(ref))}${ref['PO#']?` <span class="muted">· ${esc(ref['PO#'])}</span>`:''}</div>
+      <div class="mmrow"><span class="mmk">Your phone says</span><b>${esc(mmSay_(p))}</b></div>
+      <div class="mmrow"><span class="mmk">The office says</span><b>${esc(mmSay_(o))}</b></div>
+      ${canApp?'':`<p class="small muted" style="margin:8px 0 0">The phone still has this shift running and the office has it closed. If the office is wrong, use the office's hours and correct the entry with Edit.</p>`}
+      <div class="row" style="margin-top:12px;gap:8px">
+        <button class="grow" onclick="mmUseOffice(${i})">Use the office hours</button>
+        ${canApp?`<button class="secondary grow" onclick="mmUseApp(${i})">Use the app's hours</button>`:''}
+      </div>
+    </div>`;
+  }).join('');
+}
+async function mmUseOffice(i){
+  const m=(S.mismatch||[])[i]; if(!m) return;
+  for (const q of m.qids){ try{ await DB.del(q); }catch(e){} }
+  S.mismatch=S.mismatch.filter(x=>x!==m); render(); queueCount_();
+  toast('Kept the office hours.');
+  refresh(true);
+}
+async function mmUseApp(i){
+  const m=(S.mismatch||[])[i]; if(!m||!m.phone) return;
+  const p=m.phone, o=m.office, span=mmSpan_(p);
+  const hm=iso=>{ const d=new Date(iso); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); };
+  const brk=Math.round((Number(p['Break Hrs'])||0)*60);
+  try{
+    if (o){
+      await apiMutate('editEntry', { entryId:o.EntryID, date:localDateStr(new Date(p.ClockIn)), clockIn:new Date(p.ClockIn).toISOString(),
+        clockOut:new Date(p.ClockOut).toISOString(), breakMin:brk, reason:"The phone and the office disagreed - kept the phone's hours" });
+    } else if (!span.open){
+      await apiMutate('addManualEntry', { date:localDateStr(new Date(p.ClockIn)), clockIn:hm(p.ClockIn), clockOut:hm(p.ClockOut),
+        company:p.Company||'', jobSite:p['Customer/Job Site']||'', poNumber:p['PO#']||'', breakMin:brk,
+        notes:"Kept from the phone - the office did not have this shift" });
+    } else {
+      // running on the phone, nothing at the office: let the clock-in go as it was
+      for (const q of m.qids){ try{ const it=await DB.get(q); if(it) await DB.enqueue({ ...it, held:false, conflict:false, tries:0 }); }catch(e){} }
+      S.mismatch=S.mismatch.filter(x=>x!==m); render();
+      toast('Sending the phone\'s clock-in.'); flushQueue(); return;
+    }
+  } catch(e){ toast('The office did not take it: '+e.message, 8000); return; }
+  for (const q of m.qids){ try{ await DB.del(q); }catch(e){} }
+  S.mismatch=S.mismatch.filter(x=>x!==m); render(); queueCount_();
+  toast(o ? "Sent the phone's hours as a correction." : "Sent the phone's hours to the office.");
+  refresh(true);
 }
 
 /* ============================================================================
@@ -2949,7 +3111,7 @@ function todayView(){
   const asof=at ? `Numbers as of ${fmtTime(d.builtAt)}${at.toDateString()!==new Date().toDateString()?' · '+esc(tdShort(d.builtAt)):''}${stale?' — tap Refresh':''}`
     : (S.todayErr?esc(S.todayErr):(S.online?'Loading…':'No signal'));
   const head=`<div class="tdhead"><div><h2>Today</h2><div class="tdasof${stale?' stale':''}">${asof}</div></div>
-      <button class="tdrefresh" onclick="loadToday(true)" ${S.todayBusy?'disabled':''}>${S.todayBusy?'<span class="spin" style="width:16px;height:16px;border-width:2px"></span> Checking…':'↻ Refresh'}</button></div>`;
+      <button class="tdrefresh" onclick="loadToday(true)" ${S.todayBusy?'disabled':''}>${S.todayBusy?'<span class="spin" style="width:16px;height:16px;border-width:2px"></span> Checking…':'↻ Refresh'}</button></div>`+mmCards_();   // v174
   if(!d) return head+todayClockCard()+`<div class="card"><p class="muted small" style="margin:0">${S.online?'<span class="spin"></span> Getting the numbers…':'Open this screen once with signal and it will be kept on the phone.'}</p></div>`;
   const rows=todayRows(), groups=tdGroups_(rows);
   const hid=d.hidden||[];
@@ -9770,7 +9932,7 @@ function docQueueCount(q){
    the home screen until they are sent or seen. A 3-second toast was how a lost clock-out went
    unnoticed for six days. */
 function syncBanner(){
-  let h='';
+  let h=mmCards_();   // v174
   if (S.refused) h += `<div class="banner ot" style="cursor:pointer;background:#fee2e2;border-color:#fca5a5;color:#991b1b" onclick="openSyncStatus()">⚠ <b>${S.refused} thing${S.refused>1?'s were':' was'} not taken by the office</b> — tap to see why.</div>`;
   if (S.stuck) h += `<div class="banner ot" style="cursor:pointer;background:#fee2e2;border-color:#fca5a5;color:#991b1b" onclick="openSyncStatus()">⚠ <b>${S.stuck} punch${S.stuck>1?'es have':' has'} been waiting more than a day</b> — the office does NOT have ${S.stuck>1?'them':'it'}. Get signal and tap to send now.</div>`;
   // v106 - an ordinary wait is the blue badge in the top bar now; the red banners stay for the two
@@ -9786,7 +9948,7 @@ async function openSyncStatus(){
     ${(rc||sc)?`<div class="list-item"><b>${[rc?rc+' receipt photo'+(rc>1?'s':''):'', sc?sc+' invoice photo'+(sc>1?'s':'')+' being read':''].filter(Boolean).join(' · ')}</b><div class="small muted">sends with the rest</div></div>`:''}
     ${items.length?items.map(it=>`<div class="list-item"><b>${esc(describePunch_(it))}</b>
         <div class="small ${isStuck_(it)?'':'muted'}" ${isStuck_(it)?'style="color:var(--bad)"':''}>${isStuck_(it)?'⚠ ':''}waiting ${esc(fmtAge_(punchAge_(it)))}${isStuck_(it)?' — more than a day, the office does not have this':''}</div>
-        <div class="small muted">${it.conflict?'⚠ ':''}${esc(it.lastError||(it.lastTry?'':'not tried yet'))}${it.lastTry?' · last try '+fmtTime(new Date(it.lastTry).toISOString()):''}${it.stuckReported?' · admin emailed':''}</div></div>`).join('')
+        ${it.held?'<div class="small" style="color:#92400e">⏸ Held - the phone and the office disagree about this shift. Pick on its card.</div>':''}<div class="small muted">${it.conflict?'⚠ ':''}${esc(it.lastError||(it.lastTry?'':'not tried yet'))}${it.lastTry?' · last try '+fmtTime(new Date(it.lastTry).toISOString()):''}${it.stuckReported?' · admin emailed':''}</div></div>`).join('')
       :((rc||sc)?'':'<p class="muted">Nothing waiting - everything is at the office.</p>')}
     ${refused.length?`<h3 style="margin-top:14px;color:var(--bad)">Not taken by the office</h3>`+refused.map(r=>`<div class="list-item"><b>${esc(r.what)}</b><div class="small" style="color:var(--bad)">${esc(r.why)}</div></div>`).join('')
       +`<p class="small muted">These did not go through. A punch can be entered as a manual entry (Entries tab) if the time is owed; anything else can simply be done again.</p>`:''}
