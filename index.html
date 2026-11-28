@@ -9404,7 +9404,8 @@ async function openActivityLog(){
  *     size or brand; the name beats a part number; the words in the order typed, and a shorter name, win ties.
  *     A part number or SKU typed in full goes first.
  *  5. A size that is typed is that size: a part that says another size (20A for 15A, 14/3 for 14/2, a 200A
- *     panel for 100A) is left out; one that says no size of that kind is kept, lower down.
+ *     panel for 100A) is left out; one that says no size of that kind is kept, lower down. Volts go by family
+ *     (120 = 125 = 110, 240 = 250 = 208; v178 audit): a part of another voltage shows lower, never left out.
  * Everything on the price list is searched, whatever the shelf count says.
  * psSearch(query, list, get) -> [{ item, score, tier }], best first. tier 0: everything typed was found;
  * tier 1: close (part of it). get(item) -> { name, sku, codes } - codes are the suppliers' part numbers,
@@ -9474,7 +9475,8 @@ var PS_SAME = [   // [weight, forms...] - one meaning per row; a form may be sev
   [1.4, 'knockout', 'knockouts', 'knock out', 'ko'],
   [1.4, 'strut', 'unistrut', 'channel strut']
 ];
-var PS_NOT = { panel: ['led', 'light', 'lights', 'lumen', 'lumens', 'fixture', 'troffer', 'flat'] };   // "panel" in another sense
+var PS_NOT = { panel: ['led', 'light', 'lights', 'lumen', 'lumens', 'fixture', 'troffer', 'flat'],   // "panel" in another sense
+  wire: ['strap', 'straps', 'stapler', 'staple', 'staples', 'connector', 'connectors', 'conn', 'nut', 'nuts', 'tie', 'ties', 'marker', 'markers', 'clamp', 'clamps', 'brush', 'lube', 'lubricant', 'tray'] };   // things FOR wire
 var PS_BRAND = {   // the first word of a supplier's part number -> whose part it is
   sqd: ['square d', 'squared', 'sqd', 'schneider', 'qo', 'homeline'], scl: ['siemens'], sie: ['siemens'],
   ibv: ['iberville'], abb: ['abb'], ths: ['thomas & betts', 'thomas and betts', 't & b'], tre: ['red dot', 'thomas & betts', 't & b'],
@@ -9485,7 +9487,7 @@ var PS_BRAND = {   // the first word of a supplier's part number -> whose part i
   ecco: ['ecco'], eat: ['eaton', 'cutler hammer'], ch: ['eaton', 'cutler hammer'], jun: ['juno'], stp: ['stanpro']
 };
 var PS_STOP = { the: 1, a: 1, an: 1, of: 1, 'for': 1, 'with': 1, and: 1, to: 1, on: 1, x: 1, per: 1, 'c/w': 1, 'w/': 1, w: 1, each: 1, '&': 1 };
-var PS_HARD = { a: 1, sp: 1, v: 1, p: 1, ph: 1, g: 1, wire: 1, awg: 1, inch: 1, x: 1 };   // a size of these kinds is that size
+var PS_HARD = { a: 1, sp: 1, p: 1, ph: 1, g: 1, wire: 1, awg: 1, inch: 1, x: 1 };   // a size of these kinds is that size (volts: by family, see psVolt_)
 var psForms_ = null, psBrandN_ = null, psPrepMemo_ = (typeof WeakMap === 'function') ? new WeakMap() : null;
 function psNorm_(s) {
   var t = String(s == null ? '' : s).toLowerCase()
@@ -9496,10 +9498,14 @@ function psNorm_(s) {
     .replace(/(\d+)\s*(?:mcm|kcmil)\b/g, '#$1')
     .replace(/\b([2-9])[\s-]*(?:c|cond|conductors?)\b[\s\/-]*#?(\d)\/0\b/g, '#$2/0 $1c')
     .replace(/\b([2-9])[\s-]*(?:c|cond|conductors?)\b[\s\/-]*#?(\d{1,3})(?![\d\/-])/g, '$2/$1');
-  t = t.replace(/(\d)\s*(?:inches|inch|in)\b\.?/g, '$1"')
-    .replace(/(\d)\s*(?:amperes|amps|amp)\b/g, '$1a').replace(/(\d)\s+a\b/g, '$1a')
-    .replace(/(\d)\s*(?:volts|volt)\b/g, '$1v').replace(/(\d)\s+v\b/g, '$1v')
-    .replace(/(\d)\s*(?:watts|watt)\b/g, '$1w')
+  t = t.replace(/\b(?:3|three)[\s-]*quarters?(?:[\s-]*(?:of[\s-]*)?(?:an?[\s-]*)?inch(?:es)?)?\b/g, ' 3/4" ')   // v178 - said sizes: three quarter, half inch
+    .replace(/\b(?:one[\s-]*)?half[\s-]*(?:an?[\s-]*)?inch(?:es)?\b/g, ' 1/2" ').replace(/\b(?:one[\s-]*)?quarter[\s-]*(?:an?[\s-]*)?inch(?:es)?\b/g, ' 1/4" ')
+    .replace(/\bone[\s-]*inch\b/g, ' 1" ').replace(/\bone[\s-]*and[\s-]*a[\s-]*half[\s-]*(?:inch(?:es)?)?\b/g, ' 1-1/2" ')
+    .replace(/(^|[^#\/\d.])([2-4])[\s-]*wire\b/g, '$1$2wire')                                   // v178 - a 3-wire receptacle is not wire
+    .replace(/(\d)[\s-]*(?:inches|inch|in)\b\.?(?!-\d)/g, '$1"')                                 // v178 - 4-inch, 15-amp, 120-volt count too
+    .replace(/(\d)[\s-]*(?:amperes|amps|amp)\b/g, '$1a').replace(/(\d)\s+a\b/g, '$1a')
+    .replace(/(\d)[\s-]*(?:volts|volt)\b/g, '$1v').replace(/(\d)\s+v\b/g, '$1v')
+    .replace(/(\d)[\s-]*(?:watts|watt)\b/g, '$1w')
     .replace(/\b(?:single|one)[\s-]*pole\b/g, '1p').replace(/\b(?:double|two)[\s-]*pole\b/g, '2p').replace(/\b(?:three|triple)[\s-]*pole\b/g, '3p')
     .replace(/(\d)[\s-]*(?:poles|pole)\b/g, '$1p')
     .replace(/\b(?:single|one)[\s-]*phase\b/g, '1ph').replace(/\bthree[\s-]*phase\b/g, '3ph').replace(/(\d)[\s-]*(?:phase|ph)\b/g, '$1ph')
@@ -9520,7 +9526,8 @@ function psNorm_(s) {
       if (b === 0) w = '#' + a + '/0';
       else if (a < b && /^(2|4|8|16|32|64)$/.test(m[2])) w = a + '/' + b + '"';
     } else if ((m = /^(\d+)\/(\d)(?:cu|al|c)$/.exec(w)) && psWire_(m[1], m[2])) w = m[1] + '/' + m[2];
-    else if ((m = /^(\d+-\d+\/\d+)"?$/.exec(w))) w = m[1] + '"';
+    else if ((m = /^(\d+-(\d+)\/(2|4|8|16|32|64))"?$/.exec(w)) && Number(m[2]) < Number(m[3])) w = m[1] + '"';
+    else if ((m = /^(\d{1,2})-([2-4])$/.exec(w)) && Number(m[1]) > Number(m[2])) w = m[1] + '/' + m[2];   // v178 - 14-2 is 14/2
     else if ((m = /^(#\d+)\/[1-9]\d*$/.exec(w))) w = m[1];   // #6/7 is #6 (7 strands); #2/0 stays #2/0
     else if ((m = /^(\d+(?:\.\d+)?(?:x\d+(?:\.\d+)?){1,2})"$/.exec(w))) w = m[1];
     out.push(w);
@@ -9542,6 +9549,10 @@ function psSounds_(a, b) {   // two words of 4+ letters, about as long, that sou
 function psNear_(t, w, pre) {   // t is w spelled wrong: a letter or two off (two only in a long word), or sounds the same;
   var max = t.length >= 8 ? 2 : 1;   // pre: t is still being typed, so the start of w will do ("receptica" -> receptacle)
   return psEd_(t, w, max) <= max || psSounds_(t, w) || (!!pre && w.length > t.length && t.length >= 4 && psEd_(t, w.slice(0, t.length), max) <= max);
+}
+function psVolt_(v) {   // the family a voltage belongs to: a 125V receptacle is what you get for 120V, a 250V plug for 240V
+  var n = Number(v);
+  return n >= 100 && n <= 130 ? 120 : n >= 200 && n <= 254 ? 240 : n >= 265 && n <= 290 ? 277 : n >= 340 && n <= 360 ? 347 : n >= 440 && n <= 600 ? 600 : n;
 }
 function psStem_(w) {
   if (!/^[a-z]{4,}$/.test(w)) return w;
@@ -9711,6 +9722,7 @@ function psHit_(u, P) {   // 0..1, or -1: the part says another size
       if (have && have.some(function (v) { return v.indexOf(u.v + 'x') === 0; })) return 0.95;
       if (P.cc.indexOf(u.v) >= 0) return 0.9;
     }
+    if (u.d === 'v' && have && have.length) { var fam = psVolt_(u.v); return have.some(function (v) { return psVolt_(v) === fam; }) ? 0.9 : 0; }
     if (have && have.length && PS_HARD[u.d]) return -1;
     return 0;                                   // a size is read off the name, never out of a SKU's digits
   }
