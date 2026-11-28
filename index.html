@@ -146,7 +146,9 @@
   .suggest .il-on, .suggest .il-sg:active{background:var(--line)}
   .suggest .ps-close{padding:7px 14px; font-size:12px; font-weight:800; letter-spacing:.03em; color:var(--muted); background:var(--panel)}   /* v176 - part search: where the close matches start */
   .suggest .ps-more{text-align:center; font-weight:700; color:var(--accent2); cursor:pointer; background:var(--panel)}
-  .suggest .ps-sub{display:block; font-size:12px; color:var(--muted); margin-top:2px}   /* v156 - Add a part: the suggestion picked with the arrow keys, or under the thumb */
+  .suggest .ps-sub{display:block; font-size:12px; color:var(--muted); margin-top:2px}
+  .suggest .ps-fix{padding:9px 14px; font-size:13px; color:var(--muted); background:var(--panel)}   /* v177 - "Showing results for receptacle" */
+  .ps-fix b{color:var(--text)}   /* v156 - Add a part: the suggestion picked with the arrow keys, or under the thumb */
   .toast{position:fixed; bottom:calc(84px + var(--safe)); left:50%; transform:translateX(-50%);
     background:var(--navy); color:#fff; padding:12px 18px; border-radius:14px; z-index:60;
     max-width:90%; text-align:center; box-shadow:0 8px 24px rgba(31,56,100,.3)}
@@ -4870,7 +4872,7 @@ function ilShow_(i, found, q){
   const was=!!box.innerHTML, max=ilMax[i]||8;
   ilFound[i]=found; ilQ[i]=q; ilHits[i]=found.slice(0,max).map(h=>h.item);
   box.innerHTML=found.length
-    ? `<div class="suggest">${psRowsHtml_(found, q, max, (h,j)=>ilSugRow_(h.item,j,i), `ilMoreShow(${i})`)}</div>`
+    ? `<div class="suggest">${(found.fixed||[]).length?`<div class="ps-fix">${psFixText_(q, found.fixed)}</div>`:''}${psRowsHtml_(found, q, max, (h,j)=>ilSugRow_(h.item,j,i), `ilMoreShow(${i})`)}</div>`
     : `<div class="suggest"><div class="small muted">Nothing on the price list matches “${esc(q)}” — type the name and the cost yourself.</div></div>`;
   // on a phone the keyboard covers the bottom half: bring the box to the top so the list shows under it
   if(!was && found.length && window.innerWidth<700){ const inp=document.getElementById('ild'+i); if(inp) try{ inp.scrollIntoView({block:'start', behavior:'smooth'}); }catch(e){} }
@@ -9395,7 +9397,9 @@ async function openActivityLog(){
  *  2. The trade's other words for the same thing count: panel = loadcentre / load center, sqd = Square D,
  *     romex = NMD90, gfi = GFCI, FS box = weatherproof box (PS_SAME below - add to it freely).
  *  3. It looks everywhere: the name, our SKU and the suppliers' part numbers, where SQD, LEV, IBV say whose
- *     part it is (PS_BRAND), and forgives a typo in a word (brakers, recepticle, pannel).
+ *     part it is (PS_BRAND), and forgives a word spelled wrong (v177): a letter or two off (brakers, pannel),
+ *     or one that sounds the same (receptical = receptacle, hubel = Hubbell, grnd = ground). It guesses only
+ *     when the word as typed is on no part at all, and says what it guessed (psSearch(...).fixed).
  *  4. It ranks: everything typed found beats part of it; what the part is (panel) counts for more than its
  *     size or brand; the name beats a part number; the words in the order typed, and a shorter name, win ties.
  *     A part number or SKU typed in full goes first.
@@ -9526,6 +9530,19 @@ function psNorm_(s) {
 function psWire_(a, b) {   // 14/2, 6/3, 2/2, 1/3 are cables; 1/2, 3/4, 1/8 are inches (made 1/2" before this is asked)
   return Number(a) >= Number(b) || !/^[248]$/.test(String(b));
 }
+function psSkel_(w) {   // how a word sounds, near enough: its first letter, then its consonants (receptical, receptacle: rcptcl)
+  w = String(w || '').toLowerCase().replace(/[^a-z]/g, '').replace(/ph/g, 'f').replace(/ck/g, 'c').replace(/[kq]/g, 'c').replace(/z/g, 's');
+  return w ? (w.charAt(0) + w.slice(1).replace(/[aeiouyhw]/g, '')).replace(/(.)\1+/g, '$1') : '';
+}
+function psSounds_(a, b) {   // two words of 4+ letters, about as long, that sound the same (hubel, hubbell: hbl; sieman, siemens)
+  if (a.length < 4 || b.length < 4 || Math.abs(a.length - b.length) > 3) return false;
+  var s = psSkel_(a), t = psSkel_(psStem_(a));
+  return (s.length >= 3 && s === psSkel_(b)) || (t.length >= 3 && t === psSkel_(psStem_(b)));
+}
+function psNear_(t, w, pre) {   // t is w spelled wrong: a letter or two off (two only in a long word), or sounds the same;
+  var max = t.length >= 8 ? 2 : 1;   // pre: t is still being typed, so the start of w will do ("receptica" -> receptacle)
+  return psEd_(t, w, max) <= max || psSounds_(t, w) || (!!pre && w.length > t.length && t.length >= 4 && psEd_(t, w.slice(0, t.length), max) <= max);
+}
 function psStem_(w) {
   if (!/^[a-z]{4,}$/.test(w)) return w;
   if (/ies$/.test(w)) return w.slice(0, -3) + 'y';
@@ -9647,11 +9664,15 @@ function psQuery_(q) {
     var u = { k: 'word', t: w, w: w.length <= 2 ? 0.5 : 1.0 };
     // a typo of one of the trade's words ("pannel", "brakers", "recepticle") - only a guess: psSearch takes it
     // when the word as typed is on no part at all, the way a search engine asks "did you mean" ("airtight" stays)
-    if (/^[a-z]{4,}$/.test(w)) {
-      var max = w.length >= 8 ? 2 : 1;
-      for (var i = 0; i < forms.length && !u.fz; i++) {
-        var f = forms[i]; if (f.u.k !== 'concept' || f.f.indexOf(' ') >= 0 || f.f.length < 4) continue;
-        if (psEd_(w, f.f, max) <= max) u.fz = f.u;
+    if (/^[a-z]{4,}$/.test(w)) {   // the closest wins: one letter off, then two, then sounds the same
+      var max = w.length >= 8 ? 2 : 1, how = 0;
+      for (var i = 0; i < forms.length && how < 9; i++) {
+        var f = forms[i]; if (!/^[a-z]{4,}$/.test(f.f)) continue;   // one word of 4+ letters: a trade word or a maker
+        var d = psEd_(w, f.f, max), h = d <= max ? 10 - d : (psSounds_(w, f.f) ? 5 : 0);
+        if (!h && last && f.f.length > w.length && (d = psEd_(w, f.f.slice(0, w.length), max)) <= max) h = 4 - d;   // half typed
+        if (h > how || (h && h === how && Math.abs(f.f.length - w.length) < Math.abs(u.fzLen - w.length))) {   // a tie: the nearer length (receptacle, not receptacles)
+          how = h; u.fz = f.u; u.fzLen = f.f.length; u.fzTo = (f.u.k === 'concept' && f.f.length < w.length) ? f.u.forms[0] : f.f;
+        }
       }
     }
     if (last && /^[a-z]+$/.test(w)) {
@@ -9673,8 +9694,7 @@ function psWordHit_(t, P, pre, nofz) {
   if (t.length >= 3 && P.cs.indexOf(' ' + t + ' ') >= 0) return 0.8;
   if (t.length >= 4) for (i = 0; i < P.w.length; i++) if (P.w[i].indexOf(t) > 0) return 0.6;
   if (!nofz && /^[a-z]{4,}$/.test(t)) {
-    var max = t.length >= 8 ? 2 : 1;
-    for (i = 0; i < P.w.length; i++) if (/^[a-z]+$/.test(P.w[i]) && psEd_(t, P.w[i], max) <= max) return 0.5;
+    for (i = 0; i < P.w.length; i++) if (/^[a-z]+$/.test(P.w[i]) && psNear_(t, P.w[i], pre)) return 0.5;
   }
   return 0;
 }
@@ -9726,12 +9746,15 @@ function psSearch(q, list, get) {
   list = list || [];
   // "did you mean": a word that is on some part as typed is searched as typed, never as a guess at another word;
   // one that is on none takes the trade word it is a typo of (pannel -> panel), or is matched loosely
+  var fixed = [];   // what was guessed, for "Showing results for ...": [{ from: what was typed, to: what it was read as }]
   units.forEach(function (u) { if (u.id) ids[u.id] = 1; });
   units = units.map(function (u) {
     if (u.k !== 'word') return u;
     var lit = list.some(function (item) { var g = get ? get(item) : item; return g && (g.name || g.sku) && psWordHit_(u.t, psPrep_(g, item), u.pre, true) > 0; });
-    if (lit) { var c = {}; for (var k in u) if (k !== 'fz') c[k] = u[k]; c.nofz = true; return c; }
-    if (u.fz) return ids[u.fz.id] ? null : (ids[u.fz.id] = 1, u.fz);
+    if (lit) { var c = {}; for (var k in u) if (k !== 'fz' && k !== 'fzTo' && k !== 'fzLen') c[k] = u[k]; c.nofz = true; return c; }
+    if (u.fz) { fixed.push({ from: u.t, to: u.fzTo }); return ids[u.fz.id] ? null : (ids[u.fz.id] = 1, u.fz); }
+    var near = psNearWord_(u.t, list, get, u.pre);   // no trade word or maker either: the word on the parts it is most like
+    if (near) fixed.push({ from: u.t, to: near });
     return u;
   }).filter(Boolean);
   if (!units.length) return [];
@@ -9755,11 +9778,36 @@ function psSearch(q, list, get) {
     out.push({ item: item, score: Math.round(s * 1000) / 1000, tier: c > 0.999 ? 0 : 1 });
   });
   out.sort(function (a, b) { return (a.tier - b.tier) || (b.score - a.score) || String((get ? get(a.item) : a.item).name).localeCompare(String((get ? get(b.item) : b.item).name)); });
+  out.fixed = out.length ? fixed : [];
   return out;
+}
+function psNearWord_(t, list, get, pre) {   // the word on the parts that a word on none of them is most likely a slip for
+  if (!/^[a-z]{4,}$/.test(t)) return '';
+  var n = {}, best = '', bn = 0;
+  (list || []).forEach(function (item) {
+    var g = get ? get(item) : item;
+    if (!g || !(g.name || g.sku)) return;
+    var P = psPrep_(g, item), seen = {};
+    P.w.forEach(function (w) {
+      if (seen[w] || !/^[a-z]{4,}$/.test(w)) return;
+      seen[w] = 1;
+      if (psNear_(t, w, pre) && (n[w] = (n[w] || 0) + 1) > bn) { bn = n[w]; best = w; }
+    });
+  });
+  return best;
 }
 /* ===== end of PART SEARCH ===== */
 /* v176 - helpers around the PART SEARCH for the screens: the first supplier part numbers to show under a part,
    and a quiet first search once a list arrives so the first letters typed come up at once. */
+/* v177 - a word spelled wrong was read as another ("receptical" as receptacle): say so, the way Google does */
+function psFixText_(q, fixed){
+  if(!fixed||!fixed.length) return '';
+  let s=esc(String(q||'').trim().replace(/\s+/g,' ')), all=true;
+  fixed.forEach(f=>{ const re=new RegExp('(^|[^a-z0-9])'+String(f.from||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?![a-z0-9])','i');
+    if(f.from && re.test(s)) s=s.replace(re,(m,a)=>a+'<b>'+esc(f.to)+'</b>'); else all=false; });
+  if(!all) s=fixed.map(f=>esc(f.from)+' → <b>'+esc(f.to)+'</b>').join(', ');
+  return 'Showing results for '+s;
+}
 function psCodeShow_(pn){ return String(pn||'').split(';').map(x=>x.trim()).filter(Boolean).slice(0,2).join(' · ').slice(0,44); }
 const psWarmed_ = (typeof WeakSet==='function') ? new WeakSet() : null;
 function psWarm_(list, get){ if(!list||!list.length||(psWarmed_&&psWarmed_.has(list))) return; if(psWarmed_) psWarmed_.add(list);
@@ -10776,7 +10824,8 @@ function mdMore(mode){ S.mdShow=(S.mdShow||12)+24; mdHitsPaint_(mode); }
 function mdHitsHtml(mode){
   const q = (S.mdQ||'').trim(), hits = S.mdHits||[];
   if (!q) return '<p class="small muted" style="margin:6px 0">Type what you are looking for — a name, a size, a brand or a part number (sqd panel, 1/2 fs box, qo115).</p>';
-  const rows = psRowsHtml_(hits, q, S.mdShow||12, (m,i)=>`<div onclick="mdPick('${mode}',${i})"><b>${esc(m.name)}</b>${
+  const fix = hits.length && (S.mdFixed||[]).length ? `<div class="ps-fix">${psFixText_(q, S.mdFixed)}</div>` : '';
+  const rows = fix + psRowsHtml_(hits, q, S.mdShow||12, (m,i)=>`<div onclick="mdPick('${mode}',${i})"><b>${esc(m.name)}</b>${
       m.unit?` <span class="small muted">${esc(m.unit)}</span>`:''}${mdHitSub_(m)}</div>`, `mdMore('${mode}')`);
   // Always last, always offered: the inventory has never heard of half of what is on a van.
   return `<div class="suggest">${rows}<div onclick="mdNewPart('${mode}')" style="background:var(--panel)">
@@ -10785,13 +10834,14 @@ function mdHitsHtml(mode){
     </div></div>`;
 }
 let mdT=null;
-function mdAddOpen(mode){ S.mdOpen=mode; S.mdQ=''; S.mdHits=[]; S.mdShow=12; mdPaint_(); psWarm_(S.materials, matGet_);
+function mdAddOpen(mode){ S.mdOpen=mode; S.mdQ=''; S.mdHits=[]; S.mdFixed=[]; S.mdShow=12; mdPaint_(); psWarm_(S.materials, matGet_);
   setTimeout(()=>{ const el=document.getElementById('mds_'+mode); if(el) el.focus(); }, 40); }
 function mdAddClose(){ S.mdOpen=''; S.mdQ=''; S.mdHits=[]; mdPaint_(); }
 function mdSearch(mode){
   S.mdQ = val('mds_'+mode); S.mdShow = 12;
-  const typed = S.mdQ.trim();
-  S.mdHits = (typed ? localMatSearch(S.mdQ) : []).map(h=>({name:h.item.name, sku:h.item.sku||'', unit:h.item.unit||'',
+  const typed = S.mdQ.trim(), res = typed ? localMatSearch(S.mdQ) : [];
+  S.mdFixed = res.fixed || [];                                  // v177 - a word read as another: said above the list
+  S.mdHits = res.map(h=>({name:h.item.name, sku:h.item.sku||'', unit:h.item.unit||'',
     pn:h.item.pn||'', onHand:null, tier:h.tier}));
   mdHitsPaint_(mode);                       // the phone's own copy, instantly
   clearTimeout(mdT);
@@ -10808,7 +10858,7 @@ function mdSearch(mode){
       S.mdHits.forEach(h=>{ const k=String(h.sku||'').trim().toUpperCase(); if (k && by[k]) { h.onHand=by[k].onHand; have[k]=1; } });
       const extra = got.filter(it=>{ const k=String(it.sku||'').trim().toUpperCase(); return k && !have[k]; })
         .map(it=>({name:it.desc, sku:it.sku||'', unit:it.unit||'', pn:it.pn||'', onHand:it.onHand, tier:it.tier===0?0:1}));
-      if (!S.mdHits.length) S.mdHits = extra;                   // nothing on the phone yet: the office's list
+      if (!S.mdHits.length) { S.mdHits = extra; S.mdFixed = r.fixed || []; }   // nothing on the phone yet: the office's list
       else if (r.ranked) extra.forEach(e=>{ const at = e.tier===0 ? S.mdHits.findIndex(h=>h.tier!==0) : -1;
         if (at<0) S.mdHits.push(e); else S.mdHits.splice(at, 0, e); });
       mdHitsPaint_(mode);
@@ -13420,8 +13470,8 @@ function openPriceList(){
 }
 /* v176 - ranked like Google (the office runs the same PART SEARCH); the phone's own copy of the price list shows
    the matches at once, and the office's answer brings the supplier, date and cheapest price a moment later. */
-function plRowsHtml_(items, q, total){
-  const whole=items.filter(it=>it.tier===0).length; let out='';
+function plRowsHtml_(items, q, total, fixed){
+  const whole=items.filter(it=>it.tier===0).length; let out=(items.length&&(fixed||[]).length)?`<p class="small muted ps-fix" style="margin:2px 0 8px">${psFixText_(q, fixed)}</p>`:'';
   items.forEach((it,i)=>{
     if(it.tier===1 && (i===0 || items[i-1].tier!==1))
       out+=`<p class="small muted" style="margin:12px 0 4px;font-weight:800">${whole?'Close matches':'Nothing has all of “'+esc(q)+'” — the closest'}</p>`;
@@ -13439,7 +13489,7 @@ function plSearch(){
   const q=val('plQ'), box0=document.getElementById('plList');
   if(box0 && q.trim().length>=2 && S.priceAll && S.priceAll.length){
     const hits=ilFind(q, S.priceAll);
-    box0.innerHTML=plRowsHtml_(hits.slice(0,40).map(h=>Object.assign({}, h.item, {tier:h.tier})), q, hits.length);
+    box0.innerHTML=plRowsHtml_(hits.slice(0,40).map(h=>Object.assign({}, h.item, {tier:h.tier})), q, hits.length, hits.fixed);
   }
   plT=setTimeout(async ()=>{
     const box=document.getElementById('plList'); if(!box) return;
@@ -13447,7 +13497,7 @@ function plSearch(){
     try{
       const r=await apiBg('priceList',{q:q,limit:40});
       const b2=document.getElementById('plList'); if(!b2 || val('plQ')!==q) return;      // typed on since
-      b2.innerHTML=plRowsHtml_(r.items||[], q, r.total);
+      b2.innerHTML=plRowsHtml_(r.items||[], q, r.total, r.fixed);
     }catch(e){ const b3=document.getElementById('plList'); if(b3) b3.innerHTML='<p class="small" style="color:var(--bad)">'+esc(e.message)+'</p>'; }
   },350);
 }
