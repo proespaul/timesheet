@@ -3782,14 +3782,17 @@ function openTodayBill(k){
     <p>Last on site <b>${esc(tdDay(it.last))}</b> · <b>${Number(it.hours).toFixed(2)} h</b> approved${it.pending?` and ${Number(it.pending).toFixed(2)} h waiting for approval`:''}.</p>
     <p class="small muted">${it.calOk?'Nothing is booked for it in the next 60 days.':"The calendar couldn't be checked, so a visit may still be booked."} If the job isn't finished, put it aside and it comes back in two weeks.</p>
     <button style="width:100%;margin-top:6px" onclick="openInvoiceList('${pk}')">🧾 Build initial draft</button>
+    <button class="secondary" style="width:100%;margin-top:6px" data-fd="${esc(fdKey(it.po,it.name))}" onclick="openInvoiceList('${pk}',true)">✅ Build final draft now — skip the initial</button>
+    <p class="small muted" data-fdnote="${esc(fdKey(it.po,it.name))}" style="margin:6px 0 0"></p>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="openJobAll('${pk}')">📋 Job details</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="todayHide('${hk}')">Not finished — hide it for 2 weeks</button>
     <button class="ghost" style="width:100%;margin-top:2px" onclick="closeSheet()">Close</button>`);
+  fdPeek(it.po, it.name);   // v175 - a final draft already being built shows on the button
 }
 function openTodayDraft(k){
   const it=dereg(k); if(!it) return;
   navSelf(()=>openTodayDraft(k));
-  const pk=reg({jobSite:it.name, po:it.po}), hk=reg({key:it.key, days:14});
+  const pk=reg({jobSite:it.name, po:it.po, qb:it.qb}), hk=reg({key:it.key, days:14});
   // v148 (Paul, 19 Nov: "building an invoice draft should not label the job is closed") - the job stays
   // In progress through both drafts. It reads Invoiced once the invoice has been sent, Closed once paid.
   sheet(`<h2>${esc(it.name)}</h2>
@@ -4039,7 +4042,7 @@ function openJobDetail(k){
       <button style="width:100%;margin-top:4px" onclick="openInvoiceList('${pk}')">🧾 Build Initial Draft</button>
       <button class="secondary" style="width:100%;margin-top:6px" data-fd="${esc(fdKey(j.po||'',j.name))}" onclick="reqInvoice('${pk}','final',this)">✅ Build Final Draft</button>
       <p class="small" data-fdnote="${esc(fdKey(j.po||'',j.name))}" style="margin:6px 0 0;color:var(--accent2)"></p>
-      <p class="small muted" style="margin:6px 0 0">Initial: you confirm the quantity of each part first, then Claude bills that list at cost and adds the hours. Final rolls them up and applies the markup. Neither is ever sent to the customer, and neither changes the job's status: it reads Invoiced once the invoice has been sent, Closed once it is paid.</p>`:''}
+      <p class="small muted" style="margin:6px 0 0">Initial: you confirm the quantity of each part first, then Claude bills that list at cost and adds the hours. Final rolls them up and applies the markup. No initial draft yet? Build Final Draft skips it: you confirm the parts and Claude builds the invoice straight to final. Neither is ever sent to the customer, and neither changes the job's status: it reads Invoiced once the invoice has been sent, Closed once it is paid.</p>`:''}
     ${j.po?miQuickBox(pk):''}
     <button class="secondary" style="width:100%;margin-top:${S.me&&S.me.role==='admin'?'6':'10'}px" onclick="openJobAll('${pk}')">📋 Job details</button>
     <button class="secondary" style="width:100%;margin-top:6px" onclick="closeSheet()">Close</button>`);
@@ -4449,21 +4452,30 @@ function fdWords(st){
   if(st.state==='stopped') return {ok:false, btn:'⚠ Not built — tap to try again',
     msg:'Final draft NOT built: '+String(r.note||'the build stopped on one of its checks').replace(/[.\s]+$/,'')+'.'};
   if(st.state==='noanswer') return {ok:false, btn:'⚠ No answer — tap to try again',
-    msg:'Claude has not answered after 10 minutes. Look at the invoice in QuickBooks before tapping again.'};
+    msg:'Claude has not answered after '+(st.skip?'30':'10')+' minutes. Look at the invoice in QuickBooks before tapping again.'};
   return null;
 }
 function fdBtn(key){ return document.querySelector('button[data-fd="'+key+'"]'); }
+/* v175 - SKIP THE INITIAL DRAFT (Paul, 28 Nov: "i want to be able to skip the initial draft if i want to to be
+   able to invoice on the spot"). Build Final Draft on a job with no invoice in QuickBooks yet opens the parts
+   list (the same one Build Initial Draft uses), then the office builds the invoice and starts the final draft on
+   it the moment it is in (office script v141). The button counts the two steps. Whether a job has an invoice yet
+   is the office's answer (the PO Log's QuickBooks number), asked as the job sheet opens and kept 90 seconds. */
+function fdQbSet_(key, qb){ (S._fdQb=S._fdQb||{})[key]={qb:String(qb==null?'':qb), at:Date.now()}; }
+function fdQbGet_(key){ const x=S._fdQb&&S._fdQb[key]; return x&&(Date.now()-x.at)<90000 ? x.qb : undefined; }
+function fdBusyLabel_(w){ return w&&w.skip ? (w.stage==='final' ? '⚡ Step 2 of 2: the markup…' : '⚡ Step 1 of 2: hours and parts…') : '⚡ Claude is building it…'; }
 function fdNoteEl(key){ return document.querySelector('[data-fdnote="'+key+'"]'); }
-function fdWatch(po, jobSite, t0){
+function fdWatch(po, jobSite, t0, opt){
   const key=fdKey(po,jobSite); if(!key) return;
   if(FD_WATCH[key]) clearTimeout(FD_WATCH[key].timer);
-  const w=FD_WATCH[key]={t0:t0||Date.now(), timer:0, busy:false};
-  const paint=()=>{ const b=fdBtn(key); if(b){ b.disabled=true; b.textContent='⚡ Claude is building it… '+fdClock(Math.max(0,Math.round((Date.now()-w.t0)/1000))); } };
+  const w=FD_WATCH[key]={t0:t0||Date.now(), timer:0, busy:false, skip:!!(opt&&opt.skip), stage:(opt&&opt.stage)||'initial'};   // v175
+  const paint=()=>{ const b=fdBtn(key); if(b){ b.disabled=true; b.textContent=fdBusyLabel_(w)+' '+fdClock(Math.max(0,Math.round((Date.now()-w.t0)/1000))); } };
   const done=(words, st)=>{
     if(FD_WATCH[key]!==w) return;
     clearTimeout(w.timer); delete FD_WATCH[key];
     const b=fdBtn(key); if(b){ b.textContent=words.btn; b.disabled=!!words.ok; }
     const n=fdNoteEl(key); if(n) n.textContent=words.msg;
+    if(words.ok && st && st.result && st.result.invoiceNo) fdQbSet_(key, st.result.invoiceNo);   // v175 - the job has its invoice now
     // The whole answer is under the button when the sheet is still open; a short pop-up then, so it
     // does not cover it. With the sheet closed the pop-up is the only place to say it, so it says it all.
     if(n) toast(words.ok ? ((st&&st.state==='already'?'Already a final draft ✓':'Final draft built ✓')+(words.issue?' — but one thing was not done, see under the button':''))
@@ -4486,11 +4498,12 @@ function fdWatch(po, jobSite, t0){
       try{ st=await api('finalStatus',{po:po, jobSite:jobSite},{bg:true, timeout:30000}); }catch(e){}
       w.busy=false;
       if(FD_WATCH[key]!==w) return;
+      if(st && st.state==='building'){ if(st.skip) w.skip=true; if(st.stage) w.stage=st.stage; }   // v175 - which of the two steps
       const words=st&&fdWords(st);
       if(words) return done(words, st);
     }
-    if(secs>690) return done({ok:false, btn:'⚠ No answer — tap to try again',
-      msg:'Claude has not answered after 10 minutes. Look at the invoice in QuickBooks before tapping again.'});
+    if(secs>(w.skip?1860:690)) return done({ok:false, btn:'⚠ No answer — tap to try again',
+      msg:'Claude has not answered after '+(w.skip?'30':'10')+' minutes. Look at the invoice in QuickBooks before tapping again.'});
     w.timer=setTimeout(tick, 1000);
   };
   paint(); w.timer=setTimeout(tick, 1000);
@@ -4499,11 +4512,12 @@ function fdWatch(po, jobSite, t0){
    button; if one has answered, say so under it. One quiet question to the office, no waiting on it. */
 function fdPeek(po, jobSite){
   const key=fdKey(po,jobSite); if(!key || !isOffice()) return;
-  if(FD_WATCH[key]){ const b=fdBtn(key); if(b){ b.disabled=true; b.textContent='⚡ Claude is building it…'; } return; }
+  if(FD_WATCH[key]){ const b=fdBtn(key); if(b){ b.disabled=true; b.textContent=fdBusyLabel_(FD_WATCH[key]); } return; }
   if(!S.online) return;
-  api('finalStatus',{po:po, jobSite:jobSite},{bg:true, timeout:30000}).then(st=>{
+  api('finalStatus',{po:po, jobSite:jobSite, withQb:1},{bg:true, timeout:30000}).then(st=>{
     if(!st) return;
-    if(st.state==='building'){ fdWatch(po, jobSite, st.requestedAt?new Date(st.requestedAt).getTime():Date.now()); return; }
+    if(st.qb!=null) fdQbSet_(key, st.qb);                                    // v175 - is there an invoice yet?
+    if(st.state==='building'){ fdWatch(po, jobSite, st.requestedAt?new Date(st.requestedAt).getTime():Date.now(), {skip:st.skip, stage:st.stage}); return; }
     const words=fdWords(st), n=fdNoteEl(key);
     if(words && n && (st.state==='built'||st.state==='already')){
       // No total here: this is old news, and the invoice may have been edited in QuickBooks since.
@@ -4528,6 +4542,21 @@ async function heldUndo(id, item){
 async function reqInvoice(pk,stage,btn){
   const ref=dereg(pk); if(!ref) return;
   if(!S.online) return toast('You need signal to send the request.');
+  // v175 - no invoice in QuickBooks for this job yet: there is no initial draft to finish, so Build Final Draft
+  // opens the parts list and builds it straight to final. An office older than script v141 does not say (no qb):
+  // then it goes on as before.
+  if(stage==='final' && !ref.qb){
+    const fk=fdKey(ref.po||'', ref.jobSite);
+    let q=fdQbGet_(fk);
+    if(q===undefined){
+      const was=btn.textContent; btn.disabled=true; btn.textContent='Checking…';
+      let st=null; try{ st=await api('finalStatus',{po:ref.po||'', jobSite:ref.jobSite, withQb:1},{timeout:30000}); }catch(e){}
+      btn.disabled=false; btn.textContent=was;
+      if(st && st.qb!=null){ fdQbSet_(fk, st.qb); q=String(st.qb); }
+      if(st && st.state==='building'){ fdWatch(ref.po||'', ref.jobSite, st.requestedAt?new Date(st.requestedAt).getTime():Date.now(), {skip:st.skip, stage:st.stage}); return; }
+    }
+    if(q==='') return openInvoiceList(pk, true);
+  }
   if(stage==='final' && !confirm('Final draft rewrites the invoice in QuickBooks: the itemised '
       +'part lines are replaced by one Materials line with the markup applied.\n\n'
       +'Have you finished correcting it in QuickBooks?')) return;
@@ -4535,7 +4564,10 @@ async function reqInvoice(pk,stage,btn){
   try{
     // v53 — the script now emails the request AND starts Claude; on a cold start that can take
     // longer than the default wait, so give it 90 s instead of calling a sent request a failure.
-    const r=await api('invoiceRequest',{po:ref.po||'', jobSite:ref.jobSite, stage:stage},{timeout:90000});
+    // v175 - a final draft carries the invoice number the office told the app (found in QuickBooks' own copy
+    // when the PO Log has none), so the build looks for the right invoice
+    const qbHint = stage==='final' ? String(ref.qb || fdQbGet_(fdKey(ref.po||'', ref.jobSite)) || '') : '';
+    const r=await api('invoiceRequest',{po:ref.po||'', jobSite:ref.jobSite, stage:stage, ...(qbHint?{qb:qbHint}:{})},{timeout:90000});
     // v144 - Build Final Draft starts Claude too (its own routine, script v117). Say plainly when it
     // did NOT start: until v144 this said "requested" while nothing ever built it, and invoice 195
     // was tapped three times before anyone found nothing had reached QuickBooks.
@@ -4581,10 +4613,13 @@ async function reqInvoice(pk,stage,btn){
    elsewhere. Save → the list is stored on the Invoice lists tab and Claude builds the draft from
    it, then fetches the hours. If a list was saved before, its quantities come back pre-filled. */
 let invList=null;
-async function openInvoiceList(pk){
+async function openInvoiceList(pk, skip){
   const ref=dereg(pk); if(!ref) return;
   if(!S.online) return toast('You need signal to load the parts.');
-  navPush(); navSelf(()=>openInvoiceList(pk));
+  navPush(); navSelf(()=>openInvoiceList(pk, skip));
+  // v175 - straight to final: who is still on the clock on this job, and hours not approved yet, are asked
+  // alongside the parts (they would not be billed); the list does not wait for the answer
+  let chk=null; if(skip) invSkipAsk_(ref, c=>{ chk=c; });
   loadPriceAll();   // v156 - the price list for Add a part's suggestions, fetched while the POs load
   sheet(`<h2>${esc(ref.jobSite)}</h2><p class="center" style="margin:22px 0"><span class="spin"></span> Loading the POs…</p>`);
   const mine=S._sheet;
@@ -4629,7 +4664,7 @@ async function openInvoiceList(pk){
     (m.dups||[]).forEach(d=>(d.lines||[]).forEach(l=>{ const k=String(l.sku||'').trim().toUpperCase()||String(l.desc||'').trim().toLowerCase();
       (dupBy[k]=dupBy[k]||[]).push(`${l.qty} on both ${d.drop.invoice||'a scan'} and ${d.keep.invoice||'a scan'}`); }));
     items.forEach(it=>{ const k=String(it.sku||'').trim().toUpperCase()||String(it.desc||'').trim().toLowerCase(); if(dupBy[k]) it.dup=dupBy[k].join('; '); });
-    invList={ref, items, savedAt: saved&&saved.found?saved.savedAt:'', dups:(m.dups||[]).length, used:m.used||[]};
+    invList={ref, items, savedAt: saved&&saved.found?saved.savedAt:'', dups:(m.dups||[]).length, used:m.used||[], skip:!!skip, chk};
     invList.snap=invSnap_(invList);
     renderInvoiceList();
   }catch(e){ toast(e.message); if(S._sheet===mine) closeSheet(); }
@@ -4672,8 +4707,12 @@ function renderInvoiceList(){
           : `<span class="small muted" id="ilp${i}">@ ${it.unit!=null?'$'+it.unit.toFixed(2)+(it.uom?' / '+esc(it.uom):''):'no cost'}</span>`}
         <span class="grow" style="text-align:right;font-weight:600" id="ilc${i}"></span>
       </div></div>`).join('');
+  const fk=fdKey(L.ref.po||'', L.ref.jobSite), canSkip=!L.skip && fdQbGet_(fk)==='';
   sheet(`<h2 style="margin-bottom:2px">${esc(L.ref.jobSite)} — parts to bill</h2>
-    <p class="small muted" style="margin-top:0">${L.ref.po?('PO '+esc(L.ref.po)+' · '):''}Set how many of each part to put on the invoice. 0 = leave it off. Claude bills exactly this list at cost, then adds the hours.${L.savedAt?' <b>Pre-filled from your last save.</b>':''}</p>
+    ${L.skip?`<div class="jm-q" style="margin:4px 0 8px;border-color:#86efac;background:#f0fdf4;color:#14532d"><b>⚡ Straight to the final draft — no initial draft</b>
+      <div class="small">Set the parts, then tap Build final draft now. Claude builds the invoice from this list and the approved hours, then rolls the parts into one Materials line with the markup. You don't get the at-cost draft to check first. Nothing is sent to the customer.</div></div>
+      <div id="ilWarn">${invSkipWarnHtml_(L)}</div>`:''}
+    <p class="small muted" style="margin-top:0">${L.ref.po?('PO '+esc(L.ref.po)+' · '):''}Set how many of each part to put on the invoice. 0 = leave it off. ${L.skip?'Claude bills exactly this list, with the markup, and adds the hours.':'Claude bills exactly this list at cost, then adds the hours.'}${L.savedAt?' <b>Pre-filled from your last save.</b>':''}</p>
     ${L.dups?`<div class="jm-q" style="margin:4px 0 10px"><b>⚠ ${L.dups===1?'A part may be':L.dups+' parts may be'} on two receipts for one purchase.</b>
       <div class="small">The quantity below counts both copies until it is answered.</div>
       <button class="secondary" style="width:100%;margin-top:8px" onclick="invToJob()">Answer it in Job details</button></div>`:''}
@@ -4686,9 +4725,54 @@ function renderInvoiceList(){
       <button class="secondary grow" onclick="invLeave()">${(S._navStack||[]).length?'← Back':'Cancel'}</button>
       <button class="secondary grow" id="ilSave" onclick="invListSaveOnly()">💾 Save</button>
     </div>
-    <button style="width:100%;margin-top:8px" id="ilGo" onclick="invListSave()">🧾 Build initial draft</button>
+    ${L.skip
+      ? `<button style="width:100%;margin-top:8px;background:#15803d;border-color:#15803d" id="ilGo" onclick="invListSave()">✅ Build final draft now</button>
+         <button class="ghost" style="width:100%;margin-top:2px" onclick="invSkipSet_(false)">🧾 Build the initial draft instead</button>`
+      : `<button style="width:100%;margin-top:8px" id="ilGo" onclick="invListSave()">🧾 Build initial draft</button>
+         ${canSkip?`<button class="ghost" style="width:100%;margin-top:2px" onclick="invSkipSet_(true)">⚡ Skip the initial draft — build the final draft now</button>`:''}`}
     <p class="small muted" id="ilSaved" style="margin:6px 0 0;text-align:center">${L.savedAt?'Last saved '+esc(new Date(L.savedAt).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})):'Not saved yet'}</p>`);
-  invListTotals();
+  invListTotals(); invSkipGo_();
+}
+/* v175 - the office's answer for a skip: anyone on the clock on this job, hours waiting for approval, an invoice
+   already in QuickBooks. Neither of the first two is billed, so each is said before the tap, in plain words. */
+function invSkipAsk_(ref, keep){
+  apiBg('invoiceCheck',{po:ref.po||'', jobSite:ref.jobSite}).catch(()=>({failed:true})).then(c=>{
+    c=c||{failed:true}; if(keep) keep(c);
+    if(c.qb!=null && !c.failed) fdQbSet_(fdKey(ref.po||'', ref.jobSite), c.qb);
+    if(invList && invList.ref===ref){ invList.chk=c; const w=document.getElementById('ilWarn'); if(w) w.innerHTML=invSkipWarnHtml_(invList); invSkipGo_(); }
+  });
+}
+function invSkipWarn_(L){   // the lines to say, from the office's answer, or from the phone until it comes
+  const c=L.chk, out=[], me=S.me&&S.me.email, open=[];
+  const mine=e=>e && ((L.ref.po && String(e['PO#']||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase()===String(L.ref.po).replace(/[^A-Za-z0-9]/g,'').toUpperCase())
+                      || (!L.ref.po && String(e['Customer/Job Site']||'').trim().toLowerCase()===String(L.ref.jobSite||'').trim().toLowerCase()));
+  if(c && !c.failed) (c.open||[]).forEach(o=>open.push(o));
+  else if(S.openEntry && mine(S.openEntry)) open.push({name:(S.me&&S.me.name)||'You', email:me, since:S.openEntry.ClockIn});
+  open.forEach(o=>out.push(o.email&&me&&String(o.email).toLowerCase()===String(me).toLowerCase()
+    ? `<b>You're still clocked in on this job</b>${o.since?' (since '+esc(fmtTime(o.since))+')':''}. Clock out first, or your time today won't be on the invoice.`
+    : `<b>${esc(o.name)}</b> is still clocked in on this job${o.since?' (since '+esc(fmtTime(o.since))+')':''}. Time still on the clock isn't billed.`));
+  const pend=(c&&!c.failed&&c.pending)||[];
+  if(pend.length){ const tot=pend.reduce((a,x)=>a+(Number(x.hours)||0),0);
+    out.push(`<b>${tot.toFixed(2)} h</b> on this job ${tot===1?'is':'are'} still waiting for approval (${pend.map(x=>esc(x.name)+' '+Number(x.hours).toFixed(2)+' h').join(', ')}). Only approved hours go on the invoice — approve them first if they belong on it.`); }
+  return out;
+}
+function invSkipWarnHtml_(L){
+  const c=L.chk;
+  if(c && c.qb) return `<div class="jm-q" style="margin:0 0 8px"><b>⚠ Invoice #${esc(c.qb)} is already in QuickBooks for this job.</b><div class="small">There's no initial draft to skip: go back and tap Build Final Draft to finish that invoice.</div></div>`;
+  const w=invSkipWarn_(L);
+  if(w.length) return `<div class="jm-q" style="margin:0 0 8px">${w.map(x=>`<div class="small" style="margin:2px 0">⚠ ${x}</div>`).join('')}</div>`;
+  if(!c) return `<p class="small muted" style="margin:0 0 8px"><span class="spin"></span> Checking the hours on this job…</p>`;
+  if(c.failed) return `<p class="small muted" style="margin:0 0 8px">The hours on this job could not be checked. Only approved hours are billed.</p>`;
+  return `<p class="small" style="margin:0 0 8px;color:#15803d">✓ Nobody is clocked in on this job and no hours are waiting for approval.</p>`;
+}
+function invSkipGo_(){   // an invoice already in QuickBooks: this list cannot build one
+  const L=invList, b=document.getElementById('ilGo'); if(!L||!L.skip||!b) return;
+  if(L.chk && L.chk.qb){ b.disabled=true; b.textContent='Invoice #'+L.chk.qb+' already exists'; }
+}
+function invSkipSet_(on){
+  if(!invList) return; invListRead(); invList.skip=!!on;
+  if(on && !invList.chk) invSkipAsk_(invList.ref);
+  renderInvoiceList();
 }
 function invStep(i,d){ invListRead(); const it=invList.items[i]; it.qty=Math.max(0,Math.round((Number(it.qty)+d)*1000)/1000);
   const q=document.getElementById('ilq'+i); if(q) q.value=it.qty; invListTotals(); }
@@ -4869,17 +4953,64 @@ async function invListSave(){
   invListRead();
   const L=invList, btn=document.getElementById('ilGo');
   const items=L.items.filter(it=>it.desc).map(it=>({sku:it.sku,desc:it.desc,qty:it.qty,unit:it.unit,uom:it.uom||'',supplier:it.supplier,invoice:it.invoice,bought:it.bought}));
+  if(L.skip) return invSkipBuild_(L, btn, items);
   if(!items.some(it=>it.qty>0) && !confirm('No parts on the list — build a labour-only draft?')) return;
   btn.disabled=true; btn.textContent='Sending…';
   try{
     const r=await api('invoiceMaterialsSave',{po:L.ref.po||'', jobSite:L.ref.jobSite, items, build:true},{timeout:90000});
-    ilShelfAfter_(r); invList=null; closeSheet();
+    ilShelfAfter_(r);
+    if(r&&r.already){ toast('Not started: '+String(r.note||'another build is running').replace(/[.\s]+$/,'')+'.', 9000); btn.disabled=false; btn.textContent='🧾 Build initial draft'; L.snap=invSnap_(L); return; }   // v175
+    delete (S._fdQb||{})[fdKey(L.ref.po||'', L.ref.jobSite)];   // v175 - an invoice is on its way: ask again next time
+    invList=null; closeSheet();
     toast((r&&r.fired
       ? `Saved ${r.lines} part line(s) ($${Number(r.partsCost||0).toFixed(2)} at cost). Claude started on it — the draft should be in QuickBooks in about 5–10 minutes.`
       : `Saved ${r.lines} part line(s). Initial draft requested.` + (r&&r.note?' ('+r.note+')':''))+ilShelfMsg_(r), 9000);
   }catch(e){
     if (e && e.kind === 'network'){ invList=null; closeSheet(); toast('The office was slow to answer, but the list has most likely been saved and sent — watch for the "Initial draft ready" email before trying again.', 8000); return; }
     toast(e.message); btn.disabled=false; btn.textContent='🧾 Build initial draft';
+  }
+}
+/* v175 - Build final draft now: the list is saved and sent with skip, and the job's Build Final Draft button
+   watches the two steps. What will not be billed (time still on the clock, hours not approved) is said once more
+   before anything starts. */
+async function invSkipBuild_(L, btn, items){
+  const fk=fdKey(L.ref.po||'', L.ref.jobSite);
+  if(L.chk && L.chk.qb) return toast('Invoice #'+L.chk.qb+' is already in QuickBooks for this job. Go back and tap Build Final Draft to finish it.', 8000);
+  if(!items.some(it=>it.qty>0) && !confirm('No parts on the list — build a labour-only final draft?')) return;
+  const warn=invSkipWarn_(L).map(x=>x.replace(/<[^>]+>/g,''));
+  if(warn.length && !confirm(warn.join('\n\n')+'\n\nBuild the final draft anyway?')) return;
+  if(!S.online) return toast('You need signal to build the invoice.');
+  btn.disabled=true; btn.textContent='Starting Claude…';
+  try{
+    const r=await api('invoiceMaterialsSave',{po:L.ref.po||'', jobSite:L.ref.jobSite, items, build:true, skip:true},{timeout:90000});
+    ilShelfAfter_(r); L.savedAt=new Date().toISOString(); L.snap=invSnap_(L);
+    if(r&&r.refused){
+      fdQbSet_(fk, r.invoiceNo||'');
+      invList=null; navBack(); toast(String(r.note||'This job already has an invoice').replace(/[.\s]+$/,'')+'.', 9000); return;
+    }
+    if(r&&r.already){
+      invList=null; navBack(); toast('Not started: '+String(r.note||'another build is running').replace(/[.\s]+$/,'')+'.', 9000); return;
+    }
+    if(r&&r.fired){
+      delete (S._fdQb||{})[fk];
+      fdWatch(L.ref.po||'', L.ref.jobSite, Date.now(), {skip:true, stage:'initial'});
+      invList=null; navBack();
+      const say='Straight to the final draft: first the invoice with the hours and the parts (2–5 minutes), then the markup (about a minute). You can close this — a message comes up when it is done.';
+      const fn=fdNoteEl(fk);
+      if(fn) fn.textContent=say;
+      else toast(`Saved ${r.lines} part line(s). Claude started the final draft — usually 3–6 minutes. A message comes up when it is done.`+ilShelfMsg_(r), 9000);
+      return;
+    }
+    toast('Final draft NOT started: '+String((r&&r.note)||'Claude did not start').replace(/[.\s]+$/,'')+'. Nothing was built — tap to try again.'+ilShelfMsg_(r), 10000);
+    btn.disabled=false; btn.textContent='✅ Build final draft now';
+  }catch(e){
+    if (e && e.kind === 'network'){
+      // No answer is not a no: it may well have started. The job's button finds out in 20 s.
+      const po=L.ref.po||'', job=L.ref.jobSite; invList=null; navBack();
+      setTimeout(()=>fdPeek(po, job), 20000);
+      toast('The office was slow to answer, but it has most likely started. Open the job in a minute: its Build Final Draft button says what happened.', 9000); return;
+    }
+    toast(e.message); btn.disabled=false; btn.textContent='✅ Build final draft now';
   }
 }
 
